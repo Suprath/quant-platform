@@ -1,54 +1,86 @@
 import os
 import json
-import pandas as pd
+import time
 from confluent_kafka import Consumer, Producer
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Kafka Config
-bootstrap = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka_bus:9092')
-consumer = Consumer({'bootstrap.servers': bootstrap, 'group.id': 'feature-group', 'auto.offset.reset': 'earliest'})
-producer = Producer({'bootstrap.servers': bootstrap})
+KAFKA_SERVER = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka_bus:9092')
 
-class TradingLogic:
-    def __init__(self):
-        self.history = []
+class SMAStrategy:
+    def __init__(self, window=10):
+        self.prices = []
+        self.window = window
         self.last_signal = None
 
-    def check_for_signal(self, symbol, ltp):
-        self.history.append(ltp)
-        if len(self.history) > 10: self.history.pop(0)
+    def update(self, price):
+        self.prices.append(price)
+        if len(self.prices) > self.window:
+            self.prices.pop(0)
         
-        if len(self.history) < 10: return None
-        
-        sma = sum(self.history) / 10
-        
-        # Logic: If price drops below SMA, it's a SELL signal
-        if ltp < sma and self.last_signal != "SELL":
-            self.last_signal = "SELL"
-            return {"symbol": symbol, "action": "SELL", "price": ltp, "reason": "Price below SMA"}
-        elif ltp > sma and self.last_signal != "BUY":
-            self.last_signal = "BUY"
-            return {"symbol": symbol, "action": "BUY", "price": ltp, "reason": "Price above SMA"}
-        return None
+        if len(self.prices) < self.window:
+            return None, None
 
-def run():
-    consumer.subscribe(['market.equity.ticks'])
-    logic = TradingLogic()
-    print("Feature Engine analyzing for signals...")
-
-    while True:
-        msg = consumer.poll(1.0)
-        if msg is None: continue
+        sma = sum(self.prices) / self.window
         
-        data = json.loads(msg.value().decode('utf-8'))
-        signal = logic.check_for_signal(data['symbol'], data['ltp'])
+        # Crossover Logic
+        signal = None
+        if price < (sma - 0.10) and self.last_signal != "SELL":
+            signal = "SELL"
+        elif price > (sma + 0.10) and self.last_signal != "BUY":
+            signal = "BUY"
         
         if signal:
-            print(f"🚨 SIGNAL GENERATED: {signal['action']} {signal['symbol']}")
-            producer.produce('strategy.signals', value=json.dumps(signal))
-            producer.flush()
+            self.last_signal = signal
+        return signal, sma
+
+def run():
+    # Producer for Signals
+    p = Producer({'bootstrap.servers': KAFKA_SERVER})
+    
+    # Consumer for Ticks
+    c = Consumer({
+        'bootstrap.servers': KAFKA_SERVER,
+        'group.id': 'feature-engine-v2',
+        'auto.offset.reset': 'earliest'
+    })
+    c.subscribe(['market.equity.ticks'])
+
+    strategy = SMAStrategy()
+    print("Feature Engine: Waiting for Kafka...")
+
+    try:
+        while True:
+            msg = c.poll(1.0)
+            if msg is None: continue
+            
+            try:
+                data = json.loads(msg.value().decode('utf-8'))
+                symbol = data['symbol']
+                price = data['ltp']
+
+                signal, sma = strategy.update(price)
+
+                if signal:
+                    payload = {
+                        "symbol": symbol,
+                        "action": signal,
+                        "price": price,
+                        "strategy_id": "SMA_CROSSOVER_01",
+                        "timestamp": int(time.time() * 1000)
+                    }
+                    p.produce('strategy.signals', value=json.dumps(payload))
+                    p.flush()
+                    print(f"🚨 SIGNAL: {signal} for {symbol} at {price} (SMA: {round(sma, 2)})")
+                else:
+                    if sma:
+                        print(f"Monitoring {symbol}: {price} | SMA: {round(sma, 2)}")
+
+            except Exception as e:
+                print(f"Processing Error: {e}")
+    finally:
+        c.close()
 
 if __name__ == "__main__":
     run()
