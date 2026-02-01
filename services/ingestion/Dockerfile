@@ -2,11 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies for Apple Silicon compatibility
 RUN apt-get update && apt-get install -y \
     build-essential \
     librdkafka-dev \
-    python3-dev \
+    protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -14,4 +13,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "main.py"]
+# We move the protoc command to the start command so it works with Mac volumes
+CMD protoc --python_out=. MarketDataFeedV3.proto && python main.py

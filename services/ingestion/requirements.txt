@@ -1,5 +1,5 @@
 confluent-kafka
-upstox-python-sdk
 python-dotenv
+websockets
 protobuf
 websockets

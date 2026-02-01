@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package com.upstox.marketdata.v3;
+
+message MarketDataFeed {
+    map<string, Feed> feeds = 1;
+    int64 currentTs = 2;
+}
+
+message Feed {
+    LTPC ltpc = 1;
+}
+
+message LTPC {
+    double ltp = 1;
+    int64 ltt = 2;
+    int64 ltq = 3;
+    double cp = 4;
+}
