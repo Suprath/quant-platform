@@ -16,6 +16,11 @@ services:
       - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka_bus:9093
       - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
       - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_LOG_DIRS=/var/lib/kafka/data
+    volumes:
+      - kafka_data:/var/lib/kafka/data # Persistent Storage for Topics
+    restart: always
 
   ingestor:
     build: ../services/ingestion
@@ -140,7 +145,18 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
     restart: always
 
+  doctor:
+    build: ../services/system_doctor
+    container_name: system_doctor
+    depends_on:
+      - postgres
+      - questdb
+      - kafka
+      - api_gateway
+    # We do NOT set restart: always because this is a one-off command
+
 volumes:
   questdb_data:
   postgres_data:
   minio_data:
+  kafka_data:
