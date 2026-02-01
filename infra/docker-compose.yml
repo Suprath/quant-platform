@@ -44,11 +44,10 @@ services:
     image: questdb/questdb:latest
     container_name: questdb_tsdb
     ports:
-      - "9000:9000" # Web Console (QuestDB UI)
-      - "8812:8812" # Postgres Wire Protocol (Inbound Data)
+      - "9000:9000"
+      - "8812:8812" # <--- Ensure this line is present
     volumes:
       - questdb_data:/var/lib/questdb
-    restart: always
 
   # LAYER 3: RELATIONAL STORAGE (Users & Strategies)
   postgres:
