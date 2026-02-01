@@ -129,6 +129,18 @@ services:
       - ../services/ingestion/.env
     # No restart: always because this is a one-time job
 
+  scanner:
+    build: ../services/scanner
+    container_name: market_scanner
+    depends_on:
+      - kafka
+      - postgres
+    env_file:
+      - ../services/ingestion/.env
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
+    restart: always
+
 volumes:
   questdb_data:
   postgres_data:

@@ -1,0 +1,5 @@
+requests
+pandas
+psycopg2-binary
+confluent_kafka
+python-dotenv
