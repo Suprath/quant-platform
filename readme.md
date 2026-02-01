@@ -149,12 +149,5 @@ Token expired — rerun authentication helper.
 ### Topic Not Found
 Topics auto-create; if failure occurs, run system doctor.
 
----
-
-## 📜 License
-MIT License
-
----
-
 ## 👤 Author
-Quant Developer
+Suprath PS
