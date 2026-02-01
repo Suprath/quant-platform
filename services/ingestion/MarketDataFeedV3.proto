@@ -8,6 +8,7 @@ message MarketDataFeed {
 
 message Feed {
     LTPC ltpc = 1;
+    Greeks greeks = 2; // <--- ADDED GREEKS FIELD
 }
 
 message LTPC {
@@ -15,5 +16,13 @@ message LTPC {
     int64 ltt = 2;
     int64 ltq = 3;
     double cp = 4;
-    int64 oi = 5;  // <--- ADDED OPEN INTEREST
+    int64 oi = 5;
+}
+
+message Greeks { // <--- ADDED MESSAGE SPEC
+    double iv = 1;
+    double delta = 2;
+    double theta = 3;
+    double gamma = 4;
+    double vega = 5;
 }
