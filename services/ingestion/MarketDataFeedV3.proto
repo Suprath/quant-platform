@@ -1,5 +1,4 @@
 syntax = "proto3";
-
 package com.upstox.marketdata.v3;
 
 message MarketDataFeed {
@@ -16,4 +15,5 @@ message LTPC {
     int64 ltt = 2;
     int64 ltq = 3;
     double cp = 4;
+    int64 oi = 5;  // <--- ADDED OPEN INTEREST
 }

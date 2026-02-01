@@ -111,12 +111,23 @@ services:
   api_gateway:
     build: ../services/api_gateway
     container_name: api_gateway
+    volumes:
+      - ../services/api_gateway:/app # <--- ADD THIS LINE
     depends_on:
       - postgres
       - questdb
     ports:
-      - "8080:8000" # Access via http://localhost:8080
-    restart: always  
+      - "8080:8000"
+    restart: always
+
+  backfiller:
+    build: ../services/backfiller
+    container_name: data_backfiller
+    depends_on:
+      - questdb
+    env_file:
+      - ../services/ingestion/.env
+    # No restart: always because this is a one-time job
 
 volumes:
   questdb_data:
