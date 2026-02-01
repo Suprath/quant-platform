@@ -8,18 +8,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Logging configuration
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("MarketPersistor")
+# Logging Configuration
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger("Persistor-Enriched")
 
-# 1. KAFKA CONFIGURATION
+# --- CONFIGURATION ---
 KAFKA_CONF = {
     'bootstrap.servers': os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka_bus:9092'),
-    'group.id': 'questdb-persistor-v4', # Incremented version to ensure fresh start
-    'auto.offset.reset': 'latest'       # Focus on live market data
+    'group.id': 'questdb-persistor-microstructure-v1', # New group for new logic
+    'auto.offset.reset': 'latest'
 }
 
-# 2. QUESTDB CONFIGURATION (Postgres Wire Protocol)
 QDB_CONF = {
     'host': 'questdb_tsdb',
     'port': 8812,
@@ -29,66 +31,111 @@ QDB_CONF = {
 }
 
 def get_db_connection():
-    """Retry logic for connecting to QuestDB"""
+    """Robust connection loop for QuestDB"""
     while True:
         try:
             conn = psycopg2.connect(**QDB_CONF)
             return conn
         except Exception as e:
-            logger.warning(f"QuestDB not ready ({e}). Retrying in 5s...")
-            time.sleep(5)
+            logger.warning(f"QuestDB not ready: {e}. Retrying in 3s...")
+            time.sleep(3)
+
+def ensure_schema(conn):
+    """
+    Auto-creates/Updates tables to match the Quant Data structure.
+    This ensures your DB never crashes due to missing columns.
+    """
+    try:
+        cur = conn.cursor()
+        
+        # 1. TICKS Table (Now with Microstructure columns)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ticks (
+                timestamp TIMESTAMP,
+                symbol SYMBOL,
+                ltp DOUBLE,
+                volume LONG,
+                oi LONG,
+                day_high DOUBLE,
+                day_low DOUBLE,
+                spread DOUBLE,
+                aggressor SYMBOL
+            ) TIMESTAMP(timestamp) PARTITION BY DAY;
+        """)
+        
+        # 2. GREEKS Table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS option_greeks (
+                timestamp TIMESTAMP,
+                symbol SYMBOL,
+                iv DOUBLE,
+                delta DOUBLE,
+                gamma DOUBLE,
+                theta DOUBLE,
+                vega DOUBLE
+            ) TIMESTAMP(timestamp) PARTITION BY DAY;
+        """)
+        
+        conn.commit()
+        cur.close()
+        logger.info("✅ Database Schema Verified.")
+    except Exception as e:
+        logger.error(f"Schema Error: {e}")
+        conn.rollback()
 
 def run_persistor():
-    # Initialize Kafka Consumer
     consumer = Consumer(KAFKA_CONF)
     
-    # Subscribe to both Equity Ticks and Option Greeks topics
-    topics = ['market.equity.ticks', 'market.option.greeks']
+    # Subscribe to ENRICHED ticks (from Feature Engine) and GREEKS (from Ingestor)
+    topics = ['market.enriched.ticks', 'market.option.greeks']
     consumer.subscribe(topics)
-    logger.info(f"Subscribed to Kafka topics: {topics}")
-
-    # Initial DB Connection
+    
     conn = get_db_connection()
+    ensure_schema(conn) # Auto-fix tables on startup
     cur = conn.cursor()
-    logger.info("✅ Connected to QuestDB. Starting persistence loop...")
+    
+    logger.info(f"Persistor Online. Listening to: {topics}")
 
     try:
         while True:
-            msg = consumer.poll(1.0)
+            msg = consumer.poll(0.5)
             if msg is None: continue
             if msg.error():
-                logger.error(f"Consumer error: {msg.error()}")
+                logger.error(f"Kafka Error: {msg.error()}")
                 continue
 
-            # Identify which topic the data came from
             topic = msg.topic()
             
             try:
-                # Decode JSON payload
                 data = json.loads(msg.value().decode('utf-8'))
-                symbol = data.get('symbol')
-
-                # --- ROUTE TO EQUITY TICKS TABLE ---
-                if topic == 'market.equity.ticks':
-                    # Columns: timestamp, symbol, ltp, volume, oi
+                
+                # --- CASE 1: ENRICHED MICROSTRUCTURE DATA ---
+                if topic == 'market.enriched.ticks':
+                    # We map the JSON fields from Feature Engine to QuestDB columns
                     cur.execute("""
-                        INSERT INTO ticks (timestamp, symbol, ltp, volume, oi)
-                        VALUES (now(), %s, %s, %s, %s)
+                        INSERT INTO ticks (
+                            timestamp, symbol, ltp, volume, oi, 
+                            day_high, day_low, spread, aggressor
+                        ) VALUES (now(), %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
-                        symbol, 
-                        data.get('ltp'), 
-                        data.get('v', 0), # Volume
-                        data.get('oi', 0)  # Open Interest
+                        data.get('symbol'),
+                        data.get('ltp'),
+                        data.get('volume', 0),
+                        data.get('oi', 0), # OI passed through feature engine
+                        data.get('day_high'),
+                        data.get('day_low'),
+                        data.get('spread'),
+                        data.get('aggressor', 'NEUTRAL')
                     ))
 
-                # --- ROUTE TO OPTION GREEKS TABLE ---
+                # --- CASE 2: OPTION GREEKS ---
                 elif topic == 'market.option.greeks':
-                    # Columns: timestamp, symbol, iv, delta, gamma, theta, vega
                     cur.execute("""
-                        INSERT INTO option_greeks (timestamp, symbol, iv, delta, gamma, theta, vega)
-                        VALUES (now(), %s, %s, %s, %s, %s, %s)
+                        INSERT INTO option_greeks (
+                            timestamp, symbol, iv, delta, gamma, theta, vega
+                        ) VALUES (now(), %s, %s, %s, %s, %s, %s)
                     """, (
-                        symbol,
+                        data.get('symbol'),
                         data.get('iv'),
                         data.get('delta'),
                         data.get('gamma'),
@@ -96,25 +143,21 @@ def run_persistor():
                         data.get('vega')
                     ))
 
-                # Commit every message for real-time consistency
                 conn.commit()
-                
-                # Periodic logging for health monitoring
-                if int(time.time()) % 60 == 0:
-                    logger.info(f"Still persisting... Latest: {symbol} on {topic}")
 
             except json.JSONDecodeError:
-                logger.error("Skipped message: Invalid JSON")
-            except psycopg2.OperationalError:
-                logger.error("QuestDB connection lost. Reconnecting...")
+                pass # Skip bad packets
+            except psycopg2.InterfaceError:
+                # Connection died, reconnect
+                logger.error("DB Connection lost. Reconnecting...")
                 conn = get_db_connection()
                 cur = conn.cursor()
             except Exception as e:
-                logger.error(f"Processing error on {topic}: {e}")
+                logger.error(f"Insert Error: {e}")
                 conn.rollback()
 
     except KeyboardInterrupt:
-        logger.info("Persistor stopped by user.")
+        logger.info("Persistor shutting down.")
     finally:
         cur.close()
         conn.close()

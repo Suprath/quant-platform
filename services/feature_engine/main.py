@@ -3,125 +3,196 @@ import json
 import time
 import logging
 from confluent_kafka import Consumer, Producer
+from confluent_kafka.admin import AdminClient, NewTopic
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Logging setup
+# Logging Setup
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("FeatureEngine")
+logger = logging.getLogger("QuantFeatureEngine")
 
 KAFKA_SERVER = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka_bus:9092')
 
-class SymbolState:
-    """Maintains quant state for a single instrument"""
-    def __init__(self, window_size=20):
-        self.window_size = window_size
-        self.prices = []
+class QuantProcessor:
+    """
+    State machine for a single stock.
+    Calculates: VWAP, OBI, Spread, Aggressor Side, Day High/Low
+    """
+    def __init__(self, symbol):
+        self.symbol = symbol
+        self.day_high = -1.0
+        self.day_low = float('inf')
         
         # VWAP State
         self.cum_pv = 0.0 # Cumulative (Price * Volume)
-        self.cum_v = 0.0  # Cumulative Volume
+        self.cum_v = 0    # Cumulative Volume
         
-        # Signal State
+        # SMA State
+        self.prices = []
+        self.window_size = 20
+        
         self.last_signal = None
 
-    def update(self, ltp, volume, depth=None):
-        # 1. Update SMA Price Window
+    def process(self, tick):
+        ltp = tick.get('ltp', 0.0)
+        v = tick.get('v', 0) # This is volume traded in this tick/snapshot
+        depth = tick.get('depth', {}) # Expecting {bids: [], asks: []} if available
+
+        # 1. Update Session High/Low
+        if ltp > self.day_high: self.day_high = ltp
+        if self.day_low == float('inf') or ltp < self.day_low: self.day_low = ltp
+
+        # 2. Update VWAP (Intraday Anchor)
+        # Note: 'v' from Upstox is usually cumulative for the day or snapshot volume. 
+        # For true tick-by-tick VWAP, we ideally need incremental volume. 
+        # Here we approximate using the stream updates.
+        self.cum_pv += (ltp * v)
+        self.cum_v += v
+        vwap = round(self.cum_pv / self.cum_v, 2) if self.cum_v > 0 else ltp
+
+        # 3. Update SMA Window
         self.prices.append(ltp)
         if len(self.prices) > self.window_size:
             self.prices.pop(0)
-        
-        # 2. Update VWAP (Daily anchored)
-        self.cum_pv += (ltp * volume)
-        self.cum_v += volume
-        vwap = round(self.cum_pv / self.cum_v, 2) if self.cum_v > 0 else ltp
+        sma = sum(self.prices) / len(self.prices)
 
-        # 3. Calculate OBI (Order Book Imbalance)
-        # OBI = (Total Bid Qty - Total Ask Qty) / (Total Bid Qty + Total Ask Qty)
+        # 4. Microstructure: Spread & OBI
+        spread = 0.0
         obi = 0.0
-        if depth:
-            # Assuming depth format from Upstox: {'buy': [{'quantity': 100}, ...], 'sell': [...]}
-            total_bids = sum([b.get('quantity', 0) for b in depth.get('buy', [])])
-            total_asks = sum([s.get('quantity', 0) for s in depth.get('sell', [])])
-            if (total_bids + total_asks) > 0:
-                obi = (total_bids - total_asks) / (total_bids + total_asks)
+        best_bid = 0.0
+        best_ask = 0.0
 
-        # 4. Calculate SMA
-        sma = sum(self.prices) / len(self.prices) if self.prices else ltp
-        
-        return round(sma, 2), vwap, round(obi, 4)
+        if depth:
+            bids = depth.get('buy', [])
+            asks = depth.get('sell', [])
+            
+            # Calculate OBI
+            total_bid_qty = sum(b['quantity'] for b in bids)
+            total_ask_qty = sum(a['quantity'] for a in asks)
+            if (total_bid_qty + total_ask_qty) > 0:
+                obi = round((total_bid_qty - total_ask_qty) / (total_bid_qty + total_ask_qty), 4)
+
+            # Calculate Spread
+            if bids and asks:
+                best_bid = bids[0]['price']
+                best_ask = asks[0]['price']
+                spread = round(best_ask - best_bid, 2)
+
+        # 5. Microstructure: Aggressor Side (The "Hidden" metric)
+        # Did the trade happen at the Ask (Buy Aggressor) or Bid (Sell Aggressor)?
+        aggressor = "NEUTRAL"
+        if best_ask > 0 and ltp >= best_ask:
+            aggressor = "BUY"  # Buyers are sweeping the book
+        elif best_bid > 0 and ltp <= best_bid:
+            aggressor = "SELL" # Sellers are dumping
+
+        # Return the Enriched Data Packet
+        return {
+            "symbol": self.symbol,
+            "ltp": ltp,
+            "volume": v,
+            "day_high": self.day_high,
+            "day_low": self.day_low,
+            "vwap": vwap,
+            "sma": round(sma, 2),
+            "spread": spread,
+            "obi": obi,
+            "aggressor": aggressor,
+            "timestamp": tick.get('timestamp', int(time.time()*1000))
+        }
+
+def ensure_topics():
+    """Auto-create topics if they don't exist"""
+    a = AdminClient({'bootstrap.servers': KAFKA_SERVER})
+    topics = ["market.enriched.ticks", "strategy.signals"]
+    new_topics = [NewTopic(t, num_partitions=12, replication_factor=1) for t in topics]
+    a.create_topics(new_topics)
 
 def run():
-    # Producer to send enriched signals
-    p = Producer({'bootstrap.servers': KAFKA_SERVER})
+    ensure_topics()
     
-    # Consumer to read raw ticks
+    # Consumer: Reads Raw Ticks
     c = Consumer({
         'bootstrap.servers': KAFKA_SERVER,
-        'group.id': 'quant-feature-engine-v1',
-        'auto.offset.reset': 'latest' # Focus on live data
+        'group.id': 'feature-engine-microstructure-v1',
+        'auto.offset.reset': 'latest'
     })
     c.subscribe(['market.equity.ticks'])
 
-    # Dictionary to hold state for multiple symbols
-    registry = {}
+    # Producer: Sends Enriched Data & Signals
+    p = Producer({'bootstrap.servers': KAFKA_SERVER})
 
-    logger.info("Quant Feature Engine Online. Processing Market Microstructure...")
+    # State Registry
+    processors = {}
+
+    logger.info("Feature Engine: Calculating Microstructure (Spread, Aggressor, VWAP)...")
 
     try:
         while True:
-            msg = c.poll(1.0)
+            msg = c.poll(0.1)
             if msg is None: continue
             if msg.error():
                 logger.error(f"Kafka Error: {msg.error()}")
                 continue
 
-            # Parse incoming V3 tick
-            tick = json.loads(msg.value().decode('utf-8'))
-            symbol = tick.get('symbol')
-            ltp = tick.get('ltp', 0)
-            v = tick.get('v', 0) # Volume
-            depth = tick.get('depth') # Depth from Upstox 'full' mode
+            try:
+                raw_tick = json.loads(msg.value().decode('utf-8'))
+                sym = raw_tick.get('symbol')
 
-            if symbol not in registry:
-                registry[symbol] = SymbolState()
+                if sym not in processors:
+                    processors[sym] = QuantProcessor(sym)
 
-            state = registry[symbol]
-            sma, vwap, obi = state.update(ltp, v, depth)
+                # --- 1. CALCULATE ---
+                enriched_data = processors[sym].process(raw_tick)
 
-            # --- QUANT STRATEGY LOGIC ---
-            # We look for CONFLUENCE: 
-            # BUY if: Price is above SMA AND Price is above VWAP AND OBI shows strong buy pressure (> 0.3)
-            signal = None
-            if ltp > sma and ltp > vwap and obi > 0.3:
-                signal = "BUY"
-            # SELL if: Price is below SMA AND Price is below VWAP AND OBI shows strong sell pressure (< -0.3)
-            elif ltp < sma and ltp < vwap and obi < -0.3:
-                signal = "SELL"
+                # --- 2. PUBLISH ENRICHED DATA (For Persistor) ---
+                # This goes to the new topic that your DB listens to
+                p.produce('market.enriched.ticks', key=sym, value=json.dumps(enriched_data))
 
-            if signal and signal != state.last_signal:
-                state.last_signal = signal
-                payload = {
-                    "symbol": symbol,
-                    "action": signal,
-                    "price": ltp,
-                    "sma": sma,
-                    "vwap": vwap,
-                    "obi": obi,
-                    "strategy_id": "QUANT_CONFLUENCE_V1",
-                    "timestamp": int(time.time() * 1000)
-                }
-                p.produce('strategy.signals', value=json.dumps(payload))
-                p.flush()
-                logger.info(f"🚨 QUANT SIGNAL: {signal} {symbol} | Price: {ltp} | VWAP: {vwap} | OBI: {obi}")
-            else:
-                # Periodic log to show engine is thinking
-                if int(time.time()) % 10 == 0:
-                    logger.info(f"Monitoring {symbol}: Price={ltp}, VWAP={vwap}, OBI={obi}")
+                # --- 3. GENERATE SIGNALS (For Strategy) ---
+                # Strategy: Momentum Breakout with Microstructure Confirmation
+                # Buy if: Price > VWAP AND Buying Pressure (OBI) is high AND Aggressor is Buyer
+                signal = None
+                
+                # Check conditions
+                bullish_structure = (
+                    enriched_data['ltp'] > enriched_data['vwap'] and 
+                    enriched_data['obi'] > 0.2 and 
+                    enriched_data['aggressor'] == 'BUY'
+                )
+                
+                bearish_structure = (
+                    enriched_data['ltp'] < enriched_data['vwap'] and 
+                    enriched_data['obi'] < -0.2 and 
+                    enriched_data['aggressor'] == 'SELL'
+                )
 
-    except Exception as e:
-        logger.error(f"Runtime Error: {e}")
+                if bullish_structure:
+                    signal = "BUY"
+                elif bearish_structure:
+                    signal = "SELL"
+
+                # Debounce logic (simple) could be added here
+                if signal:
+                    signal_payload = {
+                        "symbol": sym,
+                        "action": signal,
+                        "price": enriched_data['ltp'],
+                        "reason": f"Microstructure: OBI={enriched_data['obi']}, Agg={enriched_data['aggressor']}",
+                        "timestamp": enriched_data['timestamp'],
+                        "strategy_id": "MICRO_BREAKOUT_V1"
+                    }
+                    p.produce('strategy.signals', key=sym, value=json.dumps(signal_payload))
+                    logger.info(f"🚨 SIGNAL: {signal} {sym} | OBI: {enriched_data['obi']} | Agg: {enriched_data['aggressor']}")
+
+                p.poll(0)
+
+            except Exception as e:
+                logger.error(f"Processing Error: {e}")
+
+    except KeyboardInterrupt:
+        pass
     finally:
         c.close()
 
