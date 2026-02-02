@@ -13,23 +13,31 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x16MarketDataFeedV3.proto\x12\x18\x63om.upstox.marketdata.v3\"\xb5\x01\n\x0eMarketDataFeed\x12\x42\n\x05\x66\x65\x65\x64s\x18\x01 \x03(\x0b\x32\x33.com.upstox.marketdata.v3.MarketDataFeed.FeedsEntry\x12\x11\n\tcurrentTs\x18\x02 \x01(\x03\x1aL\n\nFeedsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12-\n\x05value\x18\x02 \x01(\x0b\x32\x1e.com.upstox.marketdata.v3.Feed:\x02\x38\x01\"f\n\x04\x46\x65\x65\x64\x12,\n\x04ltpc\x18\x01 \x01(\x0b\x32\x1e.com.upstox.marketdata.v3.LTPC\x12\x30\n\x06greeks\x18\x02 \x01(\x0b\x32 .com.upstox.marketdata.v3.Greeks\"E\n\x04LTPC\x12\x0b\n\x03ltp\x18\x01 \x01(\x01\x12\x0b\n\x03ltt\x18\x02 \x01(\x03\x12\x0b\n\x03ltq\x18\x03 \x01(\x03\x12\n\n\x02\x63p\x18\x04 \x01(\x01\x12\n\n\x02oi\x18\x05 \x01(\x03\"O\n\x06Greeks\x12\n\n\x02iv\x18\x01 \x01(\x01\x12\r\n\x05\x64\x65lta\x18\x02 \x01(\x01\x12\r\n\x05theta\x18\x03 \x01(\x01\x12\r\n\x05gamma\x18\x04 \x01(\x01\x12\x0c\n\x04vega\x18\x05 \x01(\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x16MarketDataFeedV3.proto\x12\x18\x63om.upstox.marketdata.v3\"\xdf\x01\n\x0c\x46\x65\x65\x64Response\x12,\n\x04type\x18\x01 \x01(\x0e\x32\x1e.com.upstox.marketdata.v3.Type\x12@\n\x05\x66\x65\x65\x64s\x18\x02 \x03(\x0b\x32\x31.com.upstox.marketdata.v3.FeedResponse.FeedsEntry\x12\x11\n\tcurrentTs\x18\x03 \x01(\x03\x1aL\n\nFeedsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12-\n\x05value\x18\x02 \x01(\x0b\x32\x1e.com.upstox.marketdata.v3.Feed:\x02\x38\x01\"\xa7\x01\n\x04\x46\x65\x65\x64\x12.\n\x04ltpc\x18\x01 \x01(\x0b\x32\x1e.com.upstox.marketdata.v3.LTPCH\x00\x12\x30\n\x02\x66\x66\x18\x02 \x01(\x0b\x32\".com.upstox.marketdata.v3.FullFeedH\x00\x12\x30\n\x06greeks\x18\x03 \x01(\x0b\x32 .com.upstox.marketdata.v3.GreeksB\x0b\n\tfeed_type\"E\n\x04LTPC\x12\x0b\n\x03ltp\x18\x01 \x01(\x01\x12\x0b\n\x03ltt\x18\x02 \x01(\x03\x12\x0b\n\x03ltq\x18\x03 \x01(\x03\x12\n\n\x02\x63p\x18\x04 \x01(\x01\x12\n\n\x02oi\x18\x05 \x01(\x03\"u\n\x08\x46ullFeed\x12,\n\x04ltpc\x18\x01 \x01(\x0b\x32\x1e.com.upstox.marketdata.v3.LTPC\x12;\n\x0cmarket_depth\x18\x02 \x01(\x0b\x32%.com.upstox.marketdata.v3.MarketDepth\"j\n\x0bMarketDepth\x12,\n\x03\x62uy\x18\x01 \x03(\x0b\x32\x1f.com.upstox.marketdata.v3.Quote\x12-\n\x04sell\x18\x02 \x03(\x0b\x32\x1f.com.upstox.marketdata.v3.Quote\"8\n\x05Quote\x12\x10\n\x08quantity\x18\x01 \x01(\x05\x12\r\n\x05price\x18\x02 \x01(\x01\x12\x0e\n\x06orders\x18\x03 \x01(\x05\"O\n\x06Greeks\x12\n\n\x02iv\x18\x01 \x01(\x01\x12\r\n\x05\x64\x65lta\x18\x02 \x01(\x01\x12\r\n\x05theta\x18\x03 \x01(\x01\x12\r\n\x05gamma\x18\x04 \x01(\x01\x12\x0c\n\x04vega\x18\x05 \x01(\x01*5\n\x04Type\x12\x10\n\x0cinitial_feed\x10\x00\x12\r\n\tlive_feed\x10\x01\x12\x0c\n\x08not_used\x10\x02\x62\x06proto3')
 
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, globals())
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'MarketDataFeedV3_pb2', globals())
 if _descriptor._USE_C_DESCRIPTORS == False:
 
   DESCRIPTOR._options = None
-  _MARKETDATAFEED_FEEDSENTRY._options = None
-  _MARKETDATAFEED_FEEDSENTRY._serialized_options = b'8\001'
-  _MARKETDATAFEED._serialized_start=53
-  _MARKETDATAFEED._serialized_end=234
-  _MARKETDATAFEED_FEEDSENTRY._serialized_start=158
-  _MARKETDATAFEED_FEEDSENTRY._serialized_end=234
-  _FEED._serialized_start=236
-  _FEED._serialized_end=338
-  _LTPC._serialized_start=340
-  _LTPC._serialized_end=409
-  _GREEKS._serialized_start=411
-  _GREEKS._serialized_end=490
+  _FEEDRESPONSE_FEEDSENTRY._options = None
+  _FEEDRESPONSE_FEEDSENTRY._serialized_options = b'8\001'
+  _TYPE._serialized_start=885
+  _TYPE._serialized_end=938
+  _FEEDRESPONSE._serialized_start=53
+  _FEEDRESPONSE._serialized_end=276
+  _FEEDRESPONSE_FEEDSENTRY._serialized_start=200
+  _FEEDRESPONSE_FEEDSENTRY._serialized_end=276
+  _FEED._serialized_start=279
+  _FEED._serialized_end=446
+  _LTPC._serialized_start=448
+  _LTPC._serialized_end=517
+  _FULLFEED._serialized_start=519
+  _FULLFEED._serialized_end=636
+  _MARKETDEPTH._serialized_start=638
+  _MARKETDEPTH._serialized_end=744
+  _QUOTE._serialized_start=746
+  _QUOTE._serialized_end=802
+  _GREEKS._serialized_start=804
+  _GREEKS._serialized_end=883
 # @@protoc_insertion_point(module_scope)

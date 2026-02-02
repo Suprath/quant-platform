@@ -105,7 +105,8 @@ class QuantProcessor:
 def ensure_topics():
     """Auto-create topics if they don't exist"""
     a = AdminClient({'bootstrap.servers': KAFKA_SERVER})
-    topics = ["market.enriched.ticks", "strategy.signals"]
+    # Also ensure the raw ticks topic exists so consumers don't error with UNKNOWN_TOPIC
+    topics = ["market.equity.ticks", "market.enriched.ticks", "strategy.signals"]
     new_topics = [NewTopic(t, num_partitions=12, replication_factor=1) for t in topics]
     a.create_topics(new_topics)
 
@@ -145,6 +146,11 @@ def run():
 
                 # --- 1. CALCULATE ---
                 enriched_data = processors[sym].process(raw_tick)
+                logger.info(
+                    f"ENRICHED {sym} | ltp={enriched_data['ltp']} "
+                    f"vwap={enriched_data['vwap']} obi={enriched_data['obi']} "
+                    f"agg={enriched_data['aggressor']}"
+                )
 
                 # --- 2. PUBLISH ENRICHED DATA (For Persistor) ---
                 # This goes to the new topic that your DB listens to

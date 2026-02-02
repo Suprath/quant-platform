@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- CONFIGURATION ---
-# Based on Upstox V3 Docs: Max 1 month per request for 1-minute data
 API_BASE_URL = "https://api.upstox.com/v3/historical-candle"
 ACCESS_TOKEN = os.getenv('UPSTOX_ACCESS_TOKEN')
 
@@ -23,7 +22,7 @@ def get_qdb_conn():
                 host="questdb_tsdb",
                 port=8812,
                 user="admin",
-                password="quest", # Standard QuestDB default
+                password="quest",
                 database="qdb"
             )
             print("✅ Successfully connected to QuestDB Engine!")
@@ -32,9 +31,35 @@ def get_qdb_conn():
             print(f"QuestDB not ready yet (Postgres Wire Protocol). Retrying in 2s...")
             time.sleep(2)
 
+def ensure_schema(conn):
+    """Auto-creates OHLC table if it doesn't exist"""
+    try:
+        cur = conn.cursor()
+        
+        # Create OHLC table with proper QuestDB syntax
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ohlc (
+                timestamp TIMESTAMP,
+                symbol SYMBOL,
+                timeframe SYMBOL,
+                open DOUBLE,
+                high DOUBLE,
+                low DOUBLE,
+                close DOUBLE,
+                volume LONG
+            ) TIMESTAMP(timestamp) PARTITION BY DAY;
+        """)
+        
+        conn.commit()
+        cur.close()
+        print("✅ Database schema verified (ohlc table ready)")
+    except Exception as e:
+        print(f"Schema creation error: {e}")
+        conn.rollback()
+        raise
+
 async def fetch_candle_chunk(session, symbol, unit, interval, to_date, from_date):
     """Fetches a single 30-day chunk from Upstox V3 API"""
-    # Important: Symbol contains '|' so it must be URL encoded
     encoded_symbol = urllib.parse.quote(symbol)
     url = f"{API_BASE_URL}/{encoded_symbol}/{unit}/{interval}/{to_date}/{from_date}"
     
@@ -62,8 +87,9 @@ async def backfill_data(symbol, unit, interval, start_date_str, end_date_str):
     start_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
     end_dt = datetime.strptime(end_date_str, '%Y-%m-%d')
     
-    # Wait for DB connection
+    # Wait for DB connection and ensure schema exists
     conn = get_qdb_conn()
+    ensure_schema(conn)  # <-- AUTO-CREATE TABLE
     cur = conn.cursor()
     
     async with aiohttp.ClientSession() as session:
@@ -71,7 +97,6 @@ async def backfill_data(symbol, unit, interval, start_date_str, end_date_str):
         total_saved = 0
 
         while current_to > start_dt:
-            # Calculate a 30-day window stepping backwards
             current_from = max(start_dt, current_to - timedelta(days=30))
             
             to_str = current_to.strftime('%Y-%m-%d')
@@ -81,11 +106,10 @@ async def backfill_data(symbol, unit, interval, start_date_str, end_date_str):
             
             candles = await fetch_candle_chunk(session, symbol, unit, interval, to_str, from_str)
             
-            if candles is None: break # Token error
+            if candles is None: 
+                break
 
             if candles:
-                # QuestDB Schema (Ref: PDF Page 8)
-                # Upstox order: [timestamp, open, high, low, close, volume, oi]
                 for c in candles:
                     cur.execute("""
                         INSERT INTO ohlc (timestamp, symbol, timeframe, open, high, low, close, volume)
@@ -96,10 +120,7 @@ async def backfill_data(symbol, unit, interval, start_date_str, end_date_str):
                 total_saved += len(candles)
                 print(f"   Stored {len(candles)} rows into QuestDB.")
             
-            # Move window further back in time
             current_to = current_from - timedelta(days=1)
-            
-            # Rate limit protection (Free Tier safety)
             await asyncio.sleep(1.5)
 
     cur.close()
@@ -107,13 +128,10 @@ async def backfill_data(symbol, unit, interval, start_date_str, end_date_str):
     print(f"✅ Backfill Complete! Total rows stored: {total_saved}")
 
 if __name__ == "__main__":
-    # --- TASK PARAMETERS ---
-    # Change these values depending on what you want to download
-    SYMBOL = "NSE_EQ|INE002A01018" # Reliance
-    START = "2024-11-01"
+    SYMBOL = "NSE_EQ|INE002A01018"
+    START = "2025-01-01"
     END = "2025-01-31"
     
-    # Check if Token exists
     if not ACCESS_TOKEN or len(ACCESS_TOKEN) < 10:
         print("❌ Error: UPSTOX_ACCESS_TOKEN is missing in .env")
     else:

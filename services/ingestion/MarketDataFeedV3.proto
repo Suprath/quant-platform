@@ -1,14 +1,25 @@
 syntax = "proto3";
+
 package com.upstox.marketdata.v3;
 
-message MarketDataFeed {
-    map<string, Feed> feeds = 1;
-    int64 currentTs = 2;
+message FeedResponse {
+    Type type = 1;              // Field 1 is the Type (08...)
+    map<string, Feed> feeds = 2; // Field 2 is the Data Map (12...)
+    int64 currentTs = 3;
+}
+
+enum Type {
+    initial_feed = 0;
+    live_feed = 1;
+    not_used = 2; // Value 2 seen in your logs
 }
 
 message Feed {
-    LTPC ltpc = 1;
-    Greeks greeks = 2; // <--- ADDED GREEKS FIELD
+    oneof feed_type {
+        LTPC ltpc = 1;
+        FullFeed ff = 2;
+    }
+    Greeks greeks = 3;
 }
 
 message LTPC {
@@ -19,7 +30,23 @@ message LTPC {
     int64 oi = 5;
 }
 
-message Greeks { // <--- ADDED MESSAGE SPEC
+message FullFeed {
+    LTPC ltpc = 1;
+    MarketDepth market_depth = 2;
+}
+
+message MarketDepth {
+    repeated Quote buy = 1;
+    repeated Quote sell = 2;
+}
+
+message Quote {
+    int32 quantity = 1;
+    double price = 2;
+    int32 orders = 3;
+}
+
+message Greeks {
     double iv = 1;
     double delta = 2;
     double theta = 3;
