@@ -92,6 +92,7 @@ services:
       - questdb
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
+      - PYTHONUNBUFFERED=1
     restart: always 
 
   feature_engine:
@@ -101,6 +102,7 @@ services:
       - kafka
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
+      - PYTHONUNBUFFERED=1
     restart: always
 
   strategy_runtime:
@@ -111,6 +113,7 @@ services:
       - postgres
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
+      - PYTHONUNBUFFERED=1
     restart: always
 
   api_gateway:
