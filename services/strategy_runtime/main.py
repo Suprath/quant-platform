@@ -23,12 +23,15 @@ load_dotenv()
 # Logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.DEBUG
 )
 logger = logging.getLogger("StrategyRuntime")
 
 # Config
 KAFKA_SERVER = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka_bus:9092')
+BACKTEST_MODE = os.getenv('BACKTEST_MODE', 'false').lower() == 'true'
+RUN_ID = os.getenv('RUN_ID', f'backtest_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
+
 DB_CONF = {
     "host": "postgres_metadata",
     "port": 5432,
@@ -75,16 +78,24 @@ def run_engine():
     conn.close()
 
     # 2. Components
-    exchange = PaperExchange(DB_CONF)
-    strategy = MomentumStrategy() # Default: Momentum V1
+    exchange = PaperExchange(DB_CONF, backtest_mode=BACKTEST_MODE, run_id=RUN_ID)
+    strategy = MomentumStrategy(strategy_id="MOMENTUM_V1", backtest_mode=BACKTEST_MODE) # Dual-mode: OBI-aware
 
-    # 3. Kafka Consumer
+    # Topics depend on mode
+    input_topic = f'market.enriched.ticks.{RUN_ID}' if BACKTEST_MODE else 'market.enriched.ticks'
+    group_id = f'strategy-engine-{RUN_ID}' if BACKTEST_MODE else 'strategy-engine-v1'
+    offset_reset = 'earliest' if BACKTEST_MODE else 'latest'
+
     consumer = Consumer({
         'bootstrap.servers': KAFKA_SERVER,
-        'group.id': 'strategy-engine-v1',
-        'auto.offset.reset': 'latest' # Real-time only
+        'group.id': group_id,
+        'auto.offset.reset': offset_reset
     })
-    consumer.subscribe(['market.enriched.ticks'])
+    consumer.subscribe([input_topic])
+    
+    if BACKTEST_MODE:
+        logger.info(f"🧪 BACKTEST MODE ACTIVE (Run ID: {RUN_ID})")
+        logger.info(f"📊 Results will be saved to: backtest_orders, backtest_portfolios")
     
     logger.info(f"🚀 Strategy Engine Started. Listening for Ticks...")
 
@@ -101,9 +112,19 @@ def run_engine():
                 tick = json.loads(msg.value().decode('utf-8'))
                 symbol = tick.get('symbol')
                 
+                if BACKTEST_MODE:
+                    print(f"DEBUG: Processing tick for {symbol}")
+                
                 # === INTRADAY COMPLIANCE: EOD SQUARE-OFF ===
-                now = datetime.now()
-                current_time = now.time()
+                if BACKTEST_MODE:
+                    # In backtest, use tick's timestamp (ms)
+                    tick_ts = tick.get('timestamp', 0) / 1000
+                    now_dt = datetime.fromtimestamp(tick_ts)
+                else:
+                    # In live, use actual system time
+                    now_dt = datetime.now()
+                
+                current_time = now_dt.time()
                 eod_cutoff = dt_time(15, 20)  # 3:20 PM IST
                 
                 # If after 3:20 PM, force close all positions

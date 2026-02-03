@@ -128,11 +128,19 @@ async def backfill_data(symbol, unit, interval, start_date_str, end_date_str):
     print(f"✅ Backfill Complete! Total rows stored: {total_saved}")
 
 if __name__ == "__main__":
-    SYMBOL = "NSE_EQ|INE002A01018"
-    START = "2025-01-01"
-    END = "2025-01-31"
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Download historical OHLC data from Upstox')
+    parser.add_argument('--symbol', type=str, required=True, help='Stock symbol (e.g., NSE_EQ|INE002A01018)')
+    parser.add_argument('--start', type=str, required=True, help='Start date (YYYY-MM-DD)')
+    parser.add_argument('--end', type=str, required=True, help='End date (YYYY-MM-DD)')
+    parser.add_argument('--interval', type=str, default='1', help='Candle interval (default: 1 minute)')
+    parser.add_argument('--unit', type=str, default='minutes', choices=['minutes', 'hours', 'days'], help='Time unit (default: minutes)')
+    
+    args = parser.parse_args()
     
     if not ACCESS_TOKEN or len(ACCESS_TOKEN) < 10:
         print("❌ Error: UPSTOX_ACCESS_TOKEN is missing in .env")
     else:
-        asyncio.run(backfill_data(SYMBOL, "minutes", "1", START, END))
+        print(f"📥 Downloading {args.symbol} from {args.start} to {args.end} ({args.interval} {args.unit})")
+        asyncio.run(backfill_data(args.symbol, args.unit, args.interval, args.start, args.end))

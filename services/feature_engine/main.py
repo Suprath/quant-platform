@@ -13,6 +13,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("QuantFeatureEngine")
 
 KAFKA_SERVER = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka_bus:9092')
+BACKTEST_MODE = os.getenv('BACKTEST_MODE', 'false').lower() == 'true'
+RUN_ID = os.getenv('RUN_ID', '')
 
 class QuantProcessor:
     """
@@ -123,13 +125,19 @@ def ensure_topics():
 def run():
     ensure_topics()
     
+    # Topics depend on mode
+    input_topic = f'market.equity.ticks.{RUN_ID}' if BACKTEST_MODE else 'market.equity.ticks'
+    output_topic = f'market.enriched.ticks.{RUN_ID}' if BACKTEST_MODE else 'market.enriched.ticks'
+    offset_reset = 'earliest' if BACKTEST_MODE else 'latest'
+    group_id = f'feature-engine-{RUN_ID}' if BACKTEST_MODE else 'feature-engine-microstructure-v1'
+
     # Consumer: Reads Raw Ticks
     c = Consumer({
         'bootstrap.servers': KAFKA_SERVER,
-        'group.id': 'feature-engine-microstructure-v1',
-        'auto.offset.reset': 'latest'
+        'group.id': group_id,
+        'auto.offset.reset': offset_reset
     })
-    c.subscribe(['market.equity.ticks'])
+    c.subscribe([input_topic])
 
     # Producer: Sends Enriched Data & Signals
     p = Producer({'bootstrap.servers': KAFKA_SERVER})
@@ -158,13 +166,12 @@ def run():
                 enriched_data = processors[sym].process(raw_tick)
                 logger.info(
                     f"ENRICHED {sym} | ltp={enriched_data['ltp']} "
-                    f"vwap={enriched_data['vwap']} obi={enriched_data['obi']} "
-                    f"agg={enriched_data['aggressor']}"
+                    f"vwap={enriched_data['vwap']} rsi={enriched_data['rsi']} obi={enriched_data['obi']}"
                 )
 
                 # --- 2. PUBLISH ENRICHED DATA (For Persistor) ---
                 # This goes to the new topic that your DB listens to
-                p.produce('market.enriched.ticks', key=sym, value=json.dumps(enriched_data))
+                p.produce(output_topic, key=sym, value=json.dumps(enriched_data))
 
                 # --- 3. GENERATE SIGNALS (For Strategy) ---
                 # Strategy: Momentum Breakout with Microstructure Confirmation

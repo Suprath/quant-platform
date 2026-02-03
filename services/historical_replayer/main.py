@@ -1,131 +1,174 @@
 import os
 import json
 import time
-import psycopg2
 import logging
+import psycopg2
+from datetime import datetime
 from confluent_kafka import Producer
 from dotenv import load_dotenv
+import argparse
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO)
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger("HistoricalReplayer")
 
 KAFKA_SERVER = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka_bus:9092')
 
 def get_qdb_conn():
-    return psycopg2.connect(
-        host="questdb_tsdb",
-        port=8812,
-        user="admin",
-        password="quest",
-        database="qdb"
-    )
+    """Connect to QuestDB"""
+    while True:
+        try:
+            conn = psycopg2.connect(
+                host="questdb_tsdb",
+                port=8812,
+                user="admin",
+                password="quest",
+                database="qdb"
+            )
+            logger.info("✅ Connected to QuestDB")
+            return conn
+        except Exception:
+            logger.warning("Waiting for QuestDB...")
+            time.sleep(2)
 
-def replay_ohlc_as_ticks(symbol="NSE_EQ|INE002A01018", speed_factor=100):
+def fetch_historical_data(symbol, start_date, end_date, timeframe='1m'):
     """
-    Replays OHLC data as simulated ticks.
-    Uses Close price as LTP, distributes volume across the minute.
+    Fetch OHLC candles from QuestDB for given timeframe
     """
-    producer = Producer({'bootstrap.servers': KAFKA_SERVER})
     conn = get_qdb_conn()
     cur = conn.cursor()
     
-    logger.info(f"🎬 Replaying OHLC data as ticks for {symbol}...")
+    query = """
+        SELECT timestamp, open, high, low, close, volume
+        FROM ohlc
+        WHERE symbol = %s
+          AND timeframe = %s
+          AND timestamp >= %s
+          AND timestamp < %s
+        ORDER BY timestamp ASC
+    """
     
-    # DEBUG: First check if table exists and what's in it
-    try:
-        cur.execute("SELECT count(*) FROM ohlc;")
-        total_rows = cur.fetchone()[0]
-        logger.info(f"📊 Total rows in ohlc table: {total_rows}")
+    cur.execute(query, (symbol, timeframe, start_date, end_date))
+    candles = cur.fetchall()
+    cur.close()
+    conn.close()
+    
+    logger.info(f"📊 Loaded {len(candles)} candles for {symbol}")
+    return candles
+
+def ohlc_to_ticks(timestamp, open_price, high, low, close, volume):
+    """
+    Convert single OHLC candle to tick-level events
+    Generates 4 ticks per candle: Open, High, Low, Close
+    """
+    ticks = []
+    
+    # Tick 1: Open
+    ticks.append({
+        "symbol": None,  # Will be set by caller
+        "ltp": open_price,
+        "v": int(volume * 0.25),  # Distribute volume across ticks
+        "timestamp": int(timestamp.timestamp() * 1000),
+        "depth": {}
+    })
+    
+    # Tick 2: High
+    ticks.append({
+        "symbol": None,
+        "ltp": high,
+        "v": int(volume * 0.25),
+        "timestamp": int(timestamp.timestamp() * 1000) + 15000,  # +15 seconds
+        "depth": {}
+    })
+    
+    # Tick 3: Low
+    ticks.append({
+        "symbol": None,
+        "ltp": low,
+        "v": int(volume * 0.25),
+        "timestamp": int(timestamp.timestamp() * 1000) + 30000,  # +30 seconds
+        "depth": {}
+    })
+    
+    # Tick 4: Close
+    ticks.append({
+        "symbol": None,
+        "ltp": close,
+        "v": int(volume * 0.25),
+        "timestamp": int(timestamp.timestamp() * 1000) + 45000,  # +45 seconds
+        "depth": {}
+    })
+    
+    return ticks
+
+def replay_data(symbol, start_date, end_date, speed_multiplier=1, timeframe='1m'):
+    """
+    Replay historical data through Kafka
+    speed_multiplier: 1 = real-time, 10 = 10x faster, 100 = 100x faster
+    """
+    candles = fetch_historical_data(symbol, start_date, end_date, timeframe)
+    
+    if not candles:
+        logger.error("❌ No data found for specified timeframe")
+        return
+    
+    producer = Producer({'bootstrap.servers': KAFKA_SERVER})
+    total_ticks = len(candles) * 4  # 4 ticks per candle
+    
+    # Isolation: Use unique topic for backtests
+    run_id = os.getenv('RUN_ID')
+    topic_name = f'market.equity.ticks.{run_id}' if run_id else 'market.equity.ticks'
+    
+    logger.info(f"🎬 Starting replay: {len(candles)} candles → {total_ticks} ticks")
+    logger.info(f"📡 Producing to topic: {topic_name}")
+    
+    start_time = time.time()
+    tick_count = 0
+    
+    for timestamp_obj, open_p, high, low, close, volume in candles:
+        ticks = ohlc_to_ticks(timestamp_obj, open_p, high, low, close, volume)
         
-        # DEBUG: Show available symbols
-        cur.execute("SELECT DISTINCT symbol FROM ohlc LIMIT 10;")
-        available_symbols = [row[0] for row in cur.fetchall()]
-        logger.info(f"📋 Available symbols in DB: {available_symbols}")
-    except Exception as e:
-        logger.error(f"Debug query failed: {e}")
-    
-    # Query OHLC table (not ticks table)
-    cur.execute("""
-        SELECT timestamp, symbol, open, high, low, close, volume 
-        FROM ohlc 
-        WHERE symbol = %s 
-        ORDER BY timestamp ASC 
-        LIMIT 1000;
-    """, (symbol,))
-    
-    rows = cur.fetchall()
-    
-    if not rows:
-        logger.error(f"❌ No data found for symbol: {symbol}")
-        
-        # FALLBACK: Try with LIKE query in case format is different
-        logger.info("🔍 Trying fuzzy search...")
-        cur.execute("""
-            SELECT symbol, count(*) as cnt 
-            FROM ohlc 
-            WHERE symbol LIKE %s 
-            GROUP BY symbol;
-        """, (f"%{symbol.split('|')[-1]}%",))
-        
-        fuzzy_results = cur.fetchall()
-        if fuzzy_results:
-            logger.info(f"🔍 Found similar symbols: {fuzzy_results}")
-            # Use the first similar symbol
-            symbol = fuzzy_results[0][0]
-            logger.info(f"🔄 Retrying with: {symbol}")
+        for tick in ticks:
+            tick['symbol'] = symbol
+            producer.produce(topic_name, key=symbol, value=json.dumps(tick))
+            tick_count += 1
             
-            cur.execute("""
-                SELECT timestamp, symbol, open, high, low, close, volume 
-                FROM ohlc 
-                WHERE symbol = %s 
-                ORDER BY timestamp ASC 
-                LIMIT 1000;
-            """, (symbol,))
-            rows = cur.fetchall()
-        else:
-            logger.error("❌ No data available at all")
-            return
-    
-    logger.info(f"✅ Found {len(rows)} OHLC candles to replay")
-    
-    prev_ts = None
-    for row in rows:
-        ts, sym, open_p, high_p, low_p, close_p, volume = row
+            if tick_count % 100 == 0:
+                producer.poll(0)
+                logger.info(f"📡 Replayed {tick_count}/{total_ticks} ticks ({tick_count/total_ticks*100:.1f}%)")
         
-        # Simulate 4 ticks per candle (O, H, L, C) at 15-second intervals
-        ticks = [
-            ("OPEN", open_p),
-            ("HIGH", high_p), 
-            ("LOW", low_p),
-            ("CLOSE", close_p)
-        ]
-        
-        for tick_type, price in ticks:
-            tick = {
-                "symbol": sym,
-                "ltp": float(price),
-                "v": int(volume // 4) if volume else 100,  # Handle None volume
-                "oi": 0,
-                "cp": float(close_p),
-                "timestamp": int(ts.timestamp() * 1000),
-                "type": tick_type,
-                "replay": True
-            }
-            
-            producer.produce('market.equity.ticks', key=sym, value=json.dumps(tick))
-            producer.poll(0)
-            
-            logger.info(f"🎬 REPLAY: {sym} @ {price} ({tick_type}) | Vol: {tick['v']}")
-            time.sleep(0.01 / speed_factor)
-        
-        if prev_ts:
-            delay = ((ts - prev_ts).total_seconds() / speed_factor)
-            time.sleep(min(delay, 0.1))
-        prev_ts = ts
+        # Speed control: sleep between candles
+        # 1 minute candle in real-time = 60 seconds
+        # At 100x speed = 0.6 seconds
+        sleep_time = (60.0 / speed_multiplier) / 4  # Divide by 4 since we send 4 ticks
+        time.sleep(sleep_time)
     
     producer.flush()
-    logger.info("✅ Replay complete")
+    elapsed = time.time() - start_time
+    
+    logger.info(f"✅ Replay Complete!")
+    logger.info(f"   📊 Total Ticks: {tick_count}")
+    logger.info(f"   ⏱️  Time Taken: {elapsed:.2f} seconds")
+    logger.info(f"   🚀 Effective Speed: {speed_multiplier}x")
 
 if __name__ == "__main__":
-    replay_ohlc_as_ticks("NSE_EQ|INE002A01018", speed_factor=100)
+    parser = argparse.ArgumentParser(description='Replay historical data for backtesting')
+    parser.add_argument('--symbol', type=str, required=True, help='Stock symbol (e.g., NSE_EQ|INE002A01018)')
+    parser.add_argument('--start', type=str, required=True, help='Start date (YYYY-MM-DD)')
+    parser.add_argument('--end', type=str, required=True, help='End date (YYYY-MM-DD)')
+    parser.add_argument('--speed', type=int, default=100, help='Replay speed multiplier (default: 100x)')
+    parser.add_argument('--timeframe', type=str, default='1m', help='Timeframe to replay (default: 1m)')
+    
+    args = parser.parse_args()
+    
+    logger.info(f"🔄 Historical Replayer Starting...")
+    logger.info(f"   Symbol: {args.symbol}")
+    logger.info(f"   Period: {args.start} to {args.end}")
+    logger.info(f"   Timeframe: {args.timeframe}")
+    logger.info(f"   Speed: {args.speed}x")
+    
+    replay_data(args.symbol, args.start, args.end, args.speed, args.timeframe)

@@ -4,8 +4,10 @@ import psycopg2
 logger = logging.getLogger("PaperExchange")
 
 class PaperExchange:
-    def __init__(self, db_config):
+    def __init__(self, db_config, backtest_mode=False, run_id=None):
         self.db_config = db_config
+        self.backtest_mode = backtest_mode
+        self.run_id = run_id
         self.user_id = 'default_user' # Single user for now
 
     def _get_conn(self):
@@ -40,10 +42,25 @@ class PaperExchange:
         conn = self._get_conn()
         cur = conn.cursor()
 
+        # Table names depend on mode
+        orders_table = "backtest_orders" if self.backtest_mode else "executed_orders"
+        portfolios_table = "backtest_portfolios" if self.backtest_mode else "portfolios"
+        
         try:
             # 1. Get Portfolio
-            cur.execute("SELECT id, balance FROM portfolios WHERE user_id = %s", (self.user_id,))
+            if self.backtest_mode:
+                cur.execute(f"SELECT id, balance FROM {portfolios_table} WHERE user_id = %s AND run_id = %s", (self.user_id, self.run_id))
+            else:
+                cur.execute(f"SELECT id, balance FROM {portfolios_table} WHERE user_id = %s", (self.user_id,))
+            
             portfolio = cur.fetchone()
+            
+            # If backtest mode and no portfolio, auto-create one with default balance
+            if not portfolio and self.backtest_mode:
+                 cur.execute(f"INSERT INTO {portfolios_table} (user_id, run_id, balance) VALUES (%s, %s, 20000) RETURNING id, balance", (self.user_id, self.run_id))
+                 portfolio = cur.fetchone()
+                 conn.commit()
+            
             if not portfolio:
                 logger.error("No portfolio found!")
                 return False
@@ -59,9 +76,10 @@ class PaperExchange:
                 if balance >= cost:
                     # Update Cash
                     new_balance = balance - cost
-                    cur.execute("UPDATE portfolios SET balance = %s WHERE id = %s", (new_balance, pid))
+                    cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
                     
                     # Update Position (Upsert)
+                    # NOTE: We keep using the 'positions' table but this shouldn't conflict with live as it's separate container/DB user
                     cur.execute("""
                         INSERT INTO positions (portfolio_id, symbol, quantity, avg_price)
                         VALUES (%s, %s, %s, %s)
@@ -92,7 +110,7 @@ class PaperExchange:
                     
                     # Update Cash
                     new_balance = balance + revenue
-                    cur.execute("UPDATE portfolios SET balance = %s WHERE id = %s", (new_balance, pid))
+                    cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
 
                     # Update Position
                     new_qty = current_qty - quantity
@@ -104,10 +122,16 @@ class PaperExchange:
                     logger.info(f"🔴 SOLD {quantity} {symbol} @ {price} | PnL: {pnl:.2f}")
 
                     # Log PnL to trade history specifically
-                    cur.execute("""
-                        INSERT INTO executed_orders (strategy_id, symbol, transaction_type, quantity, price, pnl)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                    """, (strategy_id, symbol, action, quantity, price, pnl))
+                    if self.backtest_mode:
+                        cur.execute("""
+                            INSERT INTO backtest_orders (run_id, symbol, transaction_type, quantity, price, pnl)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                        """, (self.run_id, symbol, action, quantity, price, pnl))
+                    else:
+                        cur.execute("""
+                            INSERT INTO executed_orders (strategy_id, symbol, transaction_type, quantity, price, pnl)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                        """, (strategy_id, symbol, action, quantity, price, pnl))
                     
                     conn.commit()
                     return True
@@ -115,12 +139,18 @@ class PaperExchange:
                     logger.warning(f"❌ No Position to Sell for {symbol}")
                     return False
 
-            # Log Trade (General)
+            # Log Trade (General - BUY)
             if action == 'BUY':
-                cur.execute("""
-                    INSERT INTO executed_orders (strategy_id, symbol, transaction_type, quantity, price)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (strategy_id, symbol, action, quantity, price))
+                if self.backtest_mode:
+                    cur.execute("""
+                        INSERT INTO backtest_orders (run_id, symbol, transaction_type, quantity, price)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (self.run_id, symbol, action, quantity, price))
+                else:
+                    cur.execute("""
+                        INSERT INTO executed_orders (strategy_id, symbol, transaction_type, quantity, price)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (strategy_id, symbol, action, quantity, price))
 
             conn.commit()
             return True
