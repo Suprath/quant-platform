@@ -78,17 +78,19 @@ echo "STEP 3: Starting Isolated Backtest Pipeline"
 echo "======================================================================"
 
 # Clean up existing test containers
+echo "🧹 Cleaning up old containers..."
 docker rm -f strategy_test feature_engine_test 2>/dev/null || true
+docker container prune -f --filter "label=com.docker.compose.service=historical_replayer"
 
 echo "🚀 Starting Feature Engine (Backtest Mode)..."
-docker compose run -d \
+docker compose run -d --rm \
     -e BACKTEST_MODE=true \
     -e RUN_ID="$RUN_ID" \
     --name feature_engine_test \
     feature_engine python main.py
 
 echo "🚀 Starting Strategy Runtime (Backtest Mode)..."
-docker compose run -d \
+docker compose run -d --rm \
     -e BACKTEST_MODE=true \
     -e RUN_ID="$RUN_ID" \
     --name strategy_test \

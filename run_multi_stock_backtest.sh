@@ -29,6 +29,12 @@ STOCKS=(
 
 cd infra
 
+echo "STEP 0: Cleaning up old test containers"
+echo "======================================================================"
+docker rm -f strategy_backtest feature_engine_backtest 2>/dev/null || true
+docker container prune -f --filter "label=com.docker.compose.service=historical_replayer"
+
+echo ""
 echo "======================================================================"
 echo "STEP 1: Downloading Data for Top 5 Stocks"
 echo "======================================================================"
@@ -92,14 +98,14 @@ echo ""
 
 # Start isolated pipeline
 echo "🚀 Starting Feature Engine (Backtest Mode)..."
-docker compose run -d \
+docker compose run -d --rm \
     -e BACKTEST_MODE=true \
     -e RUN_ID="$RUN_ID" \
     --name feature_engine_backtest \
     feature_engine python main.py > /dev/null 2>&1
 
 echo "🚀 Starting Strategy Runtime (Backtest Mode)..."
-docker compose run -d \
+docker compose run -d --rm \
     -e BACKTEST_MODE=true \
     -e RUN_ID="$RUN_ID" \
     --name strategy_backtest \
@@ -114,7 +120,7 @@ for stock_entry in "${STOCKS[@]}"; do
     IFS=':' read -r symbol name <<< "$stock_entry"
     echo "  → $name"
     
-    docker compose run -d \
+    docker compose run -d --rm \
         -e RUN_ID="$RUN_ID" \
         historical_replayer python main.py \
         --symbol "$symbol" \
