@@ -7,8 +7,9 @@ load_dotenv()
 
 def check_real_price():
     # Symbols to check
-    symbols = "NSE_EQ|INE002A01018,NSE_INDEX|Nifty 50"
-    url = f"https://api.upstox.com/v2/market-quote/quotes?symbol={symbols}"
+    instrument_key = "NSE_EQ|RELIANCE" 
+    # Validating if the key exists and returns data via REST API
+    url = f"https://api.upstox.com/v2/market-quote/quotes?instrument_key={instrument_key}"
     
     token = os.getenv('UPSTOX_ACCESS_TOKEN')
     if not token:
@@ -20,7 +21,7 @@ def check_real_price():
     req.add_header('Accept', 'application/json')
     req.add_header('Authorization', f"Bearer {token}")
 
-    print(f"Querying Upstox API for {symbols}...")
+    print(f"Querying Upstox API for {instrument_key}...")
     
     try:
         with urllib.request.urlopen(req) as response:

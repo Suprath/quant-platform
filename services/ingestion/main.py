@@ -38,7 +38,12 @@ async def connect_upstox_v3():
     }
 
     # Tracking
-    active_subs = {"NSE_INDEX|Nifty 50", "NSE_INDEX|India VIX"}
+    # Unified List: Indices and Equities both on LTPC for maximum compatibility
+    active_subs = {
+        "NSE_INDEX|Nifty 50", 
+        "NSE_INDEX|India VIX", 
+        "NSE_EQ|INE002A01018" # Reliance ISIN
+    }
 
     try:
         # Websockets connect
@@ -50,11 +55,13 @@ async def connect_upstox_v3():
         async with ws_conn as websocket:
             logger.info("🚀 SUCCESS: Connected to Upstox V3")
 
-            # Initial Subscription
-            await websocket.send(json.dumps({
-                "guid": "init", "method": "sub",
-                "data": {"mode": "full", "instrumentKeys": list(active_subs)}
-            }).encode('utf-8'))
+            # 1. Subscribe All (LTPC)
+            msg = json.dumps({
+                "guid": "sub-all", "method": "sub",
+                "data": {"mode": "ltpc", "instrumentKeys": list(active_subs)}
+            })
+            logger.info(f"Subscribing ALL (LTPC): {list(active_subs)}")
+            await websocket.send(msg.encode('utf-8'))
             
             while True:
                 # 1. Scanner Logic
@@ -63,10 +70,11 @@ async def connect_upstox_v3():
                     new_picks = [p.replace(':', '|') for p in json.loads(msg.value())]
                     to_sub = [p for p in new_picks if p not in active_subs]
                     if to_sub:
-                        logger.info(f"🔥 Subscribing: {to_sub}")
+                        # Default new picks to LTPC as well for safety
+                        logger.info(f"🔥 Subscribing Dynamic (LTPC): {to_sub}")
                         await websocket.send(json.dumps({
                             "guid": "dyn", "method": "sub",
-                            "data": {"mode": "full", "instrumentKeys": to_sub}
+                            "data": {"mode": "ltpc", "instrumentKeys": to_sub}
                         }).encode('utf-8'))
                         active_subs.update(to_sub)
 
@@ -96,15 +104,12 @@ async def connect_upstox_v3():
                                     "timestamp": int(time.time() * 1000)
                                 }
                                 
-                                # FIXED: Better market closed detection
-                                # When market is closed, Upstox sends ltp=0.0 but valid close price
                                 if tick['ltp'] == 0.0:
-                                    logger.info(f"💤 MARKET CLOSED: {key} | Close: {tick['cp']} | OI: {tick['oi']}")
-                                    # Optionally: Still publish to Kafka so other services know market is closed
-                                    producer.produce('market.equity.ticks', key=key, value=json.dumps(tick))
+                                    logger.info(f"💤 MARKET CLOSED/NO DATA: {key} | Close: {tick['cp']} | Content: {feed}")
                                 else:
                                     logger.info(f"📈 TICK: {key} @ {tick['ltp']} | Vol: {tick['v']}")
-                                    producer.produce('market.equity.ticks', key=key, value=json.dumps(tick))
+                                
+                                producer.produce('market.equity.ticks', key=key, value=json.dumps(tick))
                         
                         producer.poll(0)
 
