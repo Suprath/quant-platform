@@ -28,34 +28,47 @@ class QuantProcessor:
         self.cum_pv = 0.0 # Cumulative (Price * Volume)
         self.cum_v = 0    # Cumulative Volume
         
-        # SMA State
-        self.prices = []
-        self.window_size = 20
+        # Indicator State
+        self.history = [] # List of {'close': float} for RSI
+        self.window_size = 50 # Keep enough for RSI-14
         
         self.last_signal = None
 
+    def calculate_rsi(self, prices, period=14):
+        if len(prices) < period + 1:
+            return 50.0 # Neutral default
+        
+        import pandas as pd
+        series = pd.Series(prices)
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return round(rsi.iloc[-1], 2)
+
     def process(self, tick):
         ltp = tick.get('ltp', 0.0)
-        v = tick.get('v', 0) # This is volume traded in this tick/snapshot
-        depth = tick.get('depth', {}) # Expecting {bids: [], asks: []} if available
+        v = tick.get('v', 0)
+        depth = tick.get('depth', {})
 
         # 1. Update Session High/Low
         if ltp > self.day_high: self.day_high = ltp
         if self.day_low == float('inf') or ltp < self.day_low: self.day_low = ltp
 
-        # 2. Update VWAP (Intraday Anchor)
-        # Note: 'v' from Upstox is usually cumulative for the day or snapshot volume. 
-        # For true tick-by-tick VWAP, we ideally need incremental volume. 
-        # Here we approximate using the stream updates.
+        # 2. Update VWAP
         self.cum_pv += (ltp * v)
         self.cum_v += v
         vwap = round(self.cum_pv / self.cum_v, 2) if self.cum_v > 0 else ltp
 
-        # 3. Update SMA Window
-        self.prices.append(ltp)
-        if len(self.prices) > self.window_size:
-            self.prices.pop(0)
-        sma = sum(self.prices) / len(self.prices)
+        # 3. Update History & Calculate RSI
+        self.history.append(ltp)
+        if len(self.history) > self.window_size:
+            self.history.pop(0)
+        
+        rsi = self.calculate_rsi(self.history)
+        sma = sum(self.history) / len(self.history)
 
         # 4. Microstructure: Spread & OBI
         spread = 0.0
@@ -66,28 +79,24 @@ class QuantProcessor:
         if depth:
             bids = depth.get('buy', [])
             asks = depth.get('sell', [])
-            
-            # Calculate OBI
             total_bid_qty = sum(b['quantity'] for b in bids)
             total_ask_qty = sum(a['quantity'] for a in asks)
+            
             if (total_bid_qty + total_ask_qty) > 0:
                 obi = round((total_bid_qty - total_ask_qty) / (total_bid_qty + total_ask_qty), 4)
 
-            # Calculate Spread
             if bids and asks:
                 best_bid = bids[0]['price']
                 best_ask = asks[0]['price']
                 spread = round(best_ask - best_bid, 2)
 
-        # 5. Microstructure: Aggressor Side (The "Hidden" metric)
-        # Did the trade happen at the Ask (Buy Aggressor) or Bid (Sell Aggressor)?
+        # 5. Microstructure: Aggressor Side
         aggressor = "NEUTRAL"
         if best_ask > 0 and ltp >= best_ask:
-            aggressor = "BUY"  # Buyers are sweeping the book
+            aggressor = "BUY"
         elif best_bid > 0 and ltp <= best_bid:
-            aggressor = "SELL" # Sellers are dumping
+            aggressor = "SELL"
 
-        # Return the Enriched Data Packet
         return {
             "symbol": self.symbol,
             "ltp": ltp,
@@ -96,6 +105,7 @@ class QuantProcessor:
             "day_low": self.day_low,
             "vwap": vwap,
             "sma": round(sma, 2),
+            "rsi": rsi,
             "spread": spread,
             "obi": obi,
             "aggressor": aggressor,
