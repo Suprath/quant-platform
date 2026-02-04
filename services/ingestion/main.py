@@ -38,12 +38,17 @@ async def connect_upstox_v3():
     }
 
     # Tracking
-    # Unified List: Indices and Equities both on LTPC for maximum compatibility
+    # High-volume equities - Using ISINs which are often more reliable in V3
     active_subs = {
-        "NSE_INDEX|Nifty 50", 
-        "NSE_INDEX|India VIX", 
-        "NSE_EQ|INE002A01018" # Reliance ISIN
+        "NSE_EQ|INE002A01018", # RELIANCE
+        "NSE_EQ|INE062A01020", # SBIN
+        "NSE_INDEX|Nifty 50"
     }
+    debug_count = 0
+    
+    # State Store for Incremental Updates
+    # format: { symbol: { "ltp": 0.0, "v": 0, "oi": 0, "cp": 0.0, "depth": {"buy": [], "sell": []} } }
+    symbol_states = {}
 
     try:
         # Websockets connect
@@ -55,26 +60,37 @@ async def connect_upstox_v3():
         async with ws_conn as websocket:
             logger.info("🚀 SUCCESS: Connected to Upstox V3")
 
-            # 1. Subscribe All (LTPC)
-            msg = json.dumps({
-                "guid": "sub-all", "method": "sub",
-                "data": {"mode": "ltpc", "instrumentKeys": list(active_subs)}
-            })
-            logger.info(f"Subscribing ALL (LTPC): {list(active_subs)}")
-            await websocket.send(msg.encode('utf-8'))
+            # 1. Subscribe Indices (LTPC-only)
+            indices = [k for k in active_subs if "INDEX" in k]
+            if indices:
+                msg = json.dumps({
+                    "guid": "sub-indices", "method": "sub",
+                    "data": {"mode": "ltpc", "instrumentKeys": indices}
+                })
+                logger.info(f"Subscribing Indices (LTPC): {indices}")
+                await websocket.send(msg.encode('utf-8'))
+
+            # 2. Subscribe Equities (FULL mode for depth)
+            equities = [k for k in active_subs if "INDEX" not in k]
+            if equities:
+                msg = json.dumps({
+                    "guid": "sub-equities", "method": "sub",
+                    "data": {"mode": "full", "instrumentKeys": equities}
+                })
+                logger.info(f"Subscribing Equities (FULL): {equities}")
+                await websocket.send(msg.encode('utf-8'))
             
             while True:
                 # 1. Scanner Logic
-                msg = scanner_consumer.poll(0.001)
+                msg = scanner_consumer.poll(0.1)
                 if msg and not msg.error():
                     new_picks = [p.replace(':', '|') for p in json.loads(msg.value())]
                     to_sub = [p for p in new_picks if p not in active_subs]
                     if to_sub:
-                        # Default new picks to LTPC as well for safety
-                        logger.info(f"🔥 Subscribing Dynamic (LTPC): {to_sub}")
+                        logger.info(f"🔥 Subscribing Dynamic (FULL): {to_sub}")
                         await websocket.send(json.dumps({
                             "guid": "dyn", "method": "sub",
-                            "data": {"mode": "ltpc", "instrumentKeys": to_sub}
+                            "data": {"mode": "full", "instrumentKeys": to_sub}
                         }).encode('utf-8'))
                         active_subs.update(to_sub)
 
@@ -86,30 +102,82 @@ async def connect_upstox_v3():
                         res = pb.FeedResponse()
                         res.ParseFromString(raw_msg)
                         
+                        if not res.feeds:
+                            continue
+
                         for key, feed in res.feeds.items():
-                            # Logic: Check FF then LTPC
-                            ltpc = None
-                            if feed.HasField('ff') and feed.ff.HasField('ltpc'):
-                                ltpc = feed.ff.ltpc
-                            elif feed.HasField('ltpc'):
-                                ltpc = feed.ltpc
-                            
-                            if ltpc:
-                                tick = {
-                                    "symbol": key,
-                                    "ltp": ltpc.ltp,
-                                    "v": ltpc.ltq,
-                                    "oi": ltpc.oi, 
-                                    "cp": ltpc.cp,
-                                    "timestamp": int(time.time() * 1000)
+                            # Initialize state if not present
+                            if key not in symbol_states:
+                                symbol_states[key] = {
+                                    "ltp": 0.0, "v": 0, "oi": 0, "cp": 0.0, 
+                                    "depth": {"buy": [], "sell": []}
                                 }
-                                
-                                if tick['ltp'] == 0.0:
-                                    logger.info(f"💤 MARKET CLOSED/NO DATA: {key} | Close: {tick['cp']} | Content: {feed}")
-                                else:
-                                    logger.info(f"📈 TICK: {key} @ {tick['ltp']} | Vol: {tick['v']}")
-                                
-                                producer.produce('market.equity.ticks', key=key, value=json.dumps(tick))
+                            
+                            state = symbol_states[key]
+                            updated = False
+                            
+                            # Official V3 uses nested oneof unions
+                            # FeedUnion has (ltpc, fullFeed, firstLevelWithGreeks)
+                            # FullFeedUnion has (marketFF, indexFF)
+                            feed_type = feed.WhichOneof('FeedUnion')
+                            ltpc_obj = None
+                            quotes = []
+
+                            if feed_type == 'fullFeed':
+                                ff_type = feed.fullFeed.WhichOneof('FullFeedUnion')
+                                if ff_type == 'marketFF':
+                                    mff = feed.fullFeed.marketFF
+                                    if mff.HasField('ltpc'): ltpc_obj = mff.ltpc
+                                    if mff.HasField('marketLevel'):
+                                        quotes = mff.marketLevel.bidAskQuote
+                                elif ff_type == 'indexFF':
+                                    iff = feed.fullFeed.indexFF
+                                    if iff.HasField('ltpc'): ltpc_obj = iff.ltpc
+                            elif feed_type == 'ltpc':
+                                ltpc_obj = feed.ltpc
+                            
+                            # DEBUG: Log raw LTPC structure for equities and indices
+                            if ("NSE_EQ" in key or "Nifty 50" in key) and debug_count < 50:
+                                ltpc_data = str(ltpc_obj).replace('\n', ' ') if ltpc_obj else "NONE"
+                                logger.info(f"🔍 FEED {key} | Type: {feed_type} | LTPC: {ltpc_data} | Quotes: {len(quotes)}")
+
+                            # 1. Update LTP/LTPC
+                            if ltpc_obj:
+                                if ltpc_obj.ltp > 0:
+                                    state['ltp'] = ltpc_obj.ltp
+                                    updated = True
+                                if ltpc_obj.ltq > 0: state['v'] = ltpc_obj.ltq
+                                if ltpc_obj.cp > 0: state['cp'] = ltpc_obj.cp
+
+                            # 2. Update Depth (Official: bidAskQuote contains both buy/sell info)
+                            if quotes:
+                                state['depth']['buy'] = [{"price": q.bidP, "quantity": q.bidQ} for q in quotes if q.bidP > 0]
+                                state['depth']['sell'] = [{"price": q.askP, "quantity": q.askQ} for q in quotes if q.askP > 0]
+                                updated = True
+                            
+                            # Produce if updated and we have valid price/depth
+                            if updated:
+                                current_ltp = state['ltp']
+                                # Backup calculate LTP from mid-price if still 0
+                                if current_ltp == 0.0 and state['depth']['buy'] and state['depth']['sell']:
+                                    current_ltp = round((state['depth']['buy'][0]['price'] + state['depth']['sell'][0]['price']) / 2, 2)
+
+                                if current_ltp > 0 or state['depth']['buy']:
+                                    tick = {
+                                        "symbol": key,
+                                        "ltp": current_ltp,
+                                        "v": state['v'],
+                                        "oi": state['oi'], 
+                                        "cp": state['cp'],
+                                        "depth": state['depth'],
+                                        "timestamp": int(time.time() * 1000)
+                                    }
+                                    
+                                    if debug_count % 100 == 0:
+                                        logger.info(f"📈 TICK {key}: {tick['ltp']} | Depth: {len(tick['depth']['buy'])} levels")
+                                    
+                                    debug_count += 1
+                                    producer.produce('market.equity.ticks', key=key, value=json.dumps(tick))
                         
                         producer.poll(0)
 
