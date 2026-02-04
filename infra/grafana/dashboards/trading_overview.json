@@ -20,6 +20,7 @@
     "graphTooltip": 0,
     "links": [],
     "liveNow": false,
+    "refresh": "10s",
     "panels": [
         {
             "datasource": {
@@ -75,10 +76,70 @@
                     },
                     "format": "table",
                     "refId": "A",
-                    "rawSql": "SELECT balance + equity FROM portfolios WHERE user_id = 'default_user'"
+                    "rawSql": "SELECT balance + equity as total_value FROM portfolios WHERE user_id = 'default_user'"
                 }
             ],
             "title": "Total Portfolio Value",
+            "type": "stat"
+        },
+        {
+            "datasource": {
+                "type": "postgres",
+                "uid": "trading-data-source"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "thresholds"
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            }
+                        ]
+                    },
+                    "unit": "currencyINR"
+                },
+                "overrides": []
+            },
+            "gridPos": {
+                "h": 4,
+                "w": 6,
+                "x": 6,
+                "y": 0
+            },
+            "id": 4,
+            "options": {
+                "colorMode": "value",
+                "graphMode": "area",
+                "justifyMode": "center",
+                "orientation": "auto",
+                "reduceOptions": {
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": "",
+                    "values": false
+                },
+                "textMode": "auto"
+            },
+            "pluginVersion": "10.0.0",
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "trading-data-source"
+                    },
+                    "format": "table",
+                    "refId": "A",
+                    "rawSql": "SELECT COALESCE(SUM(pnl), 0) as daily_pnl FROM executed_orders WHERE (timestamp AT TIME ZONE 'UTC') >= CURRENT_DATE"
+                }
+            ],
+            "title": "Today's Realized P&L",
             "type": "stat"
         },
         {
@@ -163,7 +224,7 @@
                         "uid": "trading-data-source"
                     },
                     "format": "time_series",
-                    "rawSql": "SELECT timestamp as time, SUM(pnl) OVER (ORDER BY timestamp) as cumulative_pnl FROM executed_orders ORDER BY timestamp ASC",
+                    "rawSql": "SELECT timestamp AT TIME ZONE 'UTC' as time, SUM(pnl) OVER (ORDER BY timestamp) as cumulative_pnl FROM executed_orders WHERE $__timeFilter(timestamp AT TIME ZONE 'UTC') ORDER BY timestamp ASC",
                     "refId": "A"
                 }
             ],
@@ -222,11 +283,62 @@
                         "uid": "trading-data-source"
                     },
                     "format": "table",
-                    "rawSql": "SELECT timestamp, symbol, transaction_type, quantity, price, pnl FROM executed_orders ORDER BY timestamp DESC",
+                    "rawSql": "SELECT timestamp AT TIME ZONE 'UTC' as timestamp, symbol, transaction_type, quantity, price, pnl FROM executed_orders WHERE $__timeFilter(timestamp AT TIME ZONE 'UTC') ORDER BY timestamp DESC",
                     "refId": "A"
                 }
             ],
             "title": "Recent Trades",
+            "type": "table"
+        },
+        {
+            "datasource": {
+                "type": "postgres",
+                "uid": "trading-data-source"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "custom": {
+                        "align": "auto",
+                        "cellOptions": {
+                            "type": "auto"
+                        },
+                        "inspect": false
+                    },
+                    "mappings": [],
+                    "unit": "currencyINR"
+                },
+                "overrides": []
+            },
+            "gridPos": {
+                "h": 8,
+                "w": 24,
+                "x": 0,
+                "y": 20
+            },
+            "id": 5,
+            "options": {
+                "footer": {
+                    "fields": "",
+                    "reducer": [
+                        "sum"
+                    ],
+                    "show": false
+                },
+                "showHeader": true
+            },
+            "pluginVersion": "10.0.0",
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "trading-data-source"
+                    },
+                    "format": "table",
+                    "rawSql": "SELECT symbol, quantity, avg_price, (quantity * avg_price) as position_value FROM positions WHERE portfolio_id = 1",
+                    "refId": "A"
+                }
+            ],
+            "title": "Current Open Positions",
             "type": "table"
         }
     ],
@@ -241,7 +353,7 @@
         "to": "now"
     },
     "timepicker": {},
-    "timezone": "",
+    "timezone": "browser",
     "title": "Trading Performance Overview",
     "uid": "trading_overview",
     "version": 1,

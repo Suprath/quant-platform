@@ -83,7 +83,7 @@ def run_engine():
 
     # Topics depend on mode
     input_topic = f'market.enriched.ticks.{RUN_ID}' if BACKTEST_MODE else 'market.enriched.ticks'
-    group_id = f'strategy-engine-{RUN_ID}' if BACKTEST_MODE else 'strategy-engine-v1'
+    group_id = f'strategy-engine-{RUN_ID}' if BACKTEST_MODE else 'strategy-engine-v3'
     offset_reset = 'earliest' if BACKTEST_MODE else 'latest'
 
     consumer = Consumer({
@@ -97,12 +97,20 @@ def run_engine():
         logger.info(f"🧪 BACKTEST MODE ACTIVE (Run ID: {RUN_ID})")
         logger.info(f"📊 Results will be saved to: backtest_orders, backtest_portfolios")
     
-    logger.info(f"🚀 Strategy Engine Started. Listening for Ticks...")
+    logger.info(f"🚀 Strategy Engine Started. Listening for Ticks on {input_topic} (Group: {group_id})...")
 
+    last_heartbeat = 0
+    conn = get_db_connection()
     try:
         while True:
-            msg = consumer.poll(0.1)
+            # Heartbeat every 30s
+            if time.time() - last_heartbeat > 30:
+                logger.info("💓 Strategy Runtime Heartbeat: Polling Kafka...")
+                last_heartbeat = time.time()
+
+            msg = consumer.poll(1.0)
             if msg is None: continue
+            
             if msg.error():
                 logger.error(f"Kafka Error: {msg.error()}")
                 continue
@@ -112,9 +120,15 @@ def run_engine():
                 tick = json.loads(msg.value().decode('utf-8'))
                 symbol = tick.get('symbol')
                 
-                if BACKTEST_MODE:
-                    print(f"DEBUG: Processing tick for {symbol}")
-                
+                # Check for stale connection
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT 1")
+                    cur.close()
+                except:
+                    logger.warning("Reconnecting to database...")
+                    conn = get_db_connection()
+
                 # === INTRADAY COMPLIANCE: EOD SQUARE-OFF ===
                 if BACKTEST_MODE:
                     # In backtest, use tick's timestamp (ms)
@@ -129,12 +143,10 @@ def run_engine():
                 
                 # If after 3:20 PM, force close all positions
                 if current_time >= eod_cutoff:
-                    conn = exchange._get_conn()
                     cur = conn.cursor()
                     cur.execute("SELECT symbol, quantity FROM positions WHERE quantity > 0")
                     open_positions = cur.fetchall()
                     cur.close()
-                    conn.close()
                     
                     if open_positions:
                         logger.warning(f"⏰ EOD Cutoff Reached. Squaring off {len(open_positions)} positions...")
@@ -149,17 +161,14 @@ def run_engine():
                             logger.info(f"🔒 Squared off {pos_symbol}")
                     continue  # Skip normal strategy after EOD
                 
-                # Helper: Get current position state (from DB for robustness)
-                # In high-frequency, we would cache this in memory.
+                # Get current position state
                 current_qty = 0
-                conn = exchange._get_conn()
                 cur = conn.cursor()
                 cur.execute("SELECT quantity FROM positions WHERE symbol = %s", (symbol,))
                 res = cur.fetchone()
                 if res:
                     current_qty = res[0]
                 cur.close()
-                conn.close()
 
                 # Run Strategy
                 signal = strategy.on_tick(tick, current_qty)
@@ -177,10 +186,11 @@ def run_engine():
                 continue
             except Exception as e:
                 logger.error(f"Engine Loop Error: {e}")
-
+                # Don't crash the whole engine on a single tick error
     except KeyboardInterrupt:
         logger.info("Strategy Engine stopping...")
     finally:
+        if conn: conn.close()
         consumer.close()
 
 if __name__ == "__main__":

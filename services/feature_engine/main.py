@@ -210,6 +210,9 @@ def run():
                     logger.info(f"🚨 SIGNAL: {signal} {sym} | OBI: {enriched_data['obi']} | Agg: {enriched_data['aggressor']}")
 
                 p.poll(0)
+                # Flush every 10 messages for low latency but batch efficiency
+                if len(processors) % 10 == 0:
+                    p.flush(0)
 
             except Exception as e:
                 logger.error(f"Processing Error: {e}")
