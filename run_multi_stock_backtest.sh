@@ -7,14 +7,15 @@ echo "  MULTI-STOCK BACKTEST - TOP 5 YESTERDAY'S PERFORMERS"
 echo "======================================================================"
 
 # Configuration
-START_DATE="2025-01-01"
-END_DATE="2025-01-02"
+YESTERDAY="2026-02-05"
+START_DATE="2026-02-05"
+END_DATE="2026-02-06"
 RUN_ID="multi_test_$(date +%s)"
 
 echo ""
 echo "📅 Backtest Date: $YESTERDAY"
 echo "💰 Capital: ₹20,000"
-echo "📊 Strategy: Multi-Factor Momentum (VWAP + RSI) - Backtest Mode"
+echo "📊 Strategy: Enhanced ORB (15m) - Backtest Mode"
 echo "🔖 Run ID: $RUN_ID"
 echo ""
 
@@ -24,7 +25,7 @@ STOCKS=(
     "NSE_EQ|INE040A01034:HDFC Bank"
     "NSE_EQ|INE467B01029:Tata Steel"
     "NSE_EQ|INE019A01038:ITC"
-    "NSE_EQ|INE028A01039:Bajaj Auto"
+    "NSE_EQ|INE062A01020:SBIN"
 )
 
 cd infra
@@ -64,6 +65,7 @@ docker compose exec -T postgres psql -U admin -d quant_platform <<EOF
 -- DROP existing tables for the run to ensure clean state
 DROP TABLE IF EXISTS backtest_portfolios CASCADE;
 DROP TABLE IF EXISTS backtest_orders CASCADE;
+DROP TABLE IF EXISTS backtest_positions CASCADE;
 
 CREATE TABLE backtest_portfolios (
     id SERIAL PRIMARY KEY,
@@ -83,6 +85,16 @@ CREATE TABLE backtest_orders (
     quantity INT NOT NULL,
     price DECIMAL(10, 2) NOT NULL,
     pnl DECIMAL(10, 2) DEFAULT 0.0
+);
+
+CREATE TABLE backtest_positions (
+    id SERIAL PRIMARY KEY,
+    portfolio_id INT NOT NULL,
+    symbol VARCHAR(50) NOT NULL,
+    quantity INT NOT NULL DEFAULT 0,
+    avg_price DECIMAL(10, 2) NOT NULL,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(portfolio_id, symbol)
 );
 EOF
 
@@ -132,7 +144,7 @@ done
 
 echo ""
 echo "⏳ Waiting for replays to complete (~5 minutes)..."
-sleep 300  # Wait for replays (1500 ticks @ 100x = 225s + buffer)
+sleep 90  # Wait for replays (1500 ticks @ 100x = 225s + buffer)
 
 # Cleanup
 docker stop strategy_backtest feature_engine_backtest 2>/dev/null || true
@@ -156,12 +168,23 @@ SELECT
     ROUND(SUM(pnl), 2) as "Total P&L (₹)",
     COUNT(*) FILTER (WHERE transaction_type = 'SELL' AND pnl > 0) as "Wins",
     COUNT(*) FILTER (WHERE transaction_type = 'SELL' AND pnl < 0) as "Losses",
+    ROUND(AVG(pnl) FILTER (WHERE transaction_type = 'SELL' AND pnl > 0), 2) as "Avg Win (₹)",
+    ROUND(AVG(pnl) FILTER (WHERE transaction_type = 'SELL' AND pnl < 0), 2) as "Avg Loss (₹)",
     ROUND(
         100.0 * COUNT(*) FILTER (WHERE transaction_type = 'SELL' AND pnl > 0) / 
         NULLIF(COUNT(*) FILTER (WHERE transaction_type = 'SELL'), 0), 
         1
     ) as "Win Rate (%)"
 FROM backtest_orders 
+WHERE run_id = '$RUN_ID';
+
+\echo ''
+\echo '💰 PORTFOLIO EQUITY:'
+SELECT 
+    ROUND(balance, 2) as "Final Cash",
+    ROUND(equity, 2) as "Final Equity",
+    ROUND(equity - 20000, 2) as "Net Change (₹)"
+FROM backtest_portfolios
 WHERE run_id = '$RUN_ID';
 
 \echo ''

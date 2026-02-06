@@ -11,12 +11,12 @@ from dotenv import load_dotenv
 try:
     from schema import ensure_schema
     from paper_exchange import PaperExchange
-    from strategies.momentum import MomentumStrategy
+    from strategies.orb import EnhancedORB
 except ImportError:
     # Fallback for Docker path issues if modules aren't top-level
     from services.strategy_runtime.schema import ensure_schema
     from services.strategy_runtime.paper_exchange import PaperExchange
-    from services.strategy_runtime.strategies.momentum import MomentumStrategy
+    from services.strategy_runtime.strategies.orb import EnhancedORB
 
 load_dotenv()
 
@@ -79,19 +79,23 @@ def run_engine():
 
     # 2. Components
     exchange = PaperExchange(DB_CONF, backtest_mode=BACKTEST_MODE, run_id=RUN_ID)
-    strategy = MomentumStrategy(strategy_id="MOMENTUM_V1", backtest_mode=BACKTEST_MODE) # Dual-mode: OBI-aware
+    strategy = EnhancedORB(strategy_id="ORB_V1", orb_minutes=15, backtest_mode=BACKTEST_MODE)
 
     # Topics depend on mode
     input_topic = f'market.enriched.ticks.{RUN_ID}' if BACKTEST_MODE else 'market.enriched.ticks'
-    group_id = f'strategy-engine-{RUN_ID}' if BACKTEST_MODE else 'strategy-engine-v3'
+    group_id = f'strategy-engine-{RUN_ID}' if BACKTEST_MODE else 'strategy-engine-v4'
     offset_reset = 'earliest' if BACKTEST_MODE else 'latest'
 
+    def on_assign(consumer, partitions):
+        logger.info(f"✅ Kafka Consumer Assigned Partitions: {partitions}")
+
+    logger.info(f"🛠 Initializing Kafka Consumer: Topic={input_topic}, Group={group_id}, Offset={offset_reset}")
     consumer = Consumer({
         'bootstrap.servers': KAFKA_SERVER,
         'group.id': group_id,
         'auto.offset.reset': offset_reset
     })
-    consumer.subscribe([input_topic])
+    consumer.subscribe([input_topic], on_assign=on_assign)
     
     if BACKTEST_MODE:
         logger.info(f"🧪 BACKTEST MODE ACTIVE (Run ID: {RUN_ID})")
@@ -161,17 +165,34 @@ def run_engine():
                             logger.info(f"🔒 Squared off {pos_symbol}")
                     continue  # Skip normal strategy after EOD
                 
-                # Get current position state
-                current_qty = 0
+                # 2. Get Account State (Balance & Position)
                 cur = conn.cursor()
-                cur.execute("SELECT quantity FROM positions WHERE symbol = %s", (symbol,))
-                res = cur.fetchone()
-                if res:
-                    current_qty = res[0]
+                positions_table = "backtest_positions" if BACKTEST_MODE else "positions"
+                portfolios_table = "backtest_portfolios" if BACKTEST_MODE else "portfolios"
+                
+                if BACKTEST_MODE:
+                    cur.execute(f"SELECT id, balance FROM {portfolios_table} WHERE user_id = %s AND run_id = %s", ('default_user', RUN_ID))
+                else:
+                    cur.execute(f"SELECT id, balance FROM {portfolios_table} WHERE user_id = %s", ('default_user',))
+                
+                row = cur.fetchone()
+                if row:
+                    pid, balance = row[0], float(row[1])
+                else:
+                    pid, balance = None, 20000.0
+
+                current_qty = 0
+                avg_price = 0.0
+                if pid:
+                    cur.execute(f"SELECT quantity, avg_price FROM {positions_table} WHERE portfolio_id = %s AND symbol = %s", (pid, symbol))
+                    pos_row = cur.fetchone()
+                    if pos_row:
+                        current_qty = int(pos_row[0])
+                        avg_price = float(pos_row[1])
                 cur.close()
 
-                # Run Strategy
-                signal = strategy.on_tick(tick, current_qty)
+                # === STRATEGY EXECUTION ===
+                signal = strategy.on_tick(tick, current_qty, balance=balance, avg_price=avg_price)
                 
                 # Execute Signal (if any)
                 if signal:

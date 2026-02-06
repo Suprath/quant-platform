@@ -45,6 +45,7 @@ class PaperExchange:
         # Table names depend on mode
         orders_table = "backtest_orders" if self.backtest_mode else "executed_orders"
         portfolios_table = "backtest_portfolios" if self.backtest_mode else "portfolios"
+        positions_table = "backtest_positions" if self.backtest_mode else "positions"
         
         try:
             # 1. Get Portfolio
@@ -73,84 +74,96 @@ class PaperExchange:
 
             if action == 'BUY':
                 cost = price * quantity
-                if balance >= cost:
-                    # Update Cash
-                    new_balance = balance - cost
+                # Check for SHORT Position to cover
+                cur.execute(f"SELECT quantity, avg_price FROM {positions_table} WHERE portfolio_id = %s AND symbol = %s", (pid, symbol))
+                pos = cur.fetchone()
+                
+                if pos and pos[0] < 0:
+                    # Closing/Reducing a SHORT
+                    current_qty, avg_sell_price = int(pos[0]), float(pos[1])
+                    qty_to_close = min(abs(current_qty), quantity)
+                    pnl = (avg_sell_price - price) * qty_to_close
+                    revenue = price * qty_to_close # Actually cost, but we subtract from balance? No, we add (SellPrice * Qty) then subtract (BuyPrice * Qty)
+                    # Simplified: Balance += (AvgSellPrice - price) * qty_to_close? No, that's just PnL.
+                    # Correct cash flow: 
+                    # When Shorting: Balance += SellPrice * Qty
+                    # When Covering: Balance -= BuyPrice * Qty
+                    new_balance = balance - (price * quantity)
                     cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
                     
-                    # Update Position (Upsert)
-                    # NOTE: We keep using the 'positions' table but this shouldn't conflict with live as it's separate container/DB user
-                    cur.execute("""
-                        INSERT INTO positions (portfolio_id, symbol, quantity, avg_price)
+                    new_qty = current_qty + quantity
+                    if new_qty == 0:
+                        cur.execute(f"DELETE FROM {positions_table} WHERE portfolio_id = %s AND symbol = %s", (pid, symbol))
+                    else:
+                        cur.execute(f"UPDATE {positions_table} SET quantity = %s WHERE portfolio_id = %s AND symbol = %s", (new_qty, pid, symbol))
+                    
+                    logger.info(f"🔵 COVERED {quantity} {symbol} @ {price} | PnL: {pnl:.2f}")
+                    
+                    insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price, pnl) VALUES (%s, %s, %s, %s, %s, %s)" if self.backtest_mode else f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price, pnl) VALUES (%s, %s, %s, %s, %s, %s)"
+                    cur.execute(insert_query, (self.run_id if self.backtest_mode else strategy_id, symbol, action, quantity, price, pnl))
+                else:
+                    # Opening/Increasing a LONG
+                    if balance >= cost:
+                        new_balance = balance - cost
+                        cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
+                        
+                        cur.execute(f"""
+                            INSERT INTO {positions_table} (portfolio_id, symbol, quantity, avg_price)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (portfolio_id, symbol) 
+                            DO UPDATE SET 
+                                avg_price = (({positions_table}.avg_price * {positions_table}.quantity) + (%s * %s)) / ({positions_table}.quantity + %s),
+                                quantity = {positions_table}.quantity + %s
+                        """, (pid, symbol, quantity, price, price, quantity, quantity, quantity))
+                        
+                        logger.info(f"🟢 BOUGHT {quantity} {symbol} @ {price}")
+                        insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)" if self.backtest_mode else f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
+                        cur.execute(insert_query, (self.run_id if self.backtest_mode else strategy_id, symbol, action, quantity, price))
+                    else:
+                        logger.warning(f"❌ Insufficient Funds for {symbol}. Req: {cost}, Bal: {balance}")
+                        return False
+
+            elif action == 'SELL':
+                # Check for LONG Position to exit
+                cur.execute(f"SELECT quantity, avg_price FROM {positions_table} WHERE portfolio_id = %s AND symbol = %s", (pid, symbol))
+                pos = cur.fetchone()
+                
+                if pos and pos[0] > 0:
+                    # Closing/Reducing a LONG
+                    current_qty, avg_buy_price = int(pos[0]), float(pos[1])
+                    qty_to_close = min(current_qty, quantity)
+                    pnl = (price - avg_buy_price) * qty_to_close
+                    new_balance = balance + (price * quantity)
+                    cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
+                    
+                    new_qty = current_qty - quantity
+                    if new_qty == 0:
+                        cur.execute(f"DELETE FROM {positions_table} WHERE portfolio_id = %s AND symbol = %s", (pid, symbol))
+                    else:
+                        cur.execute(f"UPDATE {positions_table} SET quantity = %s WHERE portfolio_id = %s AND symbol = %s", (new_qty, pid, symbol))
+                        
+                    logger.info(f"🔴 SOLD {quantity} {symbol} @ {price} | PnL: {pnl:.2f}")
+                    insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price, pnl) VALUES (%s, %s, %s, %s, %s, %s)" if self.backtest_mode else f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price, pnl) VALUES (%s, %s, %s, %s, %s, %s)"
+                    cur.execute(insert_query, (self.run_id if self.backtest_mode else strategy_id, symbol, action, quantity, price, pnl))
+                else:
+                    # Opening/Increasing a SHORT
+                    # In true shorting, you get cash up front. Balance increases.
+                    new_balance = balance + (price * quantity)
+                    cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
+                    
+                    # Store short as negative quantity. Avg price is the sell price.
+                    cur.execute(f"""
+                        INSERT INTO {positions_table} (portfolio_id, symbol, quantity, avg_price)
                         VALUES (%s, %s, %s, %s)
                         ON CONFLICT (portfolio_id, symbol) 
                         DO UPDATE SET 
-                            avg_price = ((positions.avg_price * positions.quantity) + (%s * %s)) / (positions.quantity + %s),
-                            quantity = positions.quantity + %s
-                    """, (pid, symbol, quantity, price, price, quantity, quantity, quantity))
-
-                    logger.info(f"🟢 BOUGHT {quantity} {symbol} @ {price}")
-                else:
-                    logger.warning(f"❌ Insufficient Funds for {symbol}. Req: {cost}, Bal: {balance}")
-                    return False
-
-            elif action == 'SELL':
-                # Check Position
-                cur.execute("SELECT quantity, avg_price FROM positions WHERE portfolio_id = %s AND symbol = %s", (pid, symbol))
-                pos = cur.fetchone()
-                
-                if pos and pos[0] >= quantity:
-                    current_qty, avg_buy_price = pos
-                    current_qty = int(current_qty)
-                    avg_buy_price = float(avg_buy_price)
-
-                    # Calc PnL
-                    revenue = price * quantity
-                    pnl = (price - avg_buy_price) * quantity
+                            avg_price = (({positions_table}.avg_price * ABS({positions_table}.quantity)) + (%s * %s)) / (ABS({positions_table}.quantity) + %s),
+                            quantity = {positions_table}.quantity - %s
+                    """, (pid, symbol, -quantity, price, price, quantity, quantity, quantity))
                     
-                    # Update Cash
-                    new_balance = balance + revenue
-                    cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
-
-                    # Update Position
-                    new_qty = current_qty - quantity
-                    if new_qty == 0:
-                        cur.execute("DELETE FROM positions WHERE portfolio_id = %s AND symbol = %s", (pid, symbol))
-                    else:
-                        cur.execute("UPDATE positions SET quantity = %s WHERE portfolio_id = %s AND symbol = %s", (new_qty, pid, symbol))
-
-                    logger.info(f"🔴 SOLD {quantity} {symbol} @ {price} | PnL: {pnl:.2f}")
-
-                    # Log PnL to trade history specifically
-                    if self.backtest_mode:
-                        cur.execute("""
-                            INSERT INTO backtest_orders (run_id, symbol, transaction_type, quantity, price, pnl)
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                        """, (self.run_id, symbol, action, quantity, price, pnl))
-                    else:
-                        cur.execute("""
-                            INSERT INTO executed_orders (strategy_id, symbol, transaction_type, quantity, price, pnl)
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                        """, (strategy_id, symbol, action, quantity, price, pnl))
-                    
-                    conn.commit()
-                    return True
-                else:
-                    logger.warning(f"❌ No Position to Sell for {symbol}")
-                    return False
-
-            # Log Trade (General - BUY)
-            if action == 'BUY':
-                if self.backtest_mode:
-                    cur.execute("""
-                        INSERT INTO backtest_orders (run_id, symbol, transaction_type, quantity, price)
-                        VALUES (%s, %s, %s, %s, %s)
-                    """, (self.run_id, symbol, action, quantity, price))
-                else:
-                    cur.execute("""
-                        INSERT INTO executed_orders (strategy_id, symbol, transaction_type, quantity, price)
-                        VALUES (%s, %s, %s, %s, %s)
-                    """, (strategy_id, symbol, action, quantity, price))
+                    logger.info(f"🔻 SHORTED {quantity} {symbol} @ {price}")
+                    insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)" if self.backtest_mode else f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
+                    cur.execute(insert_query, (self.run_id if self.backtest_mode else strategy_id, symbol, action, quantity, price))
 
             conn.commit()
             return True
