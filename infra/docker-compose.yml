@@ -103,6 +103,8 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
       - PYTHONUNBUFFERED=1
+    volumes:
+      - ../services/feature_engine:/app
     restart: always
 
   strategy_runtime:
@@ -114,6 +116,8 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
       - PYTHONUNBUFFERED=1
+    volumes:
+      - ../services/strategy_runtime:/app
     restart: always
 
   api_gateway:
@@ -146,6 +150,8 @@ services:
       - ../services/ingestion/.env
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
+    volumes:
+      - ../services/scanner:/app
     restart: always
 
   doctor:
@@ -165,6 +171,8 @@ services:
       - questdb
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
+    volumes:
+      - ../services/historical_replayer:/app
     profiles: ["replay"]  # Only start when explicitly requested
 
   grafana:

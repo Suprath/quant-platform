@@ -12,6 +12,7 @@ try:
     from schema import ensure_schema
     from paper_exchange import PaperExchange
     from strategies.orb import EnhancedORB
+    from strategies.momentum import MomentumStrategy
 except ImportError:
     # Fallback for Docker path issues if modules aren't top-level
     from services.strategy_runtime.schema import ensure_schema
@@ -109,6 +110,7 @@ def run_engine():
     # 2. Components
     exchange = PaperExchange(DB_CONF, backtest_mode=BACKTEST_MODE, run_id=RUN_ID)
     strategy = EnhancedORB(strategy_id="ORB_V1", orb_minutes=15, backtest_mode=BACKTEST_MODE)
+    # strategy = MomentumStrategy(strategy_id="MOMENTUM_OLD", backtest_mode=BACKTEST_MODE)
 
     # Topics depend on mode
     input_topic = f'market.enriched.ticks.{RUN_ID}' if BACKTEST_MODE else 'market.enriched.ticks'

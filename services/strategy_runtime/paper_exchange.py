@@ -35,6 +35,11 @@ class PaperExchange:
         price = float(signal['price'])
         strategy_id = signal.get('strategy_id', 'MANUAL')
 
+        # Safety: Never trade Indices
+        if "INDEX" in symbol.upper() or "Nifty 50" in symbol:
+            logger.warning(f"🚫 Trade rejected: {symbol} is an Index.")
+            return False
+
         conn = self._get_conn()
         cur = conn.cursor()
 

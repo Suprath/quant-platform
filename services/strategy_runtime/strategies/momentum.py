@@ -13,7 +13,7 @@ class MomentumStrategy:
         else:
             logger.info("📈 Strategy running in LIVE MODE (Full multi-factor logic)")
 
-    def on_tick(self, tick, current_qty):
+    def on_tick(self, tick, current_qty, balance=5000, avg_price=None):
         symbol = tick.get('symbol')
         ltp = float(tick.get('ltp', 0))
         vwap = float(tick.get('vwap', 0))

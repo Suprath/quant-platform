@@ -46,7 +46,7 @@ class EnhancedORB:
     COOLDOWN_MINUTES = 15
     
     # Strategy Optimization Parameters (Phase 4)
-    MIN_ATR_PERCENT = 0.05       # Reset to 0.05% for quality
+    MIN_ATR_PERCENT = 0.01       # Lowered for multi-week backtest coverage
     TARGET_1_ATR = 1.5           # Partial profit target
     TARGET_2_ATR = 3.0           # Final profit target
     TRAILING_STOP_TRIGGER = 1.5  # Move remaining SL to breakeven
@@ -82,18 +82,30 @@ class EnhancedORB:
 
     def on_tick(self, tick, current_qty, balance=20000, avg_price=None):
         symbol = tick.get('symbol')
+        ts_ms = tick.get('timestamp', 0)
         ltp = float(tick.get('ltp', 0))
         vwap = float(tick.get('vwap', 0))
         volume = float(tick.get('v', 0))
-        ts_ms = tick.get('timestamp', 0)
         tick_day_high = float(tick.get('day_high', 0))
         tick_day_low = float(tick.get('day_low', 0))
         
-        # Context extraction
         dt = datetime.fromtimestamp(ts_ms / 1000)
         current_time_utc = dt.time()
-        
+        minute_key = dt.minute
+
         state = self._get_or_create_state(symbol)
+        
+        # 0. Global Regime (Nifty 50) Tracking - MUST BE AT TOP
+        if "Nifty 50" in symbol:
+            self.nifty_ltp = ltp
+            if minute_key != state['last_processed_minute']:
+                state['buffer'].append({'close': ltp}) 
+                state['last_processed_minute'] = minute_key
+                if len(state['buffer']) > 100: state['buffer'].pop(0)
+                
+                if len(state['buffer']) >= 20:
+                    self.nifty_sma = pd.DataFrame(state['buffer'])['close'].rolling(20).mean().iloc[-1]
+            return None # NEVER Trade the index
         
         # Day Reset Logic
         tick_date = dt.date()
@@ -221,23 +233,25 @@ class EnhancedORB:
         # 3. Strategy Logic
         df = pd.DataFrame(state['buffer'])
         atr = self.calculate_atr(df, period=min(14, len(df)-1))
+        atr_pct = (atr / ltp) * 100 if ltp > 0 else 0
         _, st_dir = self.calculate_supertrend(df, period=min(10, len(df)-1))
         
-        orb_range_pct = (state['orb_high'] - state['orb_low']) / ltp * 100
+        orb_range_pct = (state['orb_high'] - state['orb_low']) / ltp * 100 if ltp > 0 else 0
+        
+        # DEBUG LOGGING FOR REJECTIONS
+        if minute_key % 5 == 0 and dt.second < 5: # Log every 5 mins
+             logger.debug(f"🔍 [DIAG] {symbol} | ATR%={atr_pct:.4f} | ORB%={orb_range_pct:.4f} | SMA={self.nifty_sma:.2f} | BSize={len(df)}")
+
         if not (0.1 <= orb_range_pct <= 2.5):
+            if state['orb_finalized'] and minute_key % 30 == 0:
+                logger.debug(f"🚫 {symbol} REJECTED: ORB Range Percent {orb_range_pct:.2f}% out of bounds (0.1-2.5)")
             return None
         
         if atr_pct < self.MIN_ATR_PERCENT:
+            if minute_key % 30 == 0:
+                logger.debug(f"🚫 {symbol} REJECTED: ATR Percent {atr_pct:.4f}% below threshold {self.MIN_ATR_PERCENT}")
             return None
 
-        # 4. Global Regime (Nifty 50) Tracking
-        if "Nifty 50" in symbol:
-            self.nifty_ltp = ltp
-            if minute_key != state['last_processed_minute']:
-                # Update Nifty SMA
-                if len(df) >= 20:
-                    self.nifty_sma = df['close'].rolling(20).mean().iloc[-1]
-            return None # Don't trade the index itself directly with this strategy
 
         if current_qty == 0:
             # 4. ENTRY GUARDRAILS
