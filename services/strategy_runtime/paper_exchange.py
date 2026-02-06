@@ -21,8 +21,9 @@ class PaperExchange:
         if price <= 0:
             return 1
         
-        # User requested 100% allocation
-        qty = int(balance / price)
+        # User requested 100% allocation with 5x Leverage for Phase 8 goal
+        LEVERAGE = 5
+        qty = int((balance * LEVERAGE) / price)
         return max(1, qty)
 
     def execute_order(self, signal):
@@ -89,7 +90,7 @@ class PaperExchange:
                     # Correct cash flow: 
                     # When Shorting: Balance += SellPrice * Qty
                     # When Covering: Balance -= BuyPrice * Qty
-                    new_balance = balance - (price * quantity)
+                    new_balance = balance + pnl # Balance updated by P&L
                     cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
                     
                     new_qty = current_qty + quantity
@@ -104,10 +105,8 @@ class PaperExchange:
                     cur.execute(insert_query, (self.run_id if self.backtest_mode else strategy_id, symbol, action, quantity, price, pnl))
                 else:
                     # Opening/Increasing a LONG
-                    if balance >= cost:
-                        new_balance = balance - cost
-                        cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
-                        
+                    if balance * 5 >= cost: # Ensure we have 5x buying power
+                        # DO NOT subtract cost from balance. Balance = Total Equity.
                         cur.execute(f"""
                             INSERT INTO {positions_table} (portfolio_id, symbol, quantity, avg_price)
                             VALUES (%s, %s, %s, %s)
@@ -121,7 +120,7 @@ class PaperExchange:
                         insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)" if self.backtest_mode else f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
                         cur.execute(insert_query, (self.run_id if self.backtest_mode else strategy_id, symbol, action, quantity, price))
                     else:
-                        logger.warning(f"❌ Insufficient Funds for {symbol}. Req: {cost}, Bal: {balance}")
+                        logger.warning(f"❌ Insufficient Funds (Leveraged) for {symbol}. Req: {cost}, Bal: {balance}")
                         return False
 
             elif action == 'SELL':
@@ -134,7 +133,7 @@ class PaperExchange:
                     current_qty, avg_buy_price = int(pos[0]), float(pos[1])
                     qty_to_close = min(current_qty, quantity)
                     pnl = (price - avg_buy_price) * qty_to_close
-                    new_balance = balance + (price * quantity)
+                    new_balance = balance + pnl # Balance updated only by P&L
                     cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
                     
                     new_qty = current_qty - quantity
@@ -148,23 +147,23 @@ class PaperExchange:
                     cur.execute(insert_query, (self.run_id if self.backtest_mode else strategy_id, symbol, action, quantity, price, pnl))
                 else:
                     # Opening/Increasing a SHORT
-                    # In true shorting, you get cash up front. Balance increases.
-                    new_balance = balance + (price * quantity)
-                    cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
-                    
-                    # Store short as negative quantity. Avg price is the sell price.
-                    cur.execute(f"""
-                        INSERT INTO {positions_table} (portfolio_id, symbol, quantity, avg_price)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (portfolio_id, symbol) 
-                        DO UPDATE SET 
-                            avg_price = (({positions_table}.avg_price * ABS({positions_table}.quantity)) + (%s * %s)) / (ABS({positions_table}.quantity) + %s),
-                            quantity = {positions_table}.quantity - %s
-                    """, (pid, symbol, -quantity, price, price, quantity, quantity, quantity))
-                    
-                    logger.info(f"🔻 SHORTED {quantity} {symbol} @ {price}")
-                    insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)" if self.backtest_mode else f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
-                    cur.execute(insert_query, (self.run_id if self.backtest_mode else strategy_id, symbol, action, quantity, price))
+                    if balance * 5 >= cost: # Leverage check
+                        # Store short as negative quantity. Avg price is the sell price.
+                        cur.execute(f"""
+                            INSERT INTO {positions_table} (portfolio_id, symbol, quantity, avg_price)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (portfolio_id, symbol) 
+                            DO UPDATE SET 
+                                avg_price = (({positions_table}.avg_price * ABS({positions_table}.quantity)) + (%s * %s)) / (ABS({positions_table}.quantity) + %s),
+                                quantity = {positions_table}.quantity - %s
+                        """, (pid, symbol, -quantity, price, price, quantity, quantity, quantity))
+                        
+                        logger.info(f"🔻 SHORTED {quantity} {symbol} @ {price}")
+                        insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)" if self.backtest_mode else f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
+                        cur.execute(insert_query, (self.run_id if self.backtest_mode else strategy_id, symbol, action, quantity, price))
+                    else:
+                        logger.warning(f"❌ Insufficient Funds (Leveraged) for {symbol}. Req: {cost}, Bal: {balance}")
+                        return False
 
             conn.commit()
             return True

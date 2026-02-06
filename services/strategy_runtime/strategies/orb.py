@@ -46,9 +46,9 @@ class EnhancedORB:
     COOLDOWN_MINUTES = 15
     
     # Strategy Optimization Parameters (Phase 4)
-    MIN_ATR_PERCENT = 0.01       # Lowered for multi-week backtest coverage
-    TARGET_1_ATR = 1.5           # Partial profit target
-    TARGET_2_ATR = 3.0           # Final profit target
+    MIN_ATR_PERCENT = 0.005      # Extra sensitive for high-frequency runs
+    TARGET_1_ATR = 1.0           # Faster profit locking
+    TARGET_2_ATR = 6.0           # Extended for "Super-Trend" capture
     TRAILING_STOP_TRIGGER = 1.5  # Move remaining SL to breakeven
     PULLBACK_THRESHOLD = 0.0005  # 0.05% pullback limit for entry
 
@@ -326,8 +326,52 @@ class EnhancedORB:
                     else:
                         logger.debug(f"🙅 [ORB_V1] SHORT breakdown for {symbol} @ {ltp} rejected: {reason}")
         
-        # EXIT LOGIC (Wait for SL/Target or End of Day handled in main.py)
-        # Note: Position state management is handled by PaperExchange, 
-        # but we could return exit signals here if SL/Target hit in tick data.
-        
+        # 3. EXIT LOGIC (SL / Target / Trailing / Auto-Breakeven)
+        if current_qty > 0 and state['active_trade']:
+            trade = state['active_trade']
+            
+            # --- LONG EXIT LOGIC ---
+            if trade['type'] == 'LONG':
+                # 1. Target 1: Partial Profit + Move SL to Breakeven
+                if not trade['t1_hit'] and ltp >= trade['t1']:
+                    trade['t1_hit'] = True
+                    # Auto-Breakeven: Move SL to Entry + small buffer
+                    trade['sl'] = max(trade['sl'], trade['entry'] + (trade['entry'] * 0.001))
+                    logger.info(f"🎯 [ORB_V1] T1 HIT for {symbol}. Moving SL to Breakeven: {trade['sl']}")
+                    # Note: We don't trigger a 'SELL' here yet, just update SL for the whole qty.
+                    # Or we could return a partial sell if we had multi-quantity logic in runtime.
+                    # For now, we move SL and wait for T2 or SL.
+                
+                # 2. Stop Loss or Target 2 Exit
+                if ltp <= trade['sl']:
+                    logger.info(f"🔴 [ORB_V1] STOP LOSS HIT for {symbol} @ {ltp} | PnL: {ltp - trade['entry']:.2f}")
+                    state['active_trade'] = None
+                    state['last_exit_time'] = dt
+                    return {"strategy_id": self.strategy_id, "symbol": symbol, "action": "SELL", "price": ltp}
+                
+                if ltp >= trade['t2']:
+                    logger.info(f"💰 [ORB_V1] TARGET 2 HIT for {symbol} @ {ltp} | PnL: {ltp - trade['entry']:.2f}")
+                    state['active_trade'] = None
+                    state['last_exit_time'] = dt
+                    return {"strategy_id": self.strategy_id, "symbol": symbol, "action": "SELL", "price": ltp}
+
+            # --- SHORT EXIT LOGIC ---
+            elif trade['type'] == 'SHORT':
+                if not trade['t1_hit'] and ltp <= trade['t1']:
+                    trade['t1_hit'] = True
+                    trade['sl'] = min(trade['sl'], trade['entry'] - (trade['entry'] * 0.001))
+                    logger.info(f"🎯 [ORB_V1] T1 HIT for {symbol}. Moving SL to Breakeven: {trade['sl']}")
+                
+                if ltp >= trade['sl']:
+                    logger.info(f"🔴 [ORB_V1] STOP LOSS HIT for {symbol} @ {ltp} | PnL: {trade['entry'] - ltp:.2f}")
+                    state['active_trade'] = None
+                    state['last_exit_time'] = dt
+                    return {"strategy_id": self.strategy_id, "symbol": symbol, "action": "BUY", "price": ltp}
+                
+                if ltp <= trade['t2']:
+                    logger.info(f"💰 [ORB_V1] TARGET 2 HIT for {symbol} @ {ltp} | PnL: {trade['entry'] - ltp:.2f}")
+                    state['active_trade'] = None
+                    state['last_exit_time'] = dt
+                    return {"strategy_id": self.strategy_id, "symbol": symbol, "action": "BUY", "price": ltp}
+
         return None

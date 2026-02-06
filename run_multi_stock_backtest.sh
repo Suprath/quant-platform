@@ -72,6 +72,16 @@ if [ "$USE_SCANNER" = true ]; then
         "NSE_EQ|INE044A01036:TCS"
         "NSE_EQ|INE154A01025:BajajFinance"
         "NSE_EQ|INE238A01034:AxisBank"
+        "NSE_EQ|INE001A01036:Reliance_v2"
+        "NSE_EQ|INE585B01010:Maruti"
+        "NSE_EQ|INE213A01029:SunPharma"
+        "NSE_EQ|INE030A01027:HUL"
+        "NSE_EQ|INE158A01026:HeroMoto"
+        "NSE_EQ|INE245A01021:TataMotors"
+        "NSE_EQ|INE481G01011:UltraTech"
+        "NSE_EQ|INE848E01016:IndusInd"
+        "NSE_EQ|INE237A01028:KotakBank"
+        "NSE_EQ|INE075A01022:Wipro"
     )
 
     for entry in "${CANDIDATES[@]}"; do
@@ -80,7 +90,7 @@ if [ "$USE_SCANNER" = true ]; then
     done
 
     echo "🔍 Scanning candidates for High-Probability (RS-based) entries..."
-    SCANNED_SYMBOLS=$(docker compose run --rm scanner python main.py --date "$START_DATE" --output symbols --top-n 5 | tail -n 1)
+    SCANNED_SYMBOLS=$(docker compose run --rm scanner python main.py --date "$START_DATE" --output symbols --top-n 10 | tail -n 1)
     
     if [[ "$SCANNED_SYMBOLS" == *"NSE_EQ"* ]]; then
         echo "✅ Scanner selected: $SCANNED_SYMBOLS"
@@ -89,9 +99,14 @@ if [ "$USE_SCANNER" = true ]; then
         for sym in "${SYMBOLS[@]}"; do
             STOCKS+=("$sym:Scanned")
         done
+        # If less than 5 stocks found, add some high-liquid fallbacks
+        if [ ${#STOCKS[@]} -lt 5 ]; then
+            echo "⚠️ Low scanner count. Adding liquid anchors..."
+            STOCKS+=("NSE_EQ|INE002A01018:Reliance" "NSE_EQ|INE040A01034:HDFCBank" "NSE_EQ|INE090A01021:ICICIBank")
+        fi
     else
-        echo "⚠️ Scanner failed or returned no data. Using fallback stocks."
-        STOCKS=("NSE_EQ|INE002A01018:Reliance" "NSE_EQ|INE040A01034:HDFC Bank")
+        echo "⚠️ Scanner failed. Using fallback portfolio."
+        STOCKS=("NSE_EQ|INE002A01018:Reliance" "NSE_EQ|INE040A01034:HDFCBank" "NSE_EQ|INE467B01029:TataSteel" "NSE_EQ|INE019A01038:ITC" "NSE_EQ|INE062A01020:SBIN")
     fi
 elif [ -n "$CUSTOM_STOCKS" ]; then
     # Convert comma-separated symbols to array format
@@ -101,13 +116,12 @@ elif [ -n "$CUSTOM_STOCKS" ]; then
         STOCKS+=("$sym:Custom")
     done
 else
-    # Default Top 5 liquid stocks
     STOCKS=(
-        "NSE_EQ|INE002A01018:Reliance"
-        "NSE_EQ|INE040A01034:HDFC Bank"
-        "NSE_EQ|INE467B01029:Tata Steel"
-        "NSE_EQ|INE019A01038:ITC"
         "NSE_EQ|INE062A01020:SBIN"
+        "NSE_EQ|INE001A01036:Reliance"
+        "NSE_EQ|INE009A01021:Infosys"
+        "NSE_EQ|INE010A01011:TCS"
+        "NSE_EQ|INE018A01030:L&T"
     )
 fi
 
