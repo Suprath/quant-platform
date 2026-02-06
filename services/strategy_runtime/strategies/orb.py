@@ -18,6 +18,11 @@ class EnhancedORB:
         # State per symbol
         self.symbol_state = {}
         
+        # Global Regime State (Index)
+        self.nifty_buffer = [] 
+        self.nifty_ltp = 0.0
+        self.nifty_sma = 0.0
+        
         logger.info(f"🚀 {self.strategy_id} Initialized (ORB: {self.orb_minutes}m, Mode: {'BACKTEST' if backtest_mode else 'LIVE'})")
 
     def _get_or_create_state(self, symbol):
@@ -26,22 +31,26 @@ class EnhancedORB:
                 'orb_high': None,
                 'orb_low': None,
                 'orb_set': False,
-                'buffer': [], # To hold recent ticks for ATR/SuperTrend
+                'buffer': [], 
                 'max_buffer': 100,
                 'last_processed_minute': -1,
                 'last_processed_date': None,
-                'active_trade': None, # {type, entry, sl, tgt}
+                'active_trade': None, 
                 'trades_today': 0,
-                'last_exit_time': None
+                'last_exit_time': None,
+                'pending_pullback': None # {type, level, expires}
             }
         return self.symbol_state[symbol]
 
     MAX_TRADES_PER_DAY = 3
     COOLDOWN_MINUTES = 15
     
-    # Strategy Optimization Parameters (Phase 3)
-    MIN_ATR_PERCENT = 0.01       # Skip trading if ATR < 0.01% of LTP (extremely narrow)
-    TRAILING_STOP_TRIGGER = 1.5  # Move SL to breakeven after 1.5x ATR profit
+    # Strategy Optimization Parameters (Phase 4)
+    MIN_ATR_PERCENT = 0.05       # Reset to 0.05% for quality
+    TARGET_1_ATR = 1.5           # Partial profit target
+    TARGET_2_ATR = 3.0           # Final profit target
+    TRAILING_STOP_TRIGGER = 1.5  # Move remaining SL to breakeven
+    PULLBACK_THRESHOLD = 0.0005  # 0.05% pullback limit for entry
 
     def calculate_atr(self, df, period=14):
         if len(df) < period + 1:
@@ -97,6 +106,10 @@ class EnhancedORB:
             state['trades_today'] = 0
             state['last_exit_time'] = None
             state['last_processed_minute'] = -1
+            # Reset Nifty on day change too
+            self.nifty_buffer = []
+            self.nifty_ltp = 0.0
+            self.nifty_sma = 0.0
 
         state['last_processed_date'] = tick_date
         if current_qty != 0 and state['active_trade'] is None:
@@ -115,41 +128,54 @@ class EnhancedORB:
             trade = state['active_trade']
             exit_signal = None
             
+            # 50/50 MULTI-TARGET LOGIC
+            # If current_qty is half of our usual (assuming we sell half at T1)
+            # We don't track original qty here globally, but we can detect state['target_1_hit']
+            
             # LONG EXIT
             if trade['type'] == 'LONG':
-                # Trailing Stop: Move SL to breakeven after 1.5x ATR profit
-                profit = ltp - trade['entry']
-                atr_estimate = abs(trade['tgt'] - trade['entry']) / 3.0  # Reverse calc ATR
-                if profit >= atr_estimate * self.TRAILING_STOP_TRIGGER and trade['sl'] < trade['entry']:
-                    trade['sl'] = trade['entry']  # Lock in breakeven
-                    logger.info(f"📈 [ORB_V1] TRAILING STOP ACTIVATED: {symbol} - SL moved to breakeven {trade['entry']}")
-                    
+                # Partial Target 1 (1.5x ATR)
+                if not trade.get('t1_hit') and ltp >= trade['t1']:
+                    trade['t1_hit'] = True
+                    trade['sl'] = trade['entry'] # Move SL to Breakeven
+                    logger.info(f"🎯 [ORB_V1] TARGET 1 HIT (Partial): {symbol} @ {ltp} | SL moved to Breakeven")
+                    return {
+                        "strategy_id": self.strategy_id, "symbol": symbol, 
+                        "action": "SELL", "price": ltp, "quantity": abs(current_qty) // 2,
+                        "reason": "TARGET_1_PARTIAL"
+                    }
+
                 if ltp <= trade['sl']:
                     logger.info(f"🛑 [ORB_V1] STOP LOSS HIT: {symbol} @ {ltp} (Entry: {trade['entry']}, SL: {trade['sl']})")
                     exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "SELL", "price": ltp, "reason": "SL_HIT"}
-                elif ltp >= trade['tgt']:
-                    logger.info(f"🎯 [ORB_V1] TARGET HIT: {symbol} @ {ltp} (Entry: {trade['entry']}, TGT: {trade['tgt']})")
-                    exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "SELL", "price": ltp, "reason": "TARGET_HIT"}
+                elif ltp >= trade['t2']:
+                    logger.info(f"🎯 [ORB_V1] FINAL TARGET HIT: {symbol} @ {ltp} (Entry: {trade['entry']}, TGT: {trade['t2']})")
+                    exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "SELL", "price": ltp, "reason": "TARGET_2_HIT"}
             
             # SHORT EXIT
             elif trade['type'] == 'SHORT':
-                # Trailing Stop: Move SL to breakeven after 1.5x ATR profit
-                profit = trade['entry'] - ltp
-                atr_estimate = abs(trade['entry'] - trade['tgt']) / 3.0
-                if profit >= atr_estimate * self.TRAILING_STOP_TRIGGER and trade['sl'] > trade['entry']:
-                    trade['sl'] = trade['entry']  # Lock in breakeven
-                    logger.info(f"📉 [ORB_V1] TRAILING STOP ACTIVATED: {symbol} - SL moved to breakeven {trade['entry']}")
-                    
+                # Partial Target 1 (1.5x ATR)
+                if not trade.get('t1_hit') and ltp <= trade['t1']:
+                    trade['t1_hit'] = True
+                    trade['sl'] = trade['entry'] # Move SL to Breakeven
+                    logger.info(f"🎯 [ORB_V1] TARGET 1 HIT (Partial): {symbol} @ {ltp} | SL moved to Breakeven")
+                    return {
+                        "strategy_id": self.strategy_id, "symbol": symbol, 
+                        "action": "BUY", "price": ltp, "quantity": abs(current_qty) // 2,
+                        "reason": "TARGET_1_PARTIAL"
+                    }
+
                 if ltp >= trade['sl']:
                     logger.info(f"🛑 [ORB_V1] STOP LOSS HIT: {symbol} @ {ltp} (Entry: {trade['entry']}, SL: {trade['sl']})")
                     exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "BUY", "price": ltp, "reason": "SL_HIT"}
-                elif ltp <= trade['tgt']:
-                    logger.info(f"🎯 [ORB_V1] TARGET HIT: {symbol} @ {ltp} (Entry: {trade['entry']}, TGT: {trade['tgt']})")
-                    exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "BUY", "price": ltp, "reason": "TARGET_HIT"}
+                elif ltp <= trade['t2']:
+                    logger.info(f"🎯 [ORB_V1] FINAL TARGET HIT: {symbol} @ {ltp} (Entry: {trade['entry']}, TGT: {trade['t2']})")
+                    exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "BUY", "price": ltp, "reason": "TARGET_2_HIT"}
 
             if exit_signal:
                 state['active_trade'] = None
                 state['last_exit_time'] = dt
+                state['pending_pullback'] = None
                 return exit_signal
 
         # 1. Capture ORB Levels
@@ -201,66 +227,90 @@ class EnhancedORB:
         if not (0.1 <= orb_range_pct <= 2.5):
             return None
         
-        # MIN ATR Filter: Skip trading if volatility is too low
-        atr_pct = (atr / ltp) * 100 if ltp > 0 else 0
-        
-        # DEBUG: Log indicators
-        logger.debug(f"📊 {symbol} | Time={dt} | LTP={ltp} | ATR={atr:.2f} ({atr_pct:.2f}%) | ST={st_dir} | ORB=[{state['orb_low']}-{state['orb_high']}] ({orb_range_pct:.2f}%)")
-        
         if atr_pct < self.MIN_ATR_PERCENT:
             return None
+
+        # 4. Global Regime (Nifty 50) Tracking
+        if "Nifty 50" in symbol:
+            self.nifty_ltp = ltp
+            if minute_key != state['last_processed_minute']:
+                # Update Nifty SMA
+                if len(df) >= 20:
+                    self.nifty_sma = df['close'].rolling(20).mean().iloc[-1]
+            return None # Don't trade the index itself directly with this strategy
 
         if current_qty == 0:
             # 4. ENTRY GUARDRAILS
             if state['trades_today'] >= self.MAX_TRADES_PER_DAY:
                 return None
             
+            # Index Regime Filter
+            if self.nifty_sma > 0:
+                is_bullish = self.nifty_ltp > self.nifty_sma
+                if is_breakout and not is_bullish: return None
+                if is_breakdown and is_bullish: return None
+
             if state['last_exit_time']:
                 cooldown_remaining = (dt - state['last_exit_time']).total_seconds() / 60
                 if cooldown_remaining < self.COOLDOWN_MINUTES:
                     return None
 
-            # DEBUG: Log breakout potential
-            if ltp > state['orb_high'] or ltp < state['orb_low']:
-                logger.debug(f"🔍 BREAKOUT DETECTED: {symbol} @ {ltp} (ORB: {state['orb_low']}-{state['orb_high']}, ST: {st_dir}, VWAP: {vwap})")
-
-            # DEBUG: Log breakout potential
-            is_breakout = ltp > state['orb_high']
-            is_breakdown = ltp < state['orb_low']
+            # 5. PULLBACK ENTRY LOGIC
+            is_breakout = ltp > state['orb_high'] and ltp > vwap
+            is_breakdown = ltp < state['orb_low'] and ltp < vwap
             
-            if is_breakout or is_breakdown:
+            # Check for existing pending pullback
+            if state['pending_pullback']:
+                pending = state['pending_pullback']
+                # Check if expired (3 minutes)
+                if (dt - pending['ts']).total_seconds() > 180:
+                    state['pending_pullback'] = None
+                    logger.debug(f"⏰ Pullback for {symbol} expired.")
+                else:
+                    # Look for trend resumption (SuperTrend alignment)
+                    if (pending['type'] == 'LONG' and ltp > state['orb_high'] and st_dir == 1) or \
+                       (pending['type'] == 'SHORT' and ltp < state['orb_low'] and st_dir == -1):
+                        
+                        sl_dist = max(atr * 1.5, ltp * 0.002)
+                        if pending['type'] == 'LONG':
+                            sl = max(state['orb_low'], ltp - sl_dist)
+                            t1 = ltp + (atr * self.TARGET_1_ATR)
+                            t2 = ltp + (atr * self.TARGET_2_ATR)
+                            state['active_trade'] = {'type': 'LONG', 'entry': ltp, 'sl': sl, 't1': t1, 't2': t2, 't1_hit': False}
+                            logger.info(f"⚡ [ORB_V1] LONG ENTRY (Pullback): {symbol} @ {ltp} | SL: {sl} | T2: {t2}")
+                            action = "BUY"
+                        else:
+                            sl = min(state['orb_high'], ltp + sl_dist)
+                            t1 = ltp - (atr * self.TARGET_1_ATR)
+                            t2 = ltp - (atr * self.TARGET_2_ATR)
+                            state['active_trade'] = {'type': 'SHORT', 'entry': ltp, 'sl': sl, 't1': t1, 't2': t2, 't1_hit': False}
+                            logger.info(f"⚡ [ORB_V1] SHORT ENTRY (Pullback): {symbol} @ {ltp} | SL: {sl} | T2: {t2}")
+                            action = "SELL"
+                        
+                        state['trades_today'] += 1
+                        state['pending_pullback'] = None
+                        return {
+                            "strategy_id": self.strategy_id, "symbol": symbol, "action": action,
+                            "price": ltp, "stop_loss": sl, "target": t2
+                        }
+
+            # If no pending pullback, look for first break to start pullback guard
+            elif is_breakout or is_breakdown:
                 dir_match = (is_breakout and st_dir == 1) or (is_breakdown and st_dir == -1)
-                # Removed VWAP check for now to simplify
                 
                 if dir_match:
-                    sl_dist = max(atr * 1.5, ltp * 0.002) # Min 0.2% SL
-                    if is_breakout:
-                        sl = max(state['orb_low'], ltp - sl_dist)
-                        target = ltp + (atr * 3.0)
-                        state['active_trade'] = {'type': 'LONG', 'entry': ltp, 'sl': sl, 'tgt': target}
-                        logger.info(f"⚡ [ORB_V1] LONG ENTRY: {symbol} @ {ltp} | SL: {sl} | TGT: {target}")
-                        action = "BUY"
-                    else:
-                        sl = min(state['orb_high'], ltp + sl_dist)
-                        target = ltp - (atr * 3.0)
-                        state['active_trade'] = {'type': 'SHORT', 'entry': ltp, 'sl': sl, 'tgt': target}
-                        logger.info(f"⚡ [ORB_V1] SHORT ENTRY: {symbol} @ {ltp} | SL: {sl} | TGT: {target}")
-                        action = "SELL"
-                    
-                    state['trades_today'] += 1
-                    return {
-                        "strategy_id": self.strategy_id,
-                        "symbol": symbol,
-                        "action": action,
-                        "price": ltp,
-                        "stop_loss": sl,
-                        "target": target
+                    logger.info(f"🔍 Initial Breakout for {symbol} @ {ltp}. Waiting for pullback confirmation...")
+                    state['pending_pullback'] = {
+                        'type': 'LONG' if is_breakout else 'SHORT',
+                        'ts': dt,
+                        'level': ltp
                     }
                 else:
+                    reason = "SuperTrend mismatch"
                     if is_breakout:
-                        logger.debug(f"🙅 [ORB_V1] LONG breakout for {symbol} @ {ltp} rejected: SuperTrend={st_dir}")
+                        logger.debug(f"🙅 [ORB_V1] LONG breakout for {symbol} @ {ltp} rejected: {reason}")
                     else:
-                        logger.debug(f"🙅 [ORB_V1] SHORT breakdown for {symbol} @ {ltp} rejected: SuperTrend={st_dir}")
+                        logger.debug(f"🙅 [ORB_V1] SHORT breakdown for {symbol} @ {ltp} rejected: {reason}")
         
         # EXIT LOGIC (Wait for SL/Target or End of Day handled in main.py)
         # Note: Position state management is handled by PaperExchange, 

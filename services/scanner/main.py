@@ -152,9 +152,25 @@ if __name__ == "__main__":
         # Historical mode for backtesting
         logger.info(f"📊 Historical scan for {args.date}...")
         QUESTDB_URL = os.getenv('QUESTDB_URL', 'http://questdb_tsdb:9000')
+        
+        # 1. Get Nifty 50 Performance (Regime/Benchmark)
+        nifty_query = f"SELECT first(open), last(close) FROM ohlc WHERE symbol = 'NSE_INDEX|Nifty 50' AND timestamp >= '{args.date}T03:45:00.000000Z' AND timestamp <= '{args.date}T04:00:00.000000Z'"
+        nifty_perf = 0.0
+        try:
+            resp = requests.get(f"{QUESTDB_URL}/exec?query={urllib.parse.quote(nifty_query)}")
+            if resp.status_code == 200:
+                dataset = resp.json().get('dataset', [])
+                if dataset and dataset[0][0] and dataset[0][1]:
+                    n_open, n_close = dataset[0]
+                    nifty_perf = (n_close - n_open) / n_open * 100
+                    logger.info(f"📉 Nifty 50 Performance (15m): {nifty_perf:.2f}%")
+        except: pass
+
+        # 2. Get All Stocks Performance
         query = f"""
-        SELECT symbol, first(open) as open_price, max(high) - min(low) as day_range, sum(volume) as total_volume
-        FROM ohlc WHERE timestamp >= '{args.date}T03:45:00.000000Z' AND timestamp <= '{args.date}T10:00:00.000000Z'
+        SELECT symbol, first(open) as open_price, last(close) as close_price, max(high) - min(low) as day_range, sum(volume) as total_volume
+        FROM ohlc WHERE timestamp >= '{args.date}T03:45:00.000000Z' AND timestamp <= '{args.date}T04:00:00.000000Z'
+        AND symbol != 'NSE_INDEX|Nifty 50'
         GROUP BY symbol
         """
         try:
@@ -164,11 +180,21 @@ if __name__ == "__main__":
                 dataset = resp.json().get('dataset', [])
                 scored = []
                 for row in dataset:
-                    sym, op, dr, vol = row
+                    sym, op, cp, dr, vol = row
                     if op and op > 0:
+                        stock_perf = (cp - op) / op * 100
+                        rs_score = stock_perf - nifty_perf
                         range_pct = (dr / op) * 100
-                        score = range_pct * math.log10(max(vol, 1))
-                        scored.append({"symbol": sym, "score": round(score, 2), "range_pct": round(range_pct, 2)})
+                        # Total Score = RS + Volume Momentum
+                        score = abs(rs_score) * math.log10(max(vol, 1))
+                        scored.append({
+                            "symbol": sym, 
+                            "score": round(score, 2), 
+                            "rs": round(rs_score, 2),
+                            "range_pct": round(range_pct, 2)
+                        })
+                
+                # Sort by absolute Relative Strength (pick strongest movers)
                 top = sorted(scored, key=lambda x: x['score'], reverse=True)[:args.top_n]
                 if args.output == "json":
                     print(json.dumps(top, indent=2))

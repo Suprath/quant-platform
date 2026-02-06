@@ -15,19 +15,15 @@ class PaperExchange:
 
     def calculate_position_size(self, price, balance):
         """
-        Calculate position size for intraday trading with ₹20,000 capital.
-        Risk: 1% per trade (₹200 max loss)
+        Calculate position size based on user request: 100% of amount at once.
+        Capital: ₹5,000 (standardized)
         """
-        risk_per_trade = balance * 0.01  # 1% risk
-        # For simplicity: invest 10% of capital per position
-        # This allows up to 10 concurrent positions
-        max_investment = balance * 0.10
-        
-        if price == 0:
+        if price <= 0:
             return 1
         
-        qty = int(max_investment / price)
-        return max(1, min(qty, 10))  # Min 1, Max 10 shares per trade
+        # User requested 100% allocation
+        qty = int(balance / price)
+        return max(1, qty)
 
     def execute_order(self, signal):
         """
@@ -58,7 +54,7 @@ class PaperExchange:
             
             # If backtest mode and no portfolio, auto-create one with default balance
             if not portfolio and self.backtest_mode:
-                 cur.execute(f"INSERT INTO {portfolios_table} (user_id, run_id, balance) VALUES (%s, %s, 20000) RETURNING id, balance", (self.user_id, self.run_id))
+                 cur.execute(f"INSERT INTO {portfolios_table} (user_id, run_id, balance) VALUES (%s, %s, 5000) RETURNING id, balance", (self.user_id, self.run_id))
                  portfolio = cur.fetchone()
                  conn.commit()
             
@@ -69,8 +65,8 @@ class PaperExchange:
             pid, balance = portfolio
             balance = float(balance)
             
-            # Calculate dynamic position size
-            quantity = self.calculate_position_size(price, balance)
+            # Calculate dynamic position size (or use provided quantity for partial exits)
+            quantity = int(signal.get('quantity', self.calculate_position_size(price, balance)))
 
             if action == 'BUY':
                 cost = price * quantity

@@ -57,25 +57,41 @@ cd infra
 
 # Stock list: use scanner, custom, or default
 if [ "$USE_SCANNER" = true ]; then
-    echo "🔍 Running Stock Scanner for $START_DATE..."
-    # We use -q or grep to ensure only the LAST line (the symbols) is captured if there are logs
+    # Expanded candidate list for scanning (15 liquid stocks)
+    echo "📥 Downloading scan candidates and Nifty 50 for RS benchmarking..."
+    docker compose run --rm backfiller python main.py --symbol "NSE_INDEX|Nifty 50" --start "$START_DATE" --end "$START_DATE" > /dev/null 2>&1
+    
+    CANDIDATES=(
+        "NSE_EQ|INE002A01018:Reliance"
+        "NSE_EQ|INE040A01034:HDFCBank"
+        "NSE_EQ|INE467B01029:TataSteel"
+        "NSE_EQ|INE019A01038:ITC"
+        "NSE_EQ|INE062A01020:SBIN"
+        "NSE_EQ|INE090A01021:ICICIBank"
+        "NSE_EQ|INE009A01021:Infosys"
+        "NSE_EQ|INE044A01036:TCS"
+        "NSE_EQ|INE154A01025:BajajFinance"
+        "NSE_EQ|INE238A01034:AxisBank"
+    )
+
+    for entry in "${CANDIDATES[@]}"; do
+         sym="${entry%%:*}"
+         docker compose run --rm backfiller python main.py --symbol "$sym" --start "$START_DATE" --end "$START_DATE" > /dev/null 2>&1
+    done
+
+    echo "🔍 Scanning candidates for High-Probability (RS-based) entries..."
     SCANNED_SYMBOLS=$(docker compose run --rm scanner python main.py --date "$START_DATE" --output symbols --top-n 5 | tail -n 1)
-    if [ -z "$SCANNED_SYMBOLS" ] || [[ "$SCANNED_SYMBOLS" == *"INFO"* ]]; then
-        echo "⚠️ Scanner returned no valid results. Using defaults."
-        STOCKS=(
-            "NSE_EQ|INE002A01018:Reliance"
-            "NSE_EQ|INE040A01034:HDFC Bank"
-            "NSE_EQ|INE467B01029:Tata Steel"
-            "NSE_EQ|INE019A01038:ITC"
-            "NSE_EQ|INE062A01020:SBIN"
-        )
-    else
+    
+    if [[ "$SCANNED_SYMBOLS" == *"NSE_EQ"* ]]; then
         echo "✅ Scanner selected: $SCANNED_SYMBOLS"
         IFS=',' read -ra SYMBOLS <<< "$SCANNED_SYMBOLS"
         STOCKS=()
         for sym in "${SYMBOLS[@]}"; do
             STOCKS+=("$sym:Scanned")
         done
+    else
+        echo "⚠️ Scanner failed or returned no data. Using fallback stocks."
+        STOCKS=("NSE_EQ|INE002A01018:Reliance" "NSE_EQ|INE040A01034:HDFC Bank")
     fi
 elif [ -n "$CUSTOM_STOCKS" ]; then
     # Convert comma-separated symbols to array format
@@ -102,7 +118,7 @@ echo "======================================================================"
 echo ""
 echo "📅 Start Date: $START_DATE"
 echo "📅 End Date: $END_DATE"
-echo "💰 Capital: ₹20,000"
+echo "💰 Capital: ₹5,000"
 echo "📊 Strategy: Enhanced ORB (15m) - Backtest Mode"
 echo "🔖 Run ID: $RUN_ID"
 echo "📈 Stocks: ${#STOCKS[@]}"
@@ -119,10 +135,9 @@ echo "🧹 Clearing stale QuestDB data..."
 docker exec questdb_tsdb curl -G "http://localhost:9000/exec?query=TRUNCATE+TABLE+ohlc" > /dev/null 2>&1
 docker exec questdb_tsdb curl -G "http://localhost:9000/exec?query=TRUNCATE+TABLE+prices" > /dev/null 2>&1
 
-echo ""
-echo "======================================================================"
-echo "STEP 1: Downloading Data for Top 5 Stocks"
-echo "======================================================================"
+# STEP 1: Download Nifty 50 and Stocks
+echo "📥 Downloading Nifty 50 (Regime Filter)..."
+docker compose run --rm backfiller python main.py --symbol "NSE_INDEX|Nifty 50" --start "$START_DATE" --end "$END_DATE" > /dev/null 2>&1
 
 for stock_entry in "${STOCKS[@]}"; do
     IFS=':' read -r symbol name <<< "$stock_entry"
@@ -210,8 +225,19 @@ docker compose run -d --rm \
 echo "⏳ Waiting for pipeline to initialize..."
 sleep 15
 
+# Replay Nifty 50 First
+echo "📡 Replaying Nifty 50..."
+docker compose run -d --rm \
+    -e RUN_ID="$RUN_ID" \
+    historical_replayer python main.py \
+    --symbol "NSE_INDEX|Nifty 50" \
+    --start "$START_DATE" \
+    --end "$END_DATE" \
+    --timeframe "1m" \
+    --speed 0
+
 # Replay all stocks in parallel (unlimited speed for backtest)
-echo "📡 Replaying historical data for 5 stocks..."
+echo "📡 Replaying historical data for ${#STOCKS[@]} stocks..."
 for stock_entry in "${STOCKS[@]}"; do
     IFS=':' read -r symbol name <<< "$stock_entry"
     echo "  → $name"
@@ -273,7 +299,7 @@ WHERE run_id = '$RUN_ID';
 SELECT 
     ROUND(balance, 2) as "Final Cash",
     ROUND(equity, 2) as "Final Equity",
-    ROUND(equity - 20000, 2) as "Net Change (₹)"
+    ROUND(equity - 5000, 2) as "Net Change (₹)"
 FROM backtest_portfolios
 WHERE run_id = '$RUN_ID';
 
