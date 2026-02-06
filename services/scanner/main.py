@@ -1,15 +1,21 @@
 import os
+import argparse
 import requests
 import json
 import time
 import psycopg2
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from confluent_kafka import Producer
 from dotenv import load_dotenv
 
+import sys
 load_dotenv()
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s:%(name)s:%(message)s',
+    stream=sys.stderr
+)
 logger = logging.getLogger("MarketScanner")
 
 # Kafka Configuration
@@ -132,9 +138,50 @@ def scan():
         logger.error(f"Scan Loop Error: {e}")
 
 if __name__ == "__main__":
-    while True:
-        # Check if market is open (9:15 - 15:30)
-        # For testing, we run it regardless of time
+    import math
+    import urllib.parse
+    
+    parser = argparse.ArgumentParser(description="Market Scanner for Stock Selection")
+    parser.add_argument("--date", type=str, help="Target date for historical scan (YYYY-MM-DD)")
+    parser.add_argument("--top-n", type=int, default=5, help="Number of top stocks to select")
+    parser.add_argument("--output", type=str, choices=["json", "symbols"], default="json")
+    parser.add_argument("--live", action="store_true", help="Run in live continuous mode")
+    args = parser.parse_args()
+    
+    if args.date:
+        # Historical mode for backtesting
+        logger.info(f"📊 Historical scan for {args.date}...")
+        QUESTDB_URL = os.getenv('QUESTDB_URL', 'http://questdb_tsdb:9000')
+        query = f"""
+        SELECT symbol, first(open) as open_price, max(high) - min(low) as day_range, sum(volume) as total_volume
+        FROM ohlc WHERE timestamp >= '{args.date}T03:45:00.000000Z' AND timestamp <= '{args.date}T10:00:00.000000Z'
+        GROUP BY symbol
+        """
+        try:
+            encoded = urllib.parse.urlencode({"query": query})
+            resp = requests.get(f"{QUESTDB_URL}/exec?{encoded}")
+            if resp.status_code == 200:
+                dataset = resp.json().get('dataset', [])
+                scored = []
+                for row in dataset:
+                    sym, op, dr, vol = row
+                    if op and op > 0:
+                        range_pct = (dr / op) * 100
+                        score = range_pct * math.log10(max(vol, 1))
+                        scored.append({"symbol": sym, "score": round(score, 2), "range_pct": round(range_pct, 2)})
+                top = sorted(scored, key=lambda x: x['score'], reverse=True)[:args.top_n]
+                if args.output == "json":
+                    print(json.dumps(top, indent=2))
+                else:
+                    print(",".join([s['symbol'] for s in top]))
+            else:
+                logger.error(f"QuestDB Error: {resp.status_code}")
+        except Exception as e:
+            logger.error(f"Historical Scan Error: {e}")
+    elif args.live:
+        while True:
+            scan()
+            logger.info("Next scan in 5 minutes...")
+            time.sleep(300)
+    else:
         scan()
-        logger.info("Next scan in 5 minutes...")
-        time.sleep(300) # Wait 5 minutes to stay within Rate Limits

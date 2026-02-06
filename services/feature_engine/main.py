@@ -117,10 +117,32 @@ class QuantProcessor:
 def ensure_topics():
     """Auto-create topics if they don't exist"""
     a = AdminClient({'bootstrap.servers': KAFKA_SERVER})
-    # Also ensure the raw ticks topic exists so consumers don't error with UNKNOWN_TOPIC
-    topics = ["market.equity.ticks", "market.enriched.ticks", "strategy.signals"]
-    new_topics = [NewTopic(t, num_partitions=12, replication_factor=1) for t in topics]
-    a.create_topics(new_topics)
+    
+    # Base topics
+    base_topics = ["market.equity.ticks", "market.enriched.ticks", "strategy.signals"]
+    
+    # Run-specific topics for backtest
+    run_topics = []
+    if RUN_ID and BACKTEST_MODE:
+        run_topics = [f"market.equity.ticks.{RUN_ID}", f"market.enriched.ticks.{RUN_ID}"]
+    
+    topics_to_create = base_topics + run_topics
+    
+    logger.info(f"Ensuring Kafka topics: {topics_to_create}")
+    new_topics = [NewTopic(t, num_partitions=1, replication_factor=1) for t in topics_to_create]
+    # We use num_partitions=1 for backtest reproducibility
+    
+    fs = a.create_topics(new_topics)
+    
+    # Wait for each operation to finish
+    for topic, f in fs.items():
+        try:
+            f.result()  # The result itself is None
+            logger.info(f"Topic {topic} created")
+        except Exception as e:
+            if "already exists" in str(e).lower():
+                continue
+            logger.warning(f"Failed to create topic {topic}: {e}")
 
 def run():
     ensure_topics()

@@ -29,6 +29,7 @@ class EnhancedORB:
                 'buffer': [], # To hold recent ticks for ATR/SuperTrend
                 'max_buffer': 100,
                 'last_processed_minute': -1,
+                'last_processed_date': None,
                 'active_trade': None, # {type, entry, sl, tgt}
                 'trades_today': 0,
                 'last_exit_time': None
@@ -37,6 +38,10 @@ class EnhancedORB:
 
     MAX_TRADES_PER_DAY = 3
     COOLDOWN_MINUTES = 15
+    
+    # Strategy Optimization Parameters (Phase 3)
+    MIN_ATR_PERCENT = 0.01       # Skip trading if ATR < 0.01% of LTP (extremely narrow)
+    TRAILING_STOP_TRIGGER = 1.5  # Move SL to breakeven after 1.5x ATR profit
 
     def calculate_atr(self, df, period=14):
         if len(df) < period + 1:
@@ -81,7 +86,19 @@ class EnhancedORB:
         
         state = self._get_or_create_state(symbol)
         
-        # 0. RE-SYNC STATE ON RESTART
+        # Day Reset Logic
+        tick_date = dt.date()
+        if state['last_processed_date'] and tick_date > state['last_processed_date']:
+            logger.info(f"📆 New Day Detected for {symbol}: {tick_date}. Resetting state.")
+            state['orb_high'] = None
+            state['orb_low'] = None
+            state['orb_set'] = False
+            state['buffer'] = []
+            state['trades_today'] = 0
+            state['last_exit_time'] = None
+            state['last_processed_minute'] = -1
+
+        state['last_processed_date'] = tick_date
         if current_qty != 0 and state['active_trade'] is None:
             # We have a position but lost state in memory. Re-calculate SL/Target from avg_price if provided.
             entry = avg_price if avg_price else ltp
@@ -100,6 +117,13 @@ class EnhancedORB:
             
             # LONG EXIT
             if trade['type'] == 'LONG':
+                # Trailing Stop: Move SL to breakeven after 1.5x ATR profit
+                profit = ltp - trade['entry']
+                atr_estimate = abs(trade['tgt'] - trade['entry']) / 3.0  # Reverse calc ATR
+                if profit >= atr_estimate * self.TRAILING_STOP_TRIGGER and trade['sl'] < trade['entry']:
+                    trade['sl'] = trade['entry']  # Lock in breakeven
+                    logger.info(f"📈 [ORB_V1] TRAILING STOP ACTIVATED: {symbol} - SL moved to breakeven {trade['entry']}")
+                    
                 if ltp <= trade['sl']:
                     logger.info(f"🛑 [ORB_V1] STOP LOSS HIT: {symbol} @ {ltp} (Entry: {trade['entry']}, SL: {trade['sl']})")
                     exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "SELL", "price": ltp, "reason": "SL_HIT"}
@@ -109,6 +133,13 @@ class EnhancedORB:
             
             # SHORT EXIT
             elif trade['type'] == 'SHORT':
+                # Trailing Stop: Move SL to breakeven after 1.5x ATR profit
+                profit = trade['entry'] - ltp
+                atr_estimate = abs(trade['entry'] - trade['tgt']) / 3.0
+                if profit >= atr_estimate * self.TRAILING_STOP_TRIGGER and trade['sl'] > trade['entry']:
+                    trade['sl'] = trade['entry']  # Lock in breakeven
+                    logger.info(f"📉 [ORB_V1] TRAILING STOP ACTIVATED: {symbol} - SL moved to breakeven {trade['entry']}")
+                    
                 if ltp >= trade['sl']:
                     logger.info(f"🛑 [ORB_V1] STOP LOSS HIT: {symbol} @ {ltp} (Entry: {trade['entry']}, SL: {trade['sl']})")
                     exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "BUY", "price": ltp, "reason": "SL_HIT"}
@@ -169,6 +200,15 @@ class EnhancedORB:
         orb_range_pct = (state['orb_high'] - state['orb_low']) / ltp * 100
         if not (0.1 <= orb_range_pct <= 2.5):
             return None
+        
+        # MIN ATR Filter: Skip trading if volatility is too low
+        atr_pct = (atr / ltp) * 100 if ltp > 0 else 0
+        
+        # DEBUG: Log indicators
+        logger.debug(f"📊 {symbol} | Time={dt} | LTP={ltp} | ATR={atr:.2f} ({atr_pct:.2f}%) | ST={st_dir} | ORB=[{state['orb_low']}-{state['orb_high']}] ({orb_range_pct:.2f}%)")
+        
+        if atr_pct < self.MIN_ATR_PERCENT:
+            return None
 
         if current_qty == 0:
             # 4. ENTRY GUARDRAILS
@@ -178,40 +218,49 @@ class EnhancedORB:
             if state['last_exit_time']:
                 cooldown_remaining = (dt - state['last_exit_time']).total_seconds() / 60
                 if cooldown_remaining < self.COOLDOWN_MINUTES:
-                    # logger.info(f"⏳ Cooldown active for {symbol}: {cooldown_remaining:.2f} mins left at {dt}")
                     return None
 
-            if ltp > state['orb_high'] and ltp > vwap and st_dir == 1:
-                sl = max(state['orb_low'], ltp - (atr * 1.5))
-                target = ltp + (atr * 3.0)
-                
-                state['active_trade'] = {'type': 'LONG', 'entry': ltp, 'sl': sl, 'tgt': target}
-                state['trades_today'] += 1
-                logger.info(f"⚡ [ORB_V1] LONG: {symbol} @ {ltp} | SL: {sl} | TGT: {target} (Trade #{state['trades_today']} at {dt})")
-                return {
-                    "strategy_id": self.strategy_id,
-                    "symbol": symbol,
-                    "action": "BUY",
-                    "price": ltp,
-                    "stop_loss": sl,
-                    "target": target
-                }
+            # DEBUG: Log breakout potential
+            if ltp > state['orb_high'] or ltp < state['orb_low']:
+                logger.debug(f"🔍 BREAKOUT DETECTED: {symbol} @ {ltp} (ORB: {state['orb_low']}-{state['orb_high']}, ST: {st_dir}, VWAP: {vwap})")
+
+            # DEBUG: Log breakout potential
+            is_breakout = ltp > state['orb_high']
+            is_breakdown = ltp < state['orb_low']
             
-            elif ltp < state['orb_low'] and ltp < vwap and st_dir == -1:
-                sl = min(state['orb_high'], ltp + (atr * 1.5))
-                target = ltp - (atr * 3.0)
+            if is_breakout or is_breakdown:
+                dir_match = (is_breakout and st_dir == 1) or (is_breakdown and st_dir == -1)
+                # Removed VWAP check for now to simplify
                 
-                state['active_trade'] = {'type': 'SHORT', 'entry': ltp, 'sl': sl, 'tgt': target}
-                state['trades_today'] += 1
-                logger.info(f"⚡ [ORB_V1] SHORT: {symbol} @ {ltp} | SL: {sl} | TGT: {target} (Trade #{state['trades_today']} at {dt})")
-                return {
-                    "strategy_id": self.strategy_id,
-                    "symbol": symbol,
-                    "action": "SELL",
-                    "price": ltp,
-                    "stop_loss": sl,
-                    "target": target
-                }
+                if dir_match:
+                    sl_dist = max(atr * 1.5, ltp * 0.002) # Min 0.2% SL
+                    if is_breakout:
+                        sl = max(state['orb_low'], ltp - sl_dist)
+                        target = ltp + (atr * 3.0)
+                        state['active_trade'] = {'type': 'LONG', 'entry': ltp, 'sl': sl, 'tgt': target}
+                        logger.info(f"⚡ [ORB_V1] LONG ENTRY: {symbol} @ {ltp} | SL: {sl} | TGT: {target}")
+                        action = "BUY"
+                    else:
+                        sl = min(state['orb_high'], ltp + sl_dist)
+                        target = ltp - (atr * 3.0)
+                        state['active_trade'] = {'type': 'SHORT', 'entry': ltp, 'sl': sl, 'tgt': target}
+                        logger.info(f"⚡ [ORB_V1] SHORT ENTRY: {symbol} @ {ltp} | SL: {sl} | TGT: {target}")
+                        action = "SELL"
+                    
+                    state['trades_today'] += 1
+                    return {
+                        "strategy_id": self.strategy_id,
+                        "symbol": symbol,
+                        "action": action,
+                        "price": ltp,
+                        "stop_loss": sl,
+                        "target": target
+                    }
+                else:
+                    if is_breakout:
+                        logger.debug(f"🙅 [ORB_V1] LONG breakout for {symbol} @ {ltp} rejected: SuperTrend={st_dir}")
+                    else:
+                        logger.debug(f"🙅 [ORB_V1] SHORT breakdown for {symbol} @ {ltp} rejected: SuperTrend={st_dir}")
         
         # EXIT LOGIC (Wait for SL/Target or End of Day handled in main.py)
         # Note: Position state management is handled by PaperExchange, 

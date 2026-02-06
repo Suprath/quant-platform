@@ -40,6 +40,34 @@ DB_CONF = {
     "database": "quant_platform"
 }
 
+def ensure_topics():
+    """Auto-create topics if they don't exist"""
+    from confluent_kafka.admin import AdminClient, NewTopic
+    a = AdminClient({'bootstrap.servers': KAFKA_SERVER})
+    
+    # Base topics
+    base_topics = ["market.enriched.ticks", "strategy.signals"]
+    
+    # Run-specific topics for backtest
+    run_topics = []
+    if RUN_ID and BACKTEST_MODE:
+        run_topics = [f"market.enriched.ticks.{RUN_ID}"]
+    
+    topics_to_create = base_topics + run_topics
+    
+    logger.info(f"Ensuring Kafka topics: {topics_to_create}")
+    new_topics = [NewTopic(t, num_partitions=1, replication_factor=1) for t in topics_to_create]
+    
+    fs = a.create_topics(new_topics)
+    for topic, f in fs.items():
+        try:
+            f.result()
+            logger.info(f"Topic {topic} created")
+        except Exception as e:
+            if "already exists" in str(e).lower():
+                continue
+            logger.warning(f"Failed to create topic {topic}: {e}")
+
 # --- WAIT FOR KAFKA ---
 def wait_for_kafka():
     """Blocks until Kafka is ready."""
@@ -70,6 +98,7 @@ def get_db_connection():
 def run_engine():
     # 0. Wait for Kafka
     wait_for_kafka()
+    ensure_topics()
 
     # 1. Initialize DB Schema
     logger.info("Initializing Database...")

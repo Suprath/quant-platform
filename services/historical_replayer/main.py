@@ -142,10 +142,9 @@ def replay_data(symbol, start_date, end_date, speed_multiplier=1, timeframe='1m'
                 logger.info(f"📡 Replayed {tick_count}/{total_ticks} ticks ({tick_count/total_ticks*100:.1f}%)")
         
         # Speed control: sleep between candles
-        # 1 minute candle in real-time = 60 seconds
-        # At 100x speed = 0.6 seconds
-        sleep_time = (60.0 / speed_multiplier) / 4  # Divide by 4 since we send 4 ticks
-        time.sleep(sleep_time)
+        if speed_multiplier > 0:
+            sleep_time = (60.0 / speed_multiplier) / 4  # Divide by 4 since we send 4 ticks
+            time.sleep(sleep_time)
     
     producer.flush()
     elapsed = time.time() - start_time

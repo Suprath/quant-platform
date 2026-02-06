@@ -2,38 +2,122 @@
 # Multi-Stock Backtest: Scans for top 5 performers, downloads data, backtests all
 set -e
 
-echo "======================================================================"
-echo "  MULTI-STOCK BACKTEST - TOP 5 YESTERDAY'S PERFORMERS"
-echo "======================================================================"
+# ============================================================================
+# CLI ARGUMENT PARSING
+# ============================================================================
+usage() {
+    echo "Usage: $0 [-s START_DATE] [-e END_DATE] [-t STOCKS] [-u]"
+    echo ""
+    echo "Options:"
+    echo "  -s  Start date for backtest (YYYY-MM-DD). Default: yesterday."
+    echo "  -e  End date for backtest (YYYY-MM-DD). Default: today."
+    echo "  -t  Comma-separated stock symbols (e.g., 'NSE_EQ|INE002A01018,NSE_EQ|INE040A01034')."
+    echo "      Default: Top 5 liquid stocks."
+    echo "  -u  Use dynamic scanner to select best stocks for the target date."
+    echo "  -h  Show this help message."
+    echo ""
+    echo "Examples:"
+    echo "  $0 -s 2026-02-03 -e 2026-02-04"
+    echo "  $0 -s 2026-02-05 -e 2026-02-06 -u   # Use scanner"
+    echo "  $0 -t 'NSE_EQ|INE002A01018,NSE_EQ|INE040A01034'"
+    exit 1
+}
 
-# Configuration
-YESTERDAY="2026-02-05"
-START_DATE="2026-02-05"
-END_DATE="2026-02-06"
+
+# Defaults
+DEFAULT_START_DATE=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d "yesterday" +%Y-%m-%d)
+DEFAULT_END_DATE=$(date +%Y-%m-%d)
+START_DATE=""
+END_DATE=""
+CUSTOM_STOCKS=""
+
+# Parse arguments
+USE_SCANNER=false
+while getopts ":s:e:t:uh" opt; do
+    case ${opt} in
+        s ) START_DATE="$OPTARG" ;;
+        e ) END_DATE="$OPTARG" ;;
+        t ) CUSTOM_STOCKS="$OPTARG" ;;
+        u ) USE_SCANNER=true ;;
+        h ) usage ;;
+        \? ) echo "Invalid option: -$OPTARG" >&2; usage ;;
+        : ) echo "Option -$OPTARG requires an argument." >&2; usage ;;
+    esac
+done
+shift $((OPTIND -1))
+
+
+# Apply defaults if not provided
+START_DATE="${START_DATE:-$DEFAULT_START_DATE}"
+END_DATE="${END_DATE:-$DEFAULT_END_DATE}"
 RUN_ID="multi_test_$(date +%s)"
 
+# Every docker command needs to be in the infra directory
+cd infra
+
+# Stock list: use scanner, custom, or default
+if [ "$USE_SCANNER" = true ]; then
+    echo "🔍 Running Stock Scanner for $START_DATE..."
+    # We use -q or grep to ensure only the LAST line (the symbols) is captured if there are logs
+    SCANNED_SYMBOLS=$(docker compose run --rm scanner python main.py --date "$START_DATE" --output symbols --top-n 5 | tail -n 1)
+    if [ -z "$SCANNED_SYMBOLS" ] || [[ "$SCANNED_SYMBOLS" == *"INFO"* ]]; then
+        echo "⚠️ Scanner returned no valid results. Using defaults."
+        STOCKS=(
+            "NSE_EQ|INE002A01018:Reliance"
+            "NSE_EQ|INE040A01034:HDFC Bank"
+            "NSE_EQ|INE467B01029:Tata Steel"
+            "NSE_EQ|INE019A01038:ITC"
+            "NSE_EQ|INE062A01020:SBIN"
+        )
+    else
+        echo "✅ Scanner selected: $SCANNED_SYMBOLS"
+        IFS=',' read -ra SYMBOLS <<< "$SCANNED_SYMBOLS"
+        STOCKS=()
+        for sym in "${SYMBOLS[@]}"; do
+            STOCKS+=("$sym:Scanned")
+        done
+    fi
+elif [ -n "$CUSTOM_STOCKS" ]; then
+    # Convert comma-separated symbols to array format
+    IFS=',' read -ra SYMBOLS <<< "$CUSTOM_STOCKS"
+    STOCKS=()
+    for sym in "${SYMBOLS[@]}"; do
+        STOCKS+=("$sym:Custom")
+    done
+else
+    # Default Top 5 liquid stocks
+    STOCKS=(
+        "NSE_EQ|INE002A01018:Reliance"
+        "NSE_EQ|INE040A01034:HDFC Bank"
+        "NSE_EQ|INE467B01029:Tata Steel"
+        "NSE_EQ|INE019A01038:ITC"
+        "NSE_EQ|INE062A01020:SBIN"
+    )
+fi
+
+
+echo "======================================================================"
+echo "  MULTI-STOCK BACKTEST"
+echo "======================================================================"
 echo ""
-echo "📅 Backtest Date: $YESTERDAY"
+echo "📅 Start Date: $START_DATE"
+echo "📅 End Date: $END_DATE"
 echo "💰 Capital: ₹20,000"
 echo "📊 Strategy: Enhanced ORB (15m) - Backtest Mode"
 echo "🔖 Run ID: $RUN_ID"
+echo "📈 Stocks: ${#STOCKS[@]}"
 echo ""
-
-# Top 5 liquid stocks to scan (popular, high volume)
-STOCKS=(
-    "NSE_EQ|INE002A01018:Reliance"
-    "NSE_EQ|INE040A01034:HDFC Bank"
-    "NSE_EQ|INE467B01029:Tata Steel"
-    "NSE_EQ|INE019A01038:ITC"
-    "NSE_EQ|INE062A01020:SBIN"
-)
-
-cd infra
 
 echo "STEP 0: Cleaning up old test containers"
 echo "======================================================================"
 docker rm -f strategy_backtest feature_engine_backtest 2>/dev/null || true
+docker ps -a --filter "name=historical_replayer" -q | xargs docker rm -f 2>/dev/null || true
 docker container prune -f --filter "label=com.docker.compose.service=historical_replayer"
+
+# Clear QuestDB OHLC to avoid replaying old data from previous runs
+echo "🧹 Clearing stale QuestDB data..."
+docker exec questdb_tsdb curl -G "http://localhost:9000/exec?query=TRUNCATE+TABLE+ohlc" > /dev/null 2>&1
+docker exec questdb_tsdb curl -G "http://localhost:9000/exec?query=TRUNCATE+TABLE+prices" > /dev/null 2>&1
 
 echo ""
 echo "======================================================================"
@@ -126,7 +210,7 @@ docker compose run -d --rm \
 echo "⏳ Waiting for pipeline to initialize..."
 sleep 15
 
-# Replay all stocks in parallel
+# Replay all stocks in parallel (unlimited speed for backtest)
 echo "📡 Replaying historical data for 5 stocks..."
 for stock_entry in "${STOCKS[@]}"; do
     IFS=':' read -r symbol name <<< "$stock_entry"
@@ -139,12 +223,18 @@ for stock_entry in "${STOCKS[@]}"; do
         --start "$START_DATE" \
         --end "$END_DATE" \
         --timeframe "1m" \
-        --speed 100 > /dev/null 2>&1
+        --speed 0
 done
 
 echo ""
-echo "⏳ Waiting for replays to complete (~5 minutes)..."
-sleep 90  # Wait for replays (1500 ticks @ 100x = 225s + buffer)
+echo "⏳ Waiting for replays to complete..."
+# Wait while any historical_replayer container is still running
+while docker ps --format '{{.Names}}' | grep -q "historical_replayer"; do
+    sleep 5
+done
+
+# Small buffer for Kafka consumers to finish processing the last ticks
+sleep 15
 
 # Cleanup
 docker stop strategy_backtest feature_engine_backtest 2>/dev/null || true
