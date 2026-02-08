@@ -7,17 +7,16 @@ from datetime import datetime, time as dt_time
 from confluent_kafka import Consumer
 from dotenv import load_dotenv
 
+import importlib
+
 # Internal Modules
 try:
     from schema import ensure_schema
     from paper_exchange import PaperExchange
-    from strategies.orb import EnhancedORB
-    from strategies.momentum import MomentumStrategy
 except ImportError:
     # Fallback for Docker path issues if modules aren't top-level
     from services.strategy_runtime.schema import ensure_schema
     from services.strategy_runtime.paper_exchange import PaperExchange
-    from services.strategy_runtime.strategies.orb import EnhancedORB
 
 load_dotenv()
 
@@ -107,10 +106,56 @@ def run_engine():
     ensure_schema(conn)
     conn.close()
 
-    # 2. Components
+    # 2. Dynamic Strategy Selection
     exchange = PaperExchange(DB_CONF, backtest_mode=BACKTEST_MODE, run_id=RUN_ID)
-    strategy = EnhancedORB(strategy_id="ORB_V1", orb_minutes=15, backtest_mode=BACKTEST_MODE)
-    # strategy = MomentumStrategy(strategy_id="MOMENTUM_OLD", backtest_mode=BACKTEST_MODE)
+    
+    # Load strategy dynamically from environment variable
+    # Expected format: module_name.ClassName (e.g., orb.EnhancedORB)
+    strategy_name_env = os.getenv('STRATEGY_NAME')
+    if not strategy_name_env: strategy_name_env = 'orb.EnhancedORB'
+    
+    strategy_params_env = os.getenv('STRATEGY_PARAMS')
+    if not strategy_params_env: strategy_params_env = '{}' # JSON string
+    
+    logger.debug(f"Raw STRATEGY_PARAMS from env: [{strategy_params_env}]")
+    
+    try:
+        module_path, class_name = strategy_name_env.rsplit('.', 1)
+        # Attempt relative import for the strategies package
+        try:
+            module = importlib.import_module(f"strategies.{module_path}")
+        except ImportError:
+            # Fallback for different container working directory structures
+            module = importlib.import_module(f"services.strategy_runtime.strategies.{module_path}")
+            
+        StrategyClass = getattr(module, class_name)
+        
+        # Robust JSON extraction: Handle list wrapping and trailing garbage via raw_decode
+        try:
+            # 1. Remove list wrapping if present
+            clean_str = strategy_params_env.strip()
+            if clean_str.startswith('[') and clean_str.endswith(']'):
+                clean_str = clean_str[1:-1]
+            
+            # 2. Use raw_decode to parse first valid JSON object and ignore trailing chars (like '}')
+            params, _ = json.JSONDecoder().raw_decode(clean_str)
+                
+        except json.JSONDecodeError:
+            logger.warning(f"⚠️ invalid JSON in STRATEGY_PARAMS: {strategy_params_env}. Using empty dict.")
+            params = {}
+        
+        # Add standard params
+        params['strategy_id'] = params.get('strategy_id', f"{class_name}_V1")
+        params['backtest_mode'] = BACKTEST_MODE
+        
+        logger.info(f"🧩 Loading Strategy: {strategy_name_env} with params: {params}")
+        strategy = StrategyClass(**params)
+    except Exception as e:
+        logger.error(f"❌ Failed to load strategy {strategy_name_env}: {e}")
+        # Fallback to EnhancedORB to prevent crash if default exists
+        from strategies.orb import EnhancedORB
+        strategy = EnhancedORB(strategy_id="ORB_FALLBACK", orb_minutes=15, backtest_mode=BACKTEST_MODE)
+        logger.warning("⚠️ Using EnhancedORB as fallback.")
 
     # Topics depend on mode
     input_topic = f'market.enriched.ticks.{RUN_ID}' if BACKTEST_MODE else 'market.enriched.ticks'

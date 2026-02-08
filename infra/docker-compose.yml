@@ -116,6 +116,8 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
       - PYTHONUNBUFFERED=1
+      - STRATEGY_NAME
+      - STRATEGY_PARAMS
     volumes:
       - ../services/strategy_runtime:/app
     restart: always

@@ -10,10 +10,11 @@ class EnhancedORB:
     """
     Enhanced Opening Range Breakout (ORB) Strategy for high-frequency tick processing.
     """
-    def __init__(self, strategy_id="ORB_V1", orb_minutes=15, backtest_mode=False):
+    def __init__(self, strategy_id="ORB_V1", orb_minutes=15, backtest_mode=False, use_obi=False):
         self.strategy_id = strategy_id
         self.orb_minutes = orb_minutes
         self.backtest_mode = backtest_mode
+        self.use_obi = use_obi
         
         # State per symbol
         self.symbol_state = {}
@@ -51,6 +52,7 @@ class EnhancedORB:
     TARGET_2_ATR = 6.0           # Extended for "Super-Trend" capture
     TRAILING_STOP_TRIGGER = 1.5  # Move remaining SL to breakeven
     PULLBACK_THRESHOLD = 0.0005  # 0.05% pullback limit for entry
+    OBI_THRESHOLD = 0.2          # Minimum OBI for confirmation (0.2 = ~60% buy side)
 
     def calculate_atr(self, df, period=14):
         if len(df) < period + 1:
@@ -258,6 +260,25 @@ class EnhancedORB:
             if state['trades_today'] >= self.MAX_TRADES_PER_DAY:
                 return None
             
+            # OBI Check (Optional)
+            if self.use_obi:
+                # During backtest, 'obi' might be missing. Default to 0.0 if not found.
+                current_obi = float(tick.get('obi', 0.0))
+                # If OBI is 0, it likely means no depth data (backtest). We can choose to skip or warn.
+                # For safety in hybrid modes, we'll log a warning if 0 but use_obi is True.
+                if current_obi == 0.0:
+                     # logger.warning(f"⚠️ OBI missing/zero for {symbol} but use_obi=True. Ignoring filter.")
+                     pass
+                else:
+                     # If trying to go LONG, require positive OBI
+                     if state['orb_high'] and ltp > state['orb_high'] and current_obi < self.OBI_THRESHOLD:
+                         if minute_key % 5 == 0: logger.debug(f"🛑 {symbol} LONG Rejected: OBI {current_obi} < {self.OBI_THRESHOLD}")
+                         return None
+                     # If trying to go SHORT, require negative OBI 
+                     if state['orb_low'] and ltp < state['orb_low'] and current_obi > -self.OBI_THRESHOLD:
+                         if minute_key % 5 == 0: logger.debug(f"🛑 {symbol} SHORT Rejected: OBI {current_obi} > -{self.OBI_THRESHOLD}")
+                         return None
+
             # Index Regime Filter
             if self.nifty_sma > 0:
                 is_bullish = self.nifty_ltp > self.nifty_sma

@@ -59,6 +59,7 @@ def ensure_schema(conn):
                 day_high DOUBLE,
                 day_low DOUBLE,
                 spread DOUBLE,
+                obi DOUBLE,
                 aggressor SYMBOL
             ) TIMESTAMP(timestamp) PARTITION BY DAY;
         """)
@@ -115,8 +116,8 @@ def run_persistor():
                     cur.execute("""
                         INSERT INTO ticks (
                             timestamp, symbol, ltp, volume, oi, 
-                            day_high, day_low, spread, aggressor
-                        ) VALUES (now(), %s, %s, %s, %s, %s, %s, %s, %s)
+                            day_high, day_low, spread, obi, aggressor
+                        ) VALUES (now(), %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         data.get('symbol'),
                         data.get('ltp'),
@@ -124,7 +125,9 @@ def run_persistor():
                         data.get('oi', 0), # OI passed through feature engine
                         data.get('day_high'),
                         data.get('day_low'),
+                        data.get('day_low'),
                         data.get('spread'),
+                        data.get('obi', 0.0),
                         data.get('aggressor', 'NEUTRAL')
                     ))
 

@@ -13,7 +13,8 @@ usage() {
     echo "  -e  End date for backtest (YYYY-MM-DD). Default: today."
     echo "  -t  Comma-separated stock symbols (e.g., 'NSE_EQ|INE002A01018,NSE_EQ|INE040A01034')."
     echo "      Default: Top 5 liquid stocks."
-    echo "  -u  Use dynamic scanner to select best stocks for the target date."
+    echo "  -y  Strategy path (e.g., 'orb.EnhancedORB'). Default: orb.EnhancedORB."
+    echo "  -p  Strategy params in JSON (e.g., '{\"orb_minutes\": 15}')."
     echo "  -h  Show this help message."
     echo ""
     echo "Examples:"
@@ -33,11 +34,13 @@ CUSTOM_STOCKS=""
 
 # Parse arguments
 USE_SCANNER=false
-while getopts ":s:e:t:uh" opt; do
+while getopts ":s:e:t:y:p:uh" opt; do
     case ${opt} in
         s ) START_DATE="$OPTARG" ;;
         e ) END_DATE="$OPTARG" ;;
         t ) CUSTOM_STOCKS="$OPTARG" ;;
+        y ) STRATEGY_NAME="$OPTARG" ;;
+        p ) STRATEGY_PARAMS="$OPTARG" ;;
         u ) USE_SCANNER=true ;;
         h ) usage ;;
         \? ) echo "Invalid option: -$OPTARG" >&2; usage ;;
@@ -230,9 +233,18 @@ docker compose run -d --rm \
     feature_engine python main.py > /dev/null 2>&1
 
 echo "🚀 Starting Strategy Runtime (Backtest Mode)..."
+
+echo "🐛 DEBUG: STRATEGY_PARAMS='$STRATEGY_PARAMS'"
+
+# Export variables for Docker Compose to pick up
+export STRATEGY_NAME="${STRATEGY_NAME:-orb.EnhancedORB}"
+export STRATEGY_PARAMS="${STRATEGY_PARAMS:-{}}"
+
 docker compose run -d --rm \
     -e BACKTEST_MODE=true \
     -e RUN_ID="$RUN_ID" \
+    -e STRATEGY_NAME \
+    -e STRATEGY_PARAMS \
     --name strategy_backtest \
     strategy_runtime python main.py > /dev/null 2>&1
 
