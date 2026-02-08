@@ -151,20 +151,22 @@ class EnhancedORB:
                 # Partial Target 1 (1.5x ATR)
                 if not trade.get('t1_hit') and ltp >= trade['t1']:
                     trade['t1_hit'] = True
+                    # Auto-Breakeven: Move SL to Breakeven
                     trade['sl'] = trade['entry'] # Move SL to Breakeven
                     logger.info(f"🎯 [ORB_V1] TARGET 1 HIT (Partial): {symbol} @ {ltp} | SL moved to Breakeven")
                     return {
                         "strategy_id": self.strategy_id, "symbol": symbol, 
                         "action": "SELL", "price": ltp, "quantity": abs(current_qty) // 2,
-                        "reason": "TARGET_1_PARTIAL"
+                        "reason": "TARGET_1_PARTIAL",
+                        "timestamp": dt
                     }
 
                 if ltp <= trade['sl']:
                     logger.info(f"🛑 [ORB_V1] STOP LOSS HIT: {symbol} @ {ltp} (Entry: {trade['entry']}, SL: {trade['sl']})")
-                    exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "SELL", "price": ltp, "reason": "SL_HIT"}
+                    exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "SELL", "price": ltp, "reason": "SL_HIT", "timestamp": dt}
                 elif ltp >= trade['t2']:
                     logger.info(f"🎯 [ORB_V1] FINAL TARGET HIT: {symbol} @ {ltp} (Entry: {trade['entry']}, TGT: {trade['t2']})")
-                    exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "SELL", "price": ltp, "reason": "TARGET_2_HIT"}
+                    exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "SELL", "price": ltp, "reason": "TARGET_2_HIT", "timestamp": dt}
             
             # SHORT EXIT
             elif trade['type'] == 'SHORT':
@@ -176,15 +178,16 @@ class EnhancedORB:
                     return {
                         "strategy_id": self.strategy_id, "symbol": symbol, 
                         "action": "BUY", "price": ltp, "quantity": abs(current_qty) // 2,
-                        "reason": "TARGET_1_PARTIAL"
+                        "reason": "TARGET_1_PARTIAL",
+                        "timestamp": dt
                     }
 
                 if ltp >= trade['sl']:
                     logger.info(f"🛑 [ORB_V1] STOP LOSS HIT: {symbol} @ {ltp} (Entry: {trade['entry']}, SL: {trade['sl']})")
-                    exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "BUY", "price": ltp, "reason": "SL_HIT"}
+                    exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "BUY", "price": ltp, "reason": "SL_HIT", "timestamp": dt}
                 elif ltp <= trade['t2']:
                     logger.info(f"🎯 [ORB_V1] FINAL TARGET HIT: {symbol} @ {ltp} (Entry: {trade['entry']}, TGT: {trade['t2']})")
-                    exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "BUY", "price": ltp, "reason": "TARGET_2_HIT"}
+                    exit_signal = {"strategy_id": self.strategy_id, "symbol": symbol, "action": "BUY", "price": ltp, "reason": "TARGET_2_HIT", "timestamp": dt}
 
             if exit_signal:
                 state['active_trade'] = None
@@ -326,7 +329,8 @@ class EnhancedORB:
                         state['pending_pullback'] = None
                         return {
                             "strategy_id": self.strategy_id, "symbol": symbol, "action": action,
-                            "price": ltp, "stop_loss": sl, "target": t2
+                            "price": ltp, "stop_loss": sl, "target": t2,
+                            "timestamp": dt
                         }
 
             # If no pending pullback, look for first break to start pullback guard
@@ -368,13 +372,13 @@ class EnhancedORB:
                     logger.info(f"🔴 [ORB_V1] STOP LOSS HIT for {symbol} @ {ltp} | PnL: {ltp - trade['entry']:.2f}")
                     state['active_trade'] = None
                     state['last_exit_time'] = dt
-                    return {"strategy_id": self.strategy_id, "symbol": symbol, "action": "SELL", "price": ltp}
+                    return {"strategy_id": self.strategy_id, "symbol": symbol, "action": "SELL", "price": ltp, "timestamp": dt}
                 
                 if ltp >= trade['t2']:
                     logger.info(f"💰 [ORB_V1] TARGET 2 HIT for {symbol} @ {ltp} | PnL: {ltp - trade['entry']:.2f}")
                     state['active_trade'] = None
                     state['last_exit_time'] = dt
-                    return {"strategy_id": self.strategy_id, "symbol": symbol, "action": "SELL", "price": ltp}
+                    return {"strategy_id": self.strategy_id, "symbol": symbol, "action": "SELL", "price": ltp, "timestamp": dt}
 
             # --- SHORT EXIT LOGIC ---
             elif trade['type'] == 'SHORT':
@@ -387,12 +391,12 @@ class EnhancedORB:
                     logger.info(f"🔴 [ORB_V1] STOP LOSS HIT for {symbol} @ {ltp} | PnL: {trade['entry'] - ltp:.2f}")
                     state['active_trade'] = None
                     state['last_exit_time'] = dt
-                    return {"strategy_id": self.strategy_id, "symbol": symbol, "action": "BUY", "price": ltp}
+                    return {"strategy_id": self.strategy_id, "symbol": symbol, "action": "BUY", "price": ltp, "timestamp": dt}
                 
                 if ltp <= trade['t2']:
                     logger.info(f"💰 [ORB_V1] TARGET 2 HIT for {symbol} @ {ltp} | PnL: {trade['entry'] - ltp:.2f}")
                     state['active_trade'] = None
                     state['last_exit_time'] = dt
-                    return {"strategy_id": self.strategy_id, "symbol": symbol, "action": "BUY", "price": ltp}
+                    return {"strategy_id": self.strategy_id, "symbol": symbol, "action": "BUY", "price": ltp, "timestamp": dt}
 
         return None

@@ -101,8 +101,14 @@ class PaperExchange:
                     
                     logger.info(f"🔵 COVERED {quantity} {symbol} @ {price} | PnL: {pnl:.2f}")
                     
-                    insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price, pnl) VALUES (%s, %s, %s, %s, %s, %s)" if self.backtest_mode else f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price, pnl) VALUES (%s, %s, %s, %s, %s, %s)"
-                    cur.execute(insert_query, (self.run_id if self.backtest_mode else strategy_id, symbol, action, quantity, price, pnl))
+                    if self.backtest_mode:
+                        # Use simulated timestamp for backtest accuracy
+                        trade_time = signal.get('timestamp') 
+                        insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price, pnl, timestamp) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                        cur.execute(insert_query, (self.run_id, symbol, action, quantity, price, pnl, trade_time))
+                    else:
+                        insert_query = f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price, pnl) VALUES (%s, %s, %s, %s, %s, %s)"
+                        cur.execute(insert_query, (strategy_id, symbol, action, quantity, price, pnl))
                 else:
                     # Opening/Increasing a LONG
                     if balance * 5 >= cost: # Ensure we have 5x buying power
@@ -117,8 +123,13 @@ class PaperExchange:
                         """, (pid, symbol, quantity, price, price, quantity, quantity, quantity))
                         
                         logger.info(f"🟢 BOUGHT {quantity} {symbol} @ {price}")
-                        insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)" if self.backtest_mode else f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
-                        cur.execute(insert_query, (self.run_id if self.backtest_mode else strategy_id, symbol, action, quantity, price))
+                        if self.backtest_mode:
+                             trade_time = signal.get('timestamp')
+                             insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price, timestamp) VALUES (%s, %s, %s, %s, %s, %s)"
+                             cur.execute(insert_query, (self.run_id, symbol, action, quantity, price, trade_time))
+                        else:
+                             insert_query = f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
+                             cur.execute(insert_query, (strategy_id, symbol, action, quantity, price))
                     else:
                         logger.warning(f"❌ Insufficient Funds (Leveraged) for {symbol}. Req: {cost}, Bal: {balance}")
                         return False
@@ -143,8 +154,13 @@ class PaperExchange:
                         cur.execute(f"UPDATE {positions_table} SET quantity = %s WHERE portfolio_id = %s AND symbol = %s", (new_qty, pid, symbol))
                         
                     logger.info(f"🔴 SOLD {quantity} {symbol} @ {price} | PnL: {pnl:.2f}")
-                    insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price, pnl) VALUES (%s, %s, %s, %s, %s, %s)" if self.backtest_mode else f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price, pnl) VALUES (%s, %s, %s, %s, %s, %s)"
-                    cur.execute(insert_query, (self.run_id if self.backtest_mode else strategy_id, symbol, action, quantity, price, pnl))
+                    if self.backtest_mode:
+                        trade_time = signal.get('timestamp')
+                        insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price, pnl, timestamp) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                        cur.execute(insert_query, (self.run_id, symbol, action, quantity, price, pnl, trade_time))
+                    else:
+                        insert_query = f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price, pnl) VALUES (%s, %s, %s, %s, %s, %s)"
+                        cur.execute(insert_query, (strategy_id, symbol, action, quantity, price, pnl))
                 else:
                     # Opening/Increasing a SHORT
                     if balance * 5 >= cost: # Leverage check
@@ -159,8 +175,13 @@ class PaperExchange:
                         """, (pid, symbol, -quantity, price, price, quantity, quantity, quantity))
                         
                         logger.info(f"🔻 SHORTED {quantity} {symbol} @ {price}")
-                        insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)" if self.backtest_mode else f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
-                        cur.execute(insert_query, (self.run_id if self.backtest_mode else strategy_id, symbol, action, quantity, price))
+                        if self.backtest_mode:
+                            trade_time = signal.get('timestamp')
+                            insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price, timestamp) VALUES (%s, %s, %s, %s, %s, %s)"
+                            cur.execute(insert_query, (self.run_id, symbol, action, quantity, price, trade_time))
+                        else:
+                            insert_query = f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
+                            cur.execute(insert_query, (strategy_id, symbol, action, quantity, price))
                     else:
                         logger.warning(f"❌ Insufficient Funds (Leveraged) for {symbol}. Req: {cost}, Bal: {balance}")
                         return False
