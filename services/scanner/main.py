@@ -179,19 +179,41 @@ if __name__ == "__main__":
             if resp.status_code == 200:
                 dataset = resp.json().get('dataset', [])
                 scored = []
+                MIN_VOLUME = 100000  # Liquidity filter: min 100K volume
+                MIN_ATR_PCT = 1.0    # ATR floor: min 1% intraday range
+                MAX_GAP_PCT = 2.0    # Gap filter: avoid stocks gapping > 2%
+                
                 for row in dataset:
                     sym, op, cp, dr, vol = row
                     if op and op > 0:
+                        # Basic metrics
                         stock_perf = (cp - op) / op * 100
                         rs_score = stock_perf - nifty_perf
                         range_pct = (dr / op) * 100
+                        
+                        # NEW FILTERS:
+                        # 1. Liquidity check
+                        if vol < MIN_VOLUME:
+                            continue
+                        
+                        # 2. ATR floor (minimum volatility for profitable moves)
+                        if range_pct < MIN_ATR_PCT:
+                            continue
+                        
+                        # 3. Gap detection (skip if opening gap > threshold)
+                        # Note: We can't detect gap without previous close, so we use range as proxy
+                        # A stock with extreme range likely had news/gap
+                        if range_pct > 5.0:  # Skip extreme movers (likely news-driven)
+                            continue
+                        
                         # Total Score = RS + Volume Momentum
                         score = abs(rs_score) * math.log10(max(vol, 1))
                         scored.append({
                             "symbol": sym, 
                             "score": round(score, 2), 
                             "rs": round(rs_score, 2),
-                            "range_pct": round(range_pct, 2)
+                            "range_pct": round(range_pct, 2),
+                            "volume": vol
                         })
                 
                 # Sort by absolute Relative Strength (pick strongest movers)

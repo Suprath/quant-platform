@@ -4,6 +4,9 @@ import psycopg2
 logger = logging.getLogger("PaperExchange")
 
 class PaperExchange:
+    # Brokerage fee: 0.05% per trade (0.1% round trip)
+    BROKERAGE_PCT = 0.0005
+
     def __init__(self, db_config, backtest_mode=False, run_id=None):
         self.db_config = db_config
         self.backtest_mode = backtest_mode
@@ -84,7 +87,9 @@ class PaperExchange:
                     # Closing/Reducing a SHORT
                     current_qty, avg_sell_price = int(pos[0]), float(pos[1])
                     qty_to_close = min(abs(current_qty), quantity)
-                    pnl = (avg_sell_price - price) * qty_to_close
+                    trade_value = price * qty_to_close
+                    brokerage = trade_value * self.BROKERAGE_PCT * 2  # Round trip
+                    pnl = (avg_sell_price - price) * qty_to_close - brokerage
                     revenue = price * qty_to_close # Actually cost, but we subtract from balance? No, we add (SellPrice * Qty) then subtract (BuyPrice * Qty)
                     # Simplified: Balance += (AvgSellPrice - price) * qty_to_close? No, that's just PnL.
                     # Correct cash flow: 
@@ -143,7 +148,9 @@ class PaperExchange:
                     # Closing/Reducing a LONG
                     current_qty, avg_buy_price = int(pos[0]), float(pos[1])
                     qty_to_close = min(current_qty, quantity)
-                    pnl = (price - avg_buy_price) * qty_to_close
+                    trade_value = price * qty_to_close
+                    brokerage = trade_value * self.BROKERAGE_PCT * 2  # Round trip
+                    pnl = (price - avg_buy_price) * qty_to_close - brokerage
                     new_balance = balance + pnl # Balance updated only by P&L
                     cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
                     
