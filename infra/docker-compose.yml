@@ -156,6 +156,21 @@ services:
       - ../services/scanner:/app
     restart: always
 
+  optimizer:
+    build: ../services/optimizer
+    container_name: param_optimizer
+    depends_on:
+      - postgres
+      - questdb
+    env_file:
+      - ../services/ingestion/.env
+    environment:
+      - POSTGRES_HOST=postgres_metadata
+      - QUESTDB_URL=http://questdb_tsdb:9000
+    volumes:
+      - ../services/optimizer:/app
+    profiles: ["optimize"]  # Only start when explicitly requested
+
   doctor:
     build: ../services/system_doctor
     container_name: system_doctor

@@ -169,6 +169,7 @@ def run():
 
     logger.info("Feature Engine: Calculating Microstructure (Spread, Aggressor, VWAP)...")
 
+    msg_count = 0
     try:
         while True:
             msg = c.poll(0.1)
@@ -232,9 +233,11 @@ def run():
                     logger.info(f"🚨 SIGNAL: {signal} {sym} | OBI: {enriched_data['obi']} | Agg: {enriched_data['aggressor']}")
 
                 p.poll(0)
-                # Flush every 10 messages for low latency but batch efficiency
-                if len(processors) % 10 == 0:
-                    p.flush(0)
+                
+                # Flush every 100 messages to ensure data moves
+                msg_count += 1
+                if msg_count % 100 == 0:
+                    p.flush(0.01)  # Minimal wait to force socket write
 
             except Exception as e:
                 logger.error(f"Processing Error: {e}")

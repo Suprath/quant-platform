@@ -95,6 +95,32 @@ def get_db_connection():
             logger.warning("Postgres not ready, retrying...")
             time.sleep(2)
 
+
+def fetch_optimized_params(symbol: str) -> dict:
+    """Fetch optimized parameters for a symbol from DB."""
+    try:
+        conn = psycopg2.connect(**DB_CONF)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT trailing_stop, profit_target, cooldown_seconds, sharpe_ratio
+            FROM optimized_params
+            WHERE symbol = %s AND DATE(optimized_at) = CURRENT_DATE
+        """, (symbol,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if row:
+            return {
+                "trailing_stop_pct": float(row[0]),
+                "profit_target_pct": float(row[1]),
+                "cooldown_seconds": int(row[2]),
+                "sharpe_ratio": float(row[3]) if row[3] else 0.0,
+            }
+    except Exception as e:
+        logger.debug(f"Could not fetch optimized params for {symbol}: {e}")
+    return None  # Use strategy defaults
+
 def run_engine():
     # 0. Wait for Kafka
     wait_for_kafka()
@@ -266,6 +292,12 @@ def run_engine():
                         current_qty = int(pos_row[0])
                         avg_price = float(pos_row[1])
                 cur.close()
+
+                # === LOAD OPTIMIZED PARAMS FOR SYMBOL (if available) ===
+                if hasattr(strategy, 'set_symbol_params'):
+                    symbol_params = fetch_optimized_params(symbol)
+                    if symbol_params:
+                        strategy.set_symbol_params(symbol, symbol_params)
 
                 # === STRATEGY EXECUTION ===
                 signal = strategy.on_tick(tick, current_qty, balance=balance, avg_price=avg_price)

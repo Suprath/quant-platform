@@ -23,13 +23,13 @@ class MomentumPro:
         strategy_id: str = "MOMENTUM_PRO_V1",
         backtest_mode: bool = False,
         risk_per_trade: float = 50.0,  # ₹50 max loss per trade
-        trailing_stop_pct: float = 0.003,  # 0.3% trailing stop
-        profit_target_pct: float = 0.005,  # 0.5% profit target
+        trailing_stop_pct: float = 0.002,  # 0.2% trailing stop (wider)
+        profit_target_pct: float = 0.003,  # 0.3% profit target (1.5:1 R:R)
         volume_spike_ratio: float = 1.5,  # 1.5x avg volume for entry
         use_volume_filter: bool = False,  # Disable by default for OHLC replay
-        cooldown_seconds: int = 120,  # 2 minutes cooldown
-        max_trades_per_symbol: int = 20,
-        max_trades_total: int = 50,
+        cooldown_seconds: int = 30,  # 30 seconds cooldown (fast re-entry)
+        max_trades_per_symbol: int = 50,  # More trades allowed
+        max_trades_total: int = 100,  # More trades allowed
         **kwargs
     ):
         self.strategy_id = strategy_id
@@ -69,8 +69,31 @@ class MomentumPro:
                 "vwap_crossed_below": False,
                 "peak_price": None,
                 "trough_price": None,
+                # Per-symbol optimized params (loaded from DB if available)
+                "optimized_params": None,
             }
         return self.symbol_state[symbol]
+
+    def set_symbol_params(self, symbol: str, params: dict):
+        """Set optimized parameters for a specific symbol."""
+        state = self._get_or_create_state(symbol)
+        state["optimized_params"] = params
+        logger.info(
+            f"⚙️ {symbol} optimized params: TS={params.get('trailing_stop_pct', self.trailing_stop_pct)*100:.2f}%, "
+            f"PT={params.get('profit_target_pct', self.profit_target_pct)*100:.2f}%, "
+            f"CD={params.get('cooldown_seconds', self.cooldown_seconds)}s"
+        )
+
+    def _get_params_for_symbol(self, state: dict) -> tuple:
+        """Get trailing_stop, profit_target, cooldown for a symbol (optimized or default)."""
+        if state.get("optimized_params"):
+            p = state["optimized_params"]
+            return (
+                p.get("trailing_stop_pct", self.trailing_stop_pct),
+                p.get("profit_target_pct", self.profit_target_pct),
+                p.get("cooldown_seconds", self.cooldown_seconds),
+            )
+        return (self.trailing_stop_pct, self.profit_target_pct, self.cooldown_seconds)
 
     def _calculate_vwap(self, df: pd.DataFrame) -> float:
         """Calculate Volume-Weighted Average Price."""
@@ -175,31 +198,21 @@ class MomentumPro:
         # === ACTIVE TRADE MANAGEMENT ===
         if current_qty != 0 and state["active_trade"]:
             trade = state["active_trade"]
+            trailing_stop_pct, profit_target_pct, _ = self._get_params_for_symbol(state)
 
             if trade["type"] == "LONG":
                 # Update peak price for trailing stop
                 if state["peak_price"] is None or ltp > state["peak_price"]:
                     state["peak_price"] = ltp
 
-                trailing_stop = state["peak_price"] * (1 - self.trailing_stop_pct)
-                profit_target = trade["entry"] * (1 + self.profit_target_pct)
+                # Grace period: trailing stop only activates after 0.1% move in favor
+                min_activation_price = trade["entry"] * 1.001  # 0.1% above entry
+                trailing_active = state["peak_price"] >= min_activation_price
 
-                # Exit conditions
-                if ltp <= trailing_stop:
-                    pnl = (ltp - trade["entry"]) * abs(current_qty)
-                    logger.info(f"🛑 TRAILING STOP: {symbol} @ {ltp} | P&L: ₹{pnl:.2f}")
-                    state["active_trade"] = None
-                    state["last_exit_time"] = dt
-                    state["peak_price"] = None
-                    return {
-                        "strategy_id": self.strategy_id,
-                        "symbol": symbol,
-                        "action": "SELL",
-                        "price": ltp,
-                        "reason": "TRAILING_STOP",
-                        "timestamp": dt,
-                    }
+                trailing_stop = state["peak_price"] * (1 - trailing_stop_pct)
+                profit_target = trade["entry"] * (1 + profit_target_pct)
 
+                # Profit target always active
                 if ltp >= profit_target:
                     pnl = (ltp - trade["entry"]) * abs(current_qty)
                     logger.info(f"🎯 TARGET HIT: {symbol} @ {ltp} | P&L: ₹{pnl:.2f}")
@@ -211,7 +224,43 @@ class MomentumPro:
                         "symbol": symbol,
                         "action": "SELL",
                         "price": ltp,
+                        "quantity": abs(current_qty),
                         "reason": "TARGET_HIT",
+                        "timestamp": dt,
+                    }
+
+                # Trailing stop only if activated
+                if trailing_active and ltp <= trailing_stop:
+                    pnl = (ltp - trade["entry"]) * abs(current_qty)
+                    logger.info(f"🛑 TRAILING STOP: {symbol} @ {ltp} | P&L: ₹{pnl:.2f}")
+                    state["active_trade"] = None
+                    state["last_exit_time"] = dt
+                    state["peak_price"] = None
+                    return {
+                        "strategy_id": self.strategy_id,
+                        "symbol": symbol,
+                        "action": "SELL",
+                        "price": ltp,
+                        "quantity": abs(current_qty),
+                        "reason": "TRAILING_STOP",
+                        "timestamp": dt,
+                    }
+
+                # Hard stop: if drops more than 1% from entry without activation, exit
+                hard_stop = trade["entry"] * 0.99  # 1% hard stop loss
+                if not trailing_active and ltp <= hard_stop:
+                    pnl = (ltp - trade["entry"]) * abs(current_qty)
+                    logger.info(f"❌ HARD STOP: {symbol} @ {ltp} | P&L: ₹{pnl:.2f}")
+                    state["active_trade"] = None
+                    state["last_exit_time"] = dt
+                    state["peak_price"] = None
+                    return {
+                        "strategy_id": self.strategy_id,
+                        "symbol": symbol,
+                        "action": "SELL",
+                        "price": ltp,
+                        "quantity": abs(current_qty),
+                        "reason": "HARD_STOP",
                         "timestamp": dt,
                     }
 
@@ -220,24 +269,14 @@ class MomentumPro:
                 if state["trough_price"] is None or ltp < state["trough_price"]:
                     state["trough_price"] = ltp
 
-                trailing_stop = state["trough_price"] * (1 + self.trailing_stop_pct)
-                profit_target = trade["entry"] * (1 - self.profit_target_pct)
+                # Grace period: trailing stop only activates after 0.1% move in favor
+                min_activation_price = trade["entry"] * 0.999  # 0.1% below entry
+                trailing_active = state["trough_price"] <= min_activation_price
 
-                if ltp >= trailing_stop:
-                    pnl = (trade["entry"] - ltp) * abs(current_qty)
-                    logger.info(f"🛑 TRAILING STOP: {symbol} @ {ltp} | P&L: ₹{pnl:.2f}")
-                    state["active_trade"] = None
-                    state["last_exit_time"] = dt
-                    state["trough_price"] = None
-                    return {
-                        "strategy_id": self.strategy_id,
-                        "symbol": symbol,
-                        "action": "BUY",
-                        "price": ltp,
-                        "reason": "TRAILING_STOP",
-                        "timestamp": dt,
-                    }
+                trailing_stop = state["trough_price"] * (1 + trailing_stop_pct)
+                profit_target = trade["entry"] * (1 - profit_target_pct)
 
+                # Profit target always active
                 if ltp <= profit_target:
                     pnl = (trade["entry"] - ltp) * abs(current_qty)
                     logger.info(f"🎯 TARGET HIT: {symbol} @ {ltp} | P&L: ₹{pnl:.2f}")
@@ -249,26 +288,68 @@ class MomentumPro:
                         "symbol": symbol,
                         "action": "BUY",
                         "price": ltp,
+                        "quantity": abs(current_qty),
                         "reason": "TARGET_HIT",
+                        "timestamp": dt,
+                    }
+
+                # Trailing stop only if activated
+                if trailing_active and ltp >= trailing_stop:
+                    pnl = (trade["entry"] - ltp) * abs(current_qty)
+                    logger.info(f"🛑 TRAILING STOP: {symbol} @ {ltp} | P&L: ₹{pnl:.2f}")
+                    state["active_trade"] = None
+                    state["last_exit_time"] = dt
+                    state["trough_price"] = None
+                    return {
+                        "strategy_id": self.strategy_id,
+                        "symbol": symbol,
+                        "action": "BUY",
+                        "price": ltp,
+                        "quantity": abs(current_qty),
+                        "reason": "TRAILING_STOP",
+                        "timestamp": dt,
+                    }
+
+                # Hard stop: if rises more than 1% from entry without activation, exit
+                hard_stop = trade["entry"] * 1.01  # 1% hard stop loss
+                if not trailing_active and ltp >= hard_stop:
+                    pnl = (trade["entry"] - ltp) * abs(current_qty)
+                    logger.info(f"❌ HARD STOP: {symbol} @ {ltp} | P&L: ₹{pnl:.2f}")
+                    state["active_trade"] = None
+                    state["last_exit_time"] = dt
+                    state["trough_price"] = None
+                    return {
+                        "strategy_id": self.strategy_id,
+                        "symbol": symbol,
+                        "action": "BUY",
+                        "price": ltp,
+                        "quantity": abs(current_qty),
+                        "reason": "HARD_STOP",
                         "timestamp": dt,
                     }
 
             return None  # Holding position, no new signal
 
+
         # === ENTRY LOGIC (Only if no position) ===
         if current_qty != 0:
+            logger.debug(f"📛 {symbol}: Entry blocked - existing position qty={current_qty}")
             return None
 
         # Check guardrails
         if state["trades_today"] >= self.max_trades_per_symbol:
+            logger.debug(f"📛 {symbol}: Max trades/symbol reached ({state['trades_today']})")
             return None
         if self.total_trades_today >= self.max_trades_total:
+            logger.debug(f"📛 {symbol}: Max total trades reached ({self.total_trades_today})")
             return None
 
-        # Cooldown check
+        # Cooldown check (use per-symbol optimized cooldown)
+        _, _, cooldown_sec = self._get_params_for_symbol(state)
         if state["last_exit_time"]:
             elapsed = (dt - state["last_exit_time"]).total_seconds()
-            if elapsed < self.cooldown_seconds:
+            if elapsed < cooldown_sec:
+                logger.debug(f"📛 {symbol}: Cooldown active ({elapsed:.0f}s / {cooldown_sec}s)")
                 return None
 
         # Volume spike check (optional, disabled by default for OHLC backtests)
@@ -276,57 +357,77 @@ class MomentumPro:
             if avg_volume <= 0 or volume < avg_volume * self.volume_spike_ratio:
                 return None
 
-        # VWAP Crossover detection
+        # VWAP Crossover detection with momentum confirmation
+        # Instead of requiring exact crossover, detect sustained momentum above/below VWAP
         prev_close = df["close"].iloc[-2] if len(df) >= 2 else ltp
+        prev_prev_close = df["close"].iloc[-3] if len(df) >= 3 else prev_close
 
-        # Long Entry: Price crosses above VWAP with volume spike
-        if prev_close <= vwap and ltp > vwap:
-            stop_loss = ltp * (1 - self.trailing_stop_pct)
-            quantity = self._calculate_position_size(ltp, stop_loss, balance)
+        # Calculate price momentum (last 3 bars trend)
+        is_uptrend = ltp > prev_close > prev_prev_close
+        is_downtrend = ltp < prev_close < prev_prev_close
 
-            state["active_trade"] = {
-                "type": "LONG",
-                "entry": ltp,
-                "sl": stop_loss,
-            }
-            state["trades_today"] += 1
-            self.total_trades_today += 1
-            state["peak_price"] = ltp
+        # Long Entry: Price above VWAP with upward momentum
+        # Relaxed: don't require exact crossover, just price above VWAP with confirmation
+        if ltp > vwap * 1.001:
+            recently_crossed_up = prev_close <= vwap or prev_prev_close <= vwap
+            if recently_crossed_up or is_uptrend:
+                _, _, cooldown_sec = self._get_params_for_symbol(state)
+                trailing_stop_pct, profit_target_pct, _ = self._get_params_for_symbol(state)
+                
+                stop_loss = ltp * (1 - trailing_stop_pct)
+                quantity = self._calculate_position_size(ltp, stop_loss, balance)
 
-            logger.info(f"🟢 LONG ENTRY: {symbol} @ {ltp} | Qty: {quantity} | VWAP: {vwap:.2f}")
-            return {
-                "strategy_id": self.strategy_id,
-                "symbol": symbol,
-                "action": "BUY",
-                "price": ltp,
-                "quantity": quantity,
-                "reason": "VWAP_CROSS_UP",
-                "timestamp": dt,
-            }
+                state["active_trade"] = {
+                    "type": "LONG",
+                    "entry": ltp,
+                    "sl": stop_loss,
+                }
+                state["trades_today"] += 1
+                self.total_trades_today += 1
+                state["peak_price"] = ltp
 
-        # Short Entry: Price crosses below VWAP with volume spike
-        if prev_close >= vwap and ltp < vwap:
-            stop_loss = ltp * (1 + self.trailing_stop_pct)
-            quantity = self._calculate_position_size(ltp, stop_loss, balance)
+                logger.info(f"🟢 LONG ENTRY: {symbol} @ {ltp} | Qty: {quantity} | VWAP: {vwap:.2f} | Trend: {'↑' if is_uptrend else '→'}")
+                return {
+                    "strategy_id": self.strategy_id,
+                    "symbol": symbol,
+                    "action": "BUY",
+                    "price": ltp,
+                    "quantity": quantity,
+                    "reason": "VWAP_MOMENTUM_UP",
+                    "timestamp": dt,
+                }
+            # else:
+            #     logger.debug(f"🔵 {symbol}: Price > VWAP but NO ENTRY. Trend={is_uptrend}, Cross={recently_crossed_up}")
 
-            state["active_trade"] = {
-                "type": "SHORT",
-                "entry": ltp,
-                "sl": stop_loss,
-            }
-            state["trades_today"] += 1
-            self.total_trades_today += 1
-            state["trough_price"] = ltp
+        # Short Entry: Price below VWAP with downward momentum
+        if ltp < vwap * 0.999:
+            recently_crossed_down = prev_close >= vwap or prev_prev_close >= vwap
+            if recently_crossed_down or is_downtrend:
+                trailing_stop_pct, profit_target_pct, _ = self._get_params_for_symbol(state)
+                
+                stop_loss = ltp * (1 + trailing_stop_pct)
+                quantity = self._calculate_position_size(ltp, stop_loss, balance)
 
-            logger.info(f"🔴 SHORT ENTRY: {symbol} @ {ltp} | Qty: {quantity} | VWAP: {vwap:.2f}")
-            return {
-                "strategy_id": self.strategy_id,
-                "symbol": symbol,
-                "action": "SELL",
-                "price": ltp,
-                "quantity": quantity,
-                "reason": "VWAP_CROSS_DOWN",
-                "timestamp": dt,
-            }
+                state["active_trade"] = {
+                    "type": "SHORT",
+                    "entry": ltp,
+                    "sl": stop_loss,
+                }
+                state["trades_today"] += 1
+                self.total_trades_today += 1
+                state["trough_price"] = ltp
+
+                logger.info(f"🔴 SHORT ENTRY: {symbol} @ {ltp} | Qty: {quantity} | VWAP: {vwap:.2f} | Trend: {'↓' if is_downtrend else '→'}")
+                return {
+                    "strategy_id": self.strategy_id,
+                    "symbol": symbol,
+                    "action": "SELL",
+                    "price": ltp,
+                    "quantity": quantity,
+                    "reason": "VWAP_MOMENTUM_DOWN",
+                    "timestamp": dt,
+                }
+            # else:
+            #     logger.debug(f"🟠 {symbol}: Price < VWAP but NO ENTRY. Trend={is_downtrend}, Cross={recently_crossed_down}")
 
         return None

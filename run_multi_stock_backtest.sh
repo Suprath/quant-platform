@@ -121,9 +121,9 @@ elif [ -n "$CUSTOM_STOCKS" ]; then
 else
     STOCKS=(
         "NSE_EQ|INE062A01020:SBIN"
-        "NSE_EQ|INE001A01036:Reliance"
+        "NSE_EQ|INE002A01018:Reliance"
         "NSE_EQ|INE009A01021:Infosys"
-        "NSE_EQ|INE010A01011:TCS"
+        "NSE_EQ|INE467B01029:TCS"
         "NSE_EQ|INE018A01030:L&T"
     )
 fi
@@ -216,6 +216,21 @@ EOF
 
 echo "✅ Backtest environment ready"
 
+# Step 2.5: Run Parameter Optimizer for each stock (if strategy is momentum_pro)
+if [[ "$STRATEGY_NAME" == *"momentum_pro"* ]]; then
+    echo ""
+    echo "======================================================================"
+    echo "STEP 2.5: Running Adaptive Parameter Optimization (APO)"
+    echo "======================================================================"
+    
+    for stock_entry in "${STOCKS[@]}"; do
+        IFS=':' read -r symbol name <<< "$stock_entry"
+        echo "🔧 Optimizing $symbol..."
+        docker compose run --rm optimizer --symbol "$symbol" --lookback 14 2>&1 | tail -5
+    done
+    echo "✅ Parameter optimization complete"
+fi
+
 # Step 3: Replay all stocks (parallel in background)
 echo ""
 echo "======================================================================"
@@ -240,20 +255,20 @@ echo "🐛 DEBUG: STRATEGY_PARAMS='$STRATEGY_PARAMS'"
 export STRATEGY_NAME="${STRATEGY_NAME:-orb.EnhancedORB}"
 export STRATEGY_PARAMS="${STRATEGY_PARAMS:-{}}"
 
-docker compose run -d --rm \
+docker compose run -d \
     -e BACKTEST_MODE=true \
     -e RUN_ID="$RUN_ID" \
     -e STRATEGY_NAME \
     -e STRATEGY_PARAMS \
     --name strategy_backtest \
-    strategy_runtime python main.py > /dev/null 2>&1
+    strategy_runtime python main.py
 
 echo "⏳ Waiting for pipeline to initialize..."
 sleep 15
 
 # Replay Nifty 50 First
 echo "📡 Replaying Nifty 50..."
-docker compose run -d --rm \
+docker compose run -d \
     -e RUN_ID="$RUN_ID" \
     historical_replayer python main.py \
     --symbol "NSE_INDEX|Nifty 50" \
@@ -268,7 +283,7 @@ for stock_entry in "${STOCKS[@]}"; do
     IFS=':' read -r symbol name <<< "$stock_entry"
     echo "  → $name"
     
-    docker compose run -d --rm \
+    docker compose run -d \
         -e RUN_ID="$RUN_ID" \
         historical_replayer python main.py \
         --symbol "$symbol" \
@@ -289,8 +304,8 @@ done
 sleep 15
 
 # Cleanup
-docker stop strategy_backtest feature_engine_backtest 2>/dev/null || true
-docker rm strategy_backtest feature_engine_backtest 2>/dev/null || true
+# docker stop strategy_backtest feature_engine_backtest 2>/dev/null || true
+# docker rm strategy_backtest feature_engine_backtest 2>/dev/null || true
 
 echo "✅ Backtest replay complete"
 
