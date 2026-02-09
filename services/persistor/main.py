@@ -113,23 +113,24 @@ def run_persistor():
                 # --- CASE 1: ENRICHED MICROSTRUCTURE DATA ---
                 if topic == 'market.enriched.ticks':
                     # We map the JSON fields from Feature Engine to QuestDB columns
+                    values = (
+                        data.get('symbol'),
+                        data.get('ltp'),
+                        data.get('volume', 0),
+                        data.get('oi', 0),
+                        data.get('day_high'),
+                        data.get('day_low'),
+                        data.get('spread'),
+                        data.get('obi', 0.0),
+                        data.get('aggressor', 'NEUTRAL')
+                    )
+                    logger.info(f"Inserting {len(values)} args: {values}")
                     cur.execute("""
                         INSERT INTO ticks (
                             timestamp, symbol, ltp, volume, oi, 
                             day_high, day_low, spread, obi, aggressor
                         ) VALUES (now(), %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (
-                        data.get('symbol'),
-                        data.get('ltp'),
-                        data.get('volume', 0),
-                        data.get('oi', 0), # OI passed through feature engine
-                        data.get('day_high'),
-                        data.get('day_low'),
-                        data.get('day_low'),
-                        data.get('spread'),
-                        data.get('obi', 0.0),
-                        data.get('aggressor', 'NEUTRAL')
-                    ))
+                    """, values)
 
                 # --- CASE 2: OPTION GREEKS ---
                 elif topic == 'market.option.greeks':

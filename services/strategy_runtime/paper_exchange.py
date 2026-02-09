@@ -76,9 +76,9 @@ class PaperExchange:
             
             # Calculate dynamic position size (or use provided quantity for partial exits)
             quantity = int(signal.get('quantity', self.calculate_position_size(price, balance)))
+            cost = price * quantity
 
             if action == 'BUY':
-                cost = price * quantity
                 # Check for SHORT Position to cover
                 cur.execute(f"SELECT quantity, avg_price FROM {positions_table} WHERE portfolio_id = %s AND symbol = %s", (pid, symbol))
                 pos = cur.fetchone()
