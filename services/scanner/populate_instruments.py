@@ -1,15 +1,19 @@
+import os
 import psycopg2
 import logging
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("InstrumentPopulator")
 
 DB_CONF = {
-    "host": "postgres_metadata",
-    "port": 5432,
-    "user": "admin",
-    "password": "password123",
-    "database": "quant_platform"
+    "host": os.getenv("POSTGRES_HOST", "postgres_metadata"),
+    "port": int(os.getenv("POSTGRES_PORT", 5432)),
+    "user": os.getenv("POSTGRES_USER", "admin"),
+    "password": os.getenv("POSTGRES_PASSWORD", "password123"),
+    "database": os.getenv("POSTGRES_DB", "quant_platform")
 }
 
 def populate():

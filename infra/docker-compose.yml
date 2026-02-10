@@ -28,12 +28,11 @@ services:
     depends_on:
       - kafka  # REMOVED: condition: service_healthy
     environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
       - PYTHONUNBUFFERED=1
     volumes:
       - ../services/ingestion:/app
     env_file:
-      - ../services/ingestion/.env
+      - ../.env
     restart: always
 
   # LAYER 2: STATE STORE & CACHE
@@ -53,6 +52,9 @@ services:
       - "8812:8812"
     volumes:
       - questdb_data:/var/lib/questdb
+    environment:
+      - QDB_PG_USER=${QUESTDB_USER}
+      - QDB_PG_PASSWORD=${QUESTDB_PASSWORD}
     restart: always
 
   # LAYER 3: RELATIONAL STORAGE (Users & Strategies)
@@ -60,9 +62,9 @@ services:
     image: postgres:15-alpine
     container_name: postgres_metadata
     environment:
-      - POSTGRES_USER=admin
-      - POSTGRES_PASSWORD=password123
-      - POSTGRES_DB=quant_platform
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:
@@ -78,8 +80,8 @@ services:
       - "9005:9000"
       - "9001:9001"
     environment:
-      - MINIO_ROOT_USER=admin
-      - MINIO_ROOT_PASSWORD=password123
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
     volumes:
       - minio_data:/data
     restart: always
@@ -91,8 +93,9 @@ services:
       - kafka
       - questdb
     environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
       - PYTHONUNBUFFERED=1
+    env_file:
+      - ../.env
     restart: always 
 
   feature_engine:
@@ -101,8 +104,9 @@ services:
     depends_on:
       - kafka
     environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
       - PYTHONUNBUFFERED=1
+    env_file:
+      - ../.env
     volumes:
       - ../services/feature_engine:/app
     restart: always
@@ -114,10 +118,9 @@ services:
       - kafka
       - postgres
     environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
       - PYTHONUNBUFFERED=1
-      - STRATEGY_NAME
-      - STRATEGY_PARAMS
+    env_file:
+      - ../.env
     volumes:
       - ../services/strategy_runtime:/app
     restart: always
@@ -140,7 +143,7 @@ services:
     depends_on:
       - questdb
     env_file:
-      - ../services/ingestion/.env
+      - ../.env
 
   scanner:
     build: ../services/scanner
@@ -149,9 +152,7 @@ services:
       - kafka
       - postgres
     env_file:
-      - ../services/ingestion/.env
-    environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
+      - ../.env
     volumes:
       - ../services/scanner:/app
     restart: always
@@ -163,7 +164,7 @@ services:
       - postgres
       - questdb
     env_file:
-      - ../services/ingestion/.env
+      - ../.env
     environment:
       - POSTGRES_HOST=postgres_metadata
       - QUESTDB_URL=http://questdb_tsdb:9000
@@ -186,8 +187,8 @@ services:
     depends_on:
       - kafka
       - questdb
-    environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
+    env_file:
+      - ../.env
     volumes:
       - ../services/historical_replayer:/app
     profiles: ["replay"]  # Only start when explicitly requested
@@ -205,6 +206,9 @@ services:
     depends_on:
       - questdb
       - postgres
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
     restart: always
 
 volumes:

@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timedelta
 from confluent_kafka import Producer
 from dotenv import load_dotenv
+from populate_instruments import populate
 
 import sys
 load_dotenv()
@@ -148,6 +149,12 @@ if __name__ == "__main__":
     parser.add_argument("--live", action="store_true", help="Run in live continuous mode")
     args = parser.parse_args()
     
+    # Ensure instruments table is populated
+    try:
+        populate()
+    except Exception as e:
+        logger.error(f"Failed to populate instruments: {e}")
+
     if args.date:
         # Historical mode for backtesting
         logger.info(f"📊 Historical scan for {args.date}...")
