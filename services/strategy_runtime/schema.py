@@ -47,6 +47,18 @@ def ensure_schema(conn):
                 pnl DECIMAL(10, 2) DEFAULT 0.0 -- Realized PnL for SELL orders
             );
         """)
+
+        # 4. Optimized Parameters (Strategy Config)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS optimized_params (
+                symbol VARCHAR(50) PRIMARY KEY,
+                trailing_stop DECIMAL(8,6),
+                profit_target DECIMAL(8,6),
+                cooldown_seconds INT,
+                sharpe_ratio DECIMAL(8,4),
+                optimized_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
         
         # Initialize default portfolio if not exists
         cur.execute("INSERT INTO portfolios (user_id, balance, equity) VALUES ('default_user', 20000.00, 20000.00) ON CONFLICT (user_id) DO NOTHING;")

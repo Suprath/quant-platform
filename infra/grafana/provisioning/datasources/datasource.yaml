@@ -15,3 +15,16 @@ datasources:
       timescaledb: false
     isDefault: true
     editable: true
+
+  - name: MarketData (QuestDB)
+    type: postgres
+    uid: market-data-source
+    url: questdb_tsdb:8812
+    user: admin
+    database: qdb
+    secureJsonData:
+      password: quest
+    jsonData:
+      sslmode: 'disable'
+      postgresVersion: 13
+      timescaledb: false
