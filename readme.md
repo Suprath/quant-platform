@@ -92,6 +92,76 @@ List of high-momentum equities detected pre-breakout
 
 ---
 
+---
+
+## 🐍 Quant SDK & Strategy Engine
+
+The platform now features a **QuantConnect-inspired SDK** (`quant_sdk`) for writing and executing algorithms. Strategies are decoupled from the core runtime, allowing for flexible backtesting and live execution.
+
+### 1. Writing a Strategy
+Inherit from `QCAlgorithm` and implement `Initialize` and `OnData`.
+
+```python
+from quant_sdk import QCAlgorithm, Resolution
+
+class MyStrategy(QCAlgorithm):
+    def Initialize(self):
+        self.SetCash(100000)
+        self.SetStartDate(2024, 1, 1)
+        self.SetEndDate(2024, 12, 31)
+        
+        # Subscribe to Data
+        self.symbol = "NSE_EQ|INE002A01018"
+        self.AddEquity(self.symbol, Resolution.Minute)
+        
+        # Define Indicators
+        self.sma = self.SMA(self.symbol, 20, Resolution.Minute)
+
+    def OnData(self, data):
+        # Access Data
+        bar = data[self.symbol]
+        
+        # Trading Logic
+        if not self.Portfolio[self.symbol].Invested:
+            if bar.Close > self.sma.Value:
+                self.SetHoldings(self.symbol, 1.0) # 100% Allocation
+        
+        elif bar.Close < self.sma.Value:
+            self.Liquidate(self.symbol)
+```
+
+### 2. SDK Reference
+| Method | Description |
+| :--- | :--- |
+| `Initialize()` | Setup implementation. Define cash, start/end dates, and subscriptions. |
+| `OnData(slice)` | Event handler for new data ticks/bars. |
+| `AddEquity(symbol, resolution)` | Subscribe to a stock. |
+| `SMA(symbol, period)` | Register a Simple Moving Average indicator. |
+| `SetHoldings(symbol, percent)` | Rebalance portfolio to target percentage (0.0 - 1.0). |
+| `Liquidate(symbol)` | Close all positions for a symbol. |
+
+### 3. Running Backtests
+Run a backtest using Docker Compose. The `AlgorithmEngine` automatically loads the strategy and feeds it historical data from the `Replayer`.
+
+```bash
+# Run Backtest with specific Strategy and Run ID
+docker compose run --rm \
+  -e BACKTEST_MODE=true \
+  -e RUN_ID=my_test_run \
+  -e STRATEGY_NAME=strategies.demo_algo.DemoStrategy \
+  strategy_runtime python main.py
+```
+
+### 4. Backtest Reports
+Results (Order History, Equity Curve) are saved to PostgreSQL tables:
+- `backtest_portfolios`
+- `backtest_orders`
+- `backtest_positions`
+
+Visualize results using the **Grafana Backtest Dashboard**.
+
+---
+
 ## 🔌 API Documentation
 
 **Base URL:** http://localhost:8080

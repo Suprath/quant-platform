@@ -1,326 +1,35 @@
 import os
-import json
-import time
 import logging
-import psycopg2
-from datetime import datetime, time as dt_time
-from confluent_kafka import Consumer
-from dotenv import load_dotenv
-
-import importlib
-
-# Internal Modules
-try:
-    from schema import ensure_schema
-    from paper_exchange import PaperExchange
-except ImportError:
-    # Fallback for Docker path issues if modules aren't top-level
-    from services.strategy_runtime.schema import ensure_schema
-    from services.strategy_runtime.paper_exchange import PaperExchange
-
-load_dotenv()
-
-# Logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG
-)
-logger = logging.getLogger("StrategyRuntime")
+from engine import AlgorithmEngine
 
 # Config
-KAFKA_SERVER = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka_bus:9092')
 BACKTEST_MODE = os.getenv('BACKTEST_MODE', 'false').lower() == 'true'
-RUN_ID = os.getenv('RUN_ID', f'backtest_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
+RUN_ID = os.getenv('RUN_ID', 'test_run')
+# Default to Demo Strategy
+STRATEGY_NAME = os.getenv('STRATEGY_NAME', 'strategies.demo_algo.DemoStrategy')
 
-DB_CONF = {
-    "host": "postgres_metadata",
-    "port": 5432,
-    "user": "admin",
-    "password": "password123",
-    "database": "quant_platform"
-}
-
-def ensure_topics():
-    """Auto-create topics if they don't exist"""
-    from confluent_kafka.admin import AdminClient, NewTopic
-    a = AdminClient({'bootstrap.servers': KAFKA_SERVER})
+def run():
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logging.info(f"🚀 Starting Algorithm Engine (Mode: {'BACKTEST' if BACKTEST_MODE else 'LIVE'})")
     
-    # Base topics
-    base_topics = ["market.enriched.ticks", "strategy.signals"]
+    # Initialize Engine
+    engine = AlgorithmEngine(run_id=RUN_ID, backtest_mode=BACKTEST_MODE)
     
-    # Run-specific topics for backtest
-    run_topics = []
-    if RUN_ID and BACKTEST_MODE:
-        run_topics = [f"market.enriched.ticks.{RUN_ID}"]
-    
-    topics_to_create = base_topics + run_topics
-    
-    logger.info(f"Ensuring Kafka topics: {topics_to_create}")
-    new_topics = [NewTopic(t, num_partitions=1, replication_factor=1) for t in topics_to_create]
-    
-    fs = a.create_topics(new_topics)
-    for topic, f in fs.items():
-        try:
-            f.result()
-            logger.info(f"Topic {topic} created")
-        except Exception as e:
-            if "already exists" in str(e).lower():
-                continue
-            logger.warning(f"Failed to create topic {topic}: {e}")
-
-# --- WAIT FOR KAFKA ---
-def wait_for_kafka():
-    """Blocks until Kafka is ready."""
-    from confluent_kafka.admin import AdminClient
-    admin = AdminClient({'bootstrap.servers': KAFKA_SERVER})
-    
-    logger.info(f"Connecting to Kafka at {KAFKA_SERVER}...")
-    while True:
-        try:
-            # list_topics is a blocking network call that will verify connectivity
-            cluster_metadata = admin.list_topics(timeout=3.0)
-            if cluster_metadata.topics:
-                logger.info("✅ Connected to Kafka.")
-                break
-        except Exception as e:
-            logger.warning(f"Waiting for Kafka... ({e})")
-            time.sleep(2)
-
-def get_db_connection():
-    while True:
-        try:
-            conn = psycopg2.connect(**DB_CONF)
-            return conn
-        except Exception:
-            logger.warning("Postgres not ready, retrying...")
-            time.sleep(2)
-
-
-def fetch_optimized_params(symbol: str) -> dict:
-    """Fetch optimized parameters for a symbol from DB."""
+    # Load Strategy
+    # Strategy Name format: "strategies.demo_algo.DemoStrategy"
     try:
-        conn = psycopg2.connect(**DB_CONF)
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT trailing_stop, profit_target, cooldown_seconds, sharpe_ratio
-            FROM optimized_params
-            WHERE symbol = %s AND DATE(optimized_at) = CURRENT_DATE
-        """, (symbol,))
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        
-        if row:
-            return {
-                "trailing_stop_pct": float(row[0]),
-                "profit_target_pct": float(row[1]),
-                "cooldown_seconds": int(row[2]),
-                "sharpe_ratio": float(row[3]) if row[3] else 0.0,
-            }
+        module_path, class_name = STRATEGY_NAME.rsplit('.', 1)
+        logging.info(f"Loading {class_name} from {module_path}...")
+        engine.LoadAlgorithm(module_path, class_name)
     except Exception as e:
-        logger.debug(f"Could not fetch optimized params for {symbol}: {e}")
-    return None  # Use strategy defaults
+        logging.error(f"Failed to parse STRATEGY_NAME: {STRATEGY_NAME}. Error: {e}")
+        return
 
-def run_engine():
-    # 0. Wait for Kafka
-    wait_for_kafka()
-    ensure_topics()
-
-    # 1. Initialize DB Schema
-    logger.info("Initializing Database...")
-    conn = get_db_connection()
-    ensure_schema(conn)
-    conn.close()
-
-    # 2. Dynamic Strategy Selection
-    exchange = PaperExchange(DB_CONF, backtest_mode=BACKTEST_MODE, run_id=RUN_ID)
+    # Initialize Logic
+    engine.Initialize()
     
-    # Load strategy dynamically from environment variable
-    # Expected format: module_name.ClassName (e.g., orb.EnhancedORB)
-    strategy_name_env = os.getenv('STRATEGY_NAME')
-    if not strategy_name_env: strategy_name_env = 'orb.EnhancedORB'
-    
-    strategy_params_env = os.getenv('STRATEGY_PARAMS')
-    if not strategy_params_env: strategy_params_env = '{}' # JSON string
-    
-    logger.debug(f"Raw STRATEGY_PARAMS from env: [{strategy_params_env}]")
-    
-    try:
-        module_path, class_name = strategy_name_env.rsplit('.', 1)
-        # Attempt relative import for the strategies package
-        try:
-            module = importlib.import_module(f"strategies.{module_path}")
-        except ImportError:
-            # Fallback for different container working directory structures
-            module = importlib.import_module(f"services.strategy_runtime.strategies.{module_path}")
-            
-        StrategyClass = getattr(module, class_name)
-        
-        # Robust JSON extraction: Handle list wrapping and trailing garbage via raw_decode
-        try:
-            # 1. Remove list wrapping if present
-            clean_str = strategy_params_env.strip()
-            if clean_str.startswith('[') and clean_str.endswith(']'):
-                clean_str = clean_str[1:-1]
-            
-            # 2. Use raw_decode to parse first valid JSON object and ignore trailing chars (like '}')
-            params, _ = json.JSONDecoder().raw_decode(clean_str)
-                
-        except json.JSONDecodeError:
-            logger.warning(f"⚠️ invalid JSON in STRATEGY_PARAMS: {strategy_params_env}. Using empty dict.")
-            params = {}
-        
-        # Add standard params
-        params['strategy_id'] = params.get('strategy_id', f"{class_name}_V1")
-        params['backtest_mode'] = BACKTEST_MODE
-        
-        logger.info(f"🧩 Loading Strategy: {strategy_name_env} with params: {params}")
-        strategy = StrategyClass(**params)
-    except Exception as e:
-        logger.error(f"❌ Failed to load strategy {strategy_name_env}: {e}")
-        # Fallback to EnhancedORB to prevent crash if default exists
-        from strategies.orb import EnhancedORB
-        strategy = EnhancedORB(strategy_id="ORB_FALLBACK", orb_minutes=15, backtest_mode=BACKTEST_MODE)
-        logger.warning("⚠️ Using EnhancedORB as fallback.")
-
-    # Topics depend on mode
-    input_topic = f'market.enriched.ticks.{RUN_ID}' if BACKTEST_MODE else 'market.enriched.ticks'
-    group_id = f'strategy-engine-{RUN_ID}' if BACKTEST_MODE else 'strategy-engine-v4'
-    offset_reset = 'earliest' if BACKTEST_MODE else 'latest'
-
-    def on_assign(consumer, partitions):
-        logger.info(f"✅ Kafka Consumer Assigned Partitions: {partitions}")
-
-    logger.info(f"🛠 Initializing Kafka Consumer: Topic={input_topic}, Group={group_id}, Offset={offset_reset}")
-    consumer = Consumer({
-        'bootstrap.servers': KAFKA_SERVER,
-        'group.id': group_id,
-        'auto.offset.reset': offset_reset
-    })
-    consumer.subscribe([input_topic], on_assign=on_assign)
-    
-    if BACKTEST_MODE:
-        logger.info(f"🧪 BACKTEST MODE ACTIVE (Run ID: {RUN_ID})")
-        logger.info(f"📊 Results will be saved to: backtest_orders, backtest_portfolios")
-    
-    logger.info(f"🚀 Strategy Engine Started. Listening for Ticks on {input_topic} (Group: {group_id})...")
-
-    last_heartbeat = 0
-    conn = get_db_connection()
-    try:
-        while True:
-            # Heartbeat every 30s
-            if time.time() - last_heartbeat > 30:
-                logger.info("💓 Strategy Runtime Heartbeat: Polling Kafka...")
-                last_heartbeat = time.time()
-
-            msg = consumer.poll(1.0)
-            if msg is None: continue
-            
-            if msg.error():
-                logger.error(f"Kafka Error: {msg.error()}")
-                continue
-            
-            try:
-                # Parse Tick
-                tick = json.loads(msg.value().decode('utf-8'))
-                symbol = tick.get('symbol')
-                
-                # Check for stale connection
-                try:
-                    cur = conn.cursor()
-                    cur.execute("SELECT 1")
-                    cur.close()
-                except:
-                    logger.warning("Reconnecting to database...")
-                    conn = get_db_connection()
-
-                # === INTRADAY COMPLIANCE: EOD SQUARE-OFF ===
-                if BACKTEST_MODE:
-                    # In backtest, use tick's timestamp (ms)
-                    tick_ts = tick.get('timestamp', 0) / 1000
-                    now_dt = datetime.fromtimestamp(tick_ts)
-                else:
-                    # In live, use actual system time
-                    now_dt = datetime.now()
-                
-                current_time = now_dt.time()
-                eod_cutoff = dt_time(15, 20)  # 3:20 PM IST
-                
-                # If after 3:20 PM, force close all positions
-                if current_time >= eod_cutoff:
-                    cur = conn.cursor()
-                    cur.execute("SELECT symbol, quantity FROM positions WHERE quantity > 0")
-                    open_positions = cur.fetchall()
-                    cur.close()
-                    
-                    if open_positions:
-                        logger.warning(f"⏰ EOD Cutoff Reached. Squaring off {len(open_positions)} positions...")
-                        for pos_symbol, qty in open_positions:
-                            eod_signal = {
-                                "strategy_id": "EOD_SQUAREOFF",
-                                "symbol": pos_symbol,
-                                "action": "SELL",
-                                "price": tick.get('ltp', 0)
-                            }
-                            exchange.execute_order(eod_signal)
-                            logger.info(f"🔒 Squared off {pos_symbol}")
-                    continue  # Skip normal strategy after EOD
-                
-                # 2. Get Account State (Balance & Position)
-                cur = conn.cursor()
-                positions_table = "backtest_positions" if BACKTEST_MODE else "positions"
-                portfolios_table = "backtest_portfolios" if BACKTEST_MODE else "portfolios"
-                
-                if BACKTEST_MODE:
-                    cur.execute(f"SELECT id, balance FROM {portfolios_table} WHERE user_id = %s AND run_id = %s", ('default_user', RUN_ID))
-                else:
-                    cur.execute(f"SELECT id, balance FROM {portfolios_table} WHERE user_id = %s", ('default_user',))
-                
-                row = cur.fetchone()
-                if row:
-                    pid, balance = row[0], float(row[1])
-                else:
-                    pid, balance = None, 20000.0
-
-                current_qty = 0
-                avg_price = 0.0
-                if pid:
-                    cur.execute(f"SELECT quantity, avg_price FROM {positions_table} WHERE portfolio_id = %s AND symbol = %s", (pid, symbol))
-                    pos_row = cur.fetchone()
-                    if pos_row:
-                        current_qty = int(pos_row[0])
-                        avg_price = float(pos_row[1])
-                cur.close()
-
-                # === LOAD OPTIMIZED PARAMS FOR SYMBOL (if available) ===
-                if hasattr(strategy, 'set_symbol_params'):
-                    symbol_params = fetch_optimized_params(symbol)
-                    if symbol_params:
-                        strategy.set_symbol_params(symbol, symbol_params)
-
-                # === STRATEGY EXECUTION ===
-                signal = strategy.on_tick(tick, current_qty, balance=balance, avg_price=avg_price)
-                
-                # Execute Signal (if any)
-                if signal:
-                    logger.info(f"⚡ SIGNAL RECEIVED: {signal}")
-                    success = exchange.execute_order(signal)
-                    if success:
-                        logger.info(f"✅ ORDER FILLED: {signal['action']} {signal['symbol']}")
-                    else:
-                        logger.error(f"❌ ORDER FAILED: {signal['symbol']}")
-
-            except json.JSONDecodeError:
-                continue
-            except Exception as e:
-                logger.error(f"Engine Loop Error: {e}")
-                # Don't crash the whole engine on a single tick error
-    except KeyboardInterrupt:
-        logger.info("Strategy Engine stopping...")
-    finally:
-        if conn: conn.close()
-        consumer.close()
+    # Run Event Loop
+    engine.Run()
 
 if __name__ == "__main__":
-    run_engine()
+    run()
