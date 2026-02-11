@@ -59,6 +59,50 @@ def ensure_schema(conn):
                 optimized_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
+
+        # --- BACKTEST TABLES (Mirrors of above with Run ID) ---
+        
+        # 5. Backtest Portfolios
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_portfolios (
+                id SERIAL PRIMARY KEY,
+                user_id VARCHAR(50) NOT NULL,
+                run_id VARCHAR(100) NOT NULL,
+                balance DECIMAL(15, 2) NOT NULL DEFAULT 100000.00,
+                equity DECIMAL(15, 2) NOT NULL DEFAULT 100000.00,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, run_id)
+            );
+        """)
+
+        # 6. Backtest Positions
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_positions (
+                id SERIAL PRIMARY KEY,
+                portfolio_id INT REFERENCES backtest_portfolios(id) ON DELETE CASCADE,
+                symbol VARCHAR(50) NOT NULL,
+                quantity INT NOT NULL DEFAULT 0,
+                avg_price DECIMAL(10, 2) NOT NULL,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(portfolio_id, symbol)
+            );
+        """)
+
+        # 7. Backtest Orders
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_orders (
+                id SERIAL PRIMARY KEY,
+                run_id VARCHAR(100),
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                strategy_id VARCHAR(50),
+                symbol VARCHAR(50) NOT NULL,
+                transaction_type VARCHAR(10) NOT NULL,
+                quantity INT NOT NULL,
+                price DECIMAL(10, 2) NOT NULL,
+                status VARCHAR(20) DEFAULT 'filled',
+                pnl DECIMAL(10, 2) DEFAULT 0.0
+            );
+        """)
         
         # Initialize default portfolio if not exists
         cur.execute("INSERT INTO portfolios (user_id, balance, equity) VALUES ('default_user', 20000.00, 20000.00) ON CONFLICT (user_id) DO NOTHING;")

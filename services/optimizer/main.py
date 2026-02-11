@@ -90,7 +90,7 @@ class ParameterOptimizer:
                     logger.warning(f"⚠️ No data found for {self.symbol}")
                     return False
             else:
-                logger.error(f"QuestDB error: {resp.status_code}")
+                logger.error(f"QuestDB error: {resp.status_code} - {resp.text}")
                 return False
         except Exception as e:
             logger.error(f"Failed to fetch data: {e}")
@@ -173,13 +173,21 @@ class ParameterOptimizer:
                     target_price = position["entry"] * (1 + profit_target)
 
                     if row["low"] <= trailing_stop_price:
-                        pnl = (trailing_stop_price - position["entry"]) / position["entry"]
-                        trades.append(pnl)
+                        # LONG EXIT: Stop Loss
+                        exit_price = trailing_stop_price
+                        # PnL = (Exit - Entry) / Entry - Costs
+                        raw_pnl = (exit_price - position["entry"]) / position["entry"]
+                        # Cost: 0.05% on Entry + 0.05% on Exit (approx 0.1% total)
+                        net_pnl = raw_pnl - 0.001 
+                        trades.append(net_pnl)
                         position = None
                         last_exit_idx = i
                     elif row["high"] >= target_price:
-                        pnl = profit_target
-                        trades.append(pnl)
+                        # LONG EXIT: Target
+                        # When hitting target, we get the target price
+                        raw_pnl = profit_target
+                        net_pnl = raw_pnl - 0.001
+                        trades.append(net_pnl)
                         position = None
                         last_exit_idx = i
 
@@ -189,13 +197,18 @@ class ParameterOptimizer:
                     target_price = position["entry"] * (1 - profit_target)
 
                     if row["high"] >= trailing_stop_price:
-                        pnl = (position["entry"] - trailing_stop_price) / position["entry"]
-                        trades.append(pnl)
+                        # SHORT EXIT: Stop Loss
+                        exit_price = trailing_stop_price
+                        raw_pnl = (position["entry"] - exit_price) / position["entry"]
+                        net_pnl = raw_pnl - 0.001
+                        trades.append(net_pnl)
                         position = None
                         last_exit_idx = i
                     elif row["low"] <= target_price:
-                        pnl = profit_target
-                        trades.append(pnl)
+                        # SHORT EXIT: Target
+                        raw_pnl = profit_target
+                        net_pnl = raw_pnl - 0.001
+                        trades.append(net_pnl)
                         position = None
                         last_exit_idx = i
 
