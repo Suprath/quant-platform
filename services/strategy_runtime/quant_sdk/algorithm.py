@@ -66,6 +66,14 @@ class QCAlgorithm(ABC):
         if self.Engine:
              self.Engine.SubscriptionManager.Add(symbol, resolution)
 
+    def AddUniverse(self, selection_function):
+        """
+        Add a dynamic universe of stocks.
+        selection_function: A function that takes a list of coarse data and returns a list of symbols.
+        """
+        if self.Engine:
+            self.Engine.AddUniverse(selection_function)
+
     # --- Indicator Helpers ---
     def SMA(self, symbol, period, resolution=Resolution.Minute):
         """Creates a Simple Moving Average indicator."""

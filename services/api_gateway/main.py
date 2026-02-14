@@ -4,6 +4,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from typing import List, Optional
+import requests
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -135,3 +137,85 @@ def search_instruments(query: str = Query(..., min_length=3)):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn: conn.close()
+
+class BacktestRequest(BaseModel):
+    strategy_code: str
+    symbol: str
+    start_date: str
+    end_date: str
+    initial_cash: float
+    strategy_name: str = "CustomStrategy"
+
+@app.post("/api/v1/backtest/run")
+def run_backtest(request: BacktestRequest):
+    """Trigger a backtest on the Strategy Runtime"""
+    try:
+        # Forward to Strategy Runtime Service
+        # Assuming strategy_runtime is exposing port 8000
+        # Check if code is provided to execute or if it's a pre-loaded strategy
+        response = requests.post(
+            "http://strategy_runtime:8000/backtest",
+            json=request.dict(),
+            timeout=10 
+        )
+        if response.status_code == 200:
+             return response.json()
+        else:
+             raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+
+@app.post("/api/v1/backtest/stop/{run_id}")
+def stop_backtest(run_id: str):
+    """Stop a running backtest"""
+    try:
+        response = requests.post(f"http://strategy_runtime:8000/backtest/stop/{run_id}", timeout=5)
+        if response.status_code == 200:
+             return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+
+@app.get("/api/v1/backtest/trades/{run_id}")
+def get_backtest_trades(run_id: str):
+    """Fetch executed trades for a specific backtest run"""
+    conn = None
+    try:
+        conn = get_pg_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT timestamp, symbol, transaction_type, quantity, price, pnl 
+            FROM backtest_orders 
+            WHERE run_id = %s 
+            ORDER BY timestamp ASC;
+        """, (run_id,))
+        rows = cur.fetchall()
+        return [
+            {
+                "time": r[0].isoformat() if r[0] else None, 
+                "symbol": r[1], 
+                "side": r[2], 
+                "quantity": r[3], 
+                "price": float(r[4]), 
+                "pnl": float(r[5]) if r[5] is not None else 0.0
+            } 
+            for r in rows
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+@app.get("/api/v1/backtest/logs/{run_id}")
+def get_backtest_logs(run_id: str):
+    """Fetch logs from Strategy Runtime"""
+    try:
+        response = requests.get(
+            f"http://strategy_runtime:8000/backtest/logs/{run_id}",
+            timeout=5
+        )
+        if response.status_code == 200:
+             return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")

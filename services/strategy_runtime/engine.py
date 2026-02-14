@@ -43,6 +43,7 @@ class AlgorithmEngine:
         self.BacktestMode = backtest_mode
         self.KafkaConsumer = None
         self.CurrentSlice = None
+        self.UniverseSettings = None # Stores selection function
         
         # Connect to DB
         conn = get_db_connection()
@@ -87,7 +88,15 @@ class AlgorithmEngine:
         # Topic selection
         topic = f'market.enriched.ticks.{self.RunID}' if self.BacktestMode else 'market.enriched.ticks'
         self.KafkaConsumer.subscribe([topic])
+        self.KafkaConsumer.subscribe([topic])
         logger.info(f"📡 Subscribed to Kafka Topic: {topic}")
+
+    def AddUniverse(self, selection_function):
+        """
+        Register a universe selection function.
+        """
+        self.UniverseSettings = selection_function
+        logger.info("🌌 Universe Selection Registered")
 
     def RegisterIndicator(self, symbol, indicator, resolution):
         """Store indicator to update it automatically."""
@@ -95,9 +104,70 @@ class AlgorithmEngine:
             self.Indicators[symbol] = []
         self.Indicators[symbol].append(indicator)
 
+    def SetBacktestData(self, ticks):
+        """Set local data for backtesting (bypassing Kafka)."""
+        self.LocalData = ticks
+        logger.info(f"📁 Loaded {len(ticks)} ticks for Local Backtest")
+
+    def ProcessTick(self, tick_dict):
+        # 1. Parse Data
+        try:
+            symbol = tick_dict.get('symbol')
+            price = tick_dict.get('ltp', 0)
+            volume = tick_dict.get('v', 0) # 'v' or 'volume'
+            if not volume: volume = tick_dict.get('volume', 0)
+            
+            ts = tick_dict.get('timestamp')
+            
+            if not symbol or not price: return
+
+            # 2. Create Tick Object
+            time_obj = datetime.fromtimestamp(ts / 1000.0) if ts else datetime.now()
+            tick = Tick(time_obj, symbol, price, volume)
+
+            # Ensure Portfolio has entry
+            if symbol not in self.Algorithm.Portfolio:
+                self.Algorithm.Portfolio[symbol] = SecurityHolding(symbol)
+
+            # 3. Update Indicators
+            if symbol in self.Indicators:
+                for ind in self.Indicators[symbol]:
+                    ind.Update(time_obj, price)
+
+            # 4. Create Slice
+            slice_obj = Slice(time_obj, {symbol: tick})
+            self.CurrentSlice = slice_obj
+            
+            # 5. Inject Time
+            self.Algorithm.Time = time_obj
+
+            # --- INTRADAY SQUARE-OFF (3:20 PM IST) ---
+            # Only applicable for LIVE mode usually, but useful to test in backtest
+            if not self.BacktestMode:
+                 # Live logic
+                 pass
+            elif self.BacktestMode and time_obj.hour == 15 and time_obj.minute >= 20:
+                 # Backtest EOD logic
+                 pass
+
+            # 6. Call User Code
+            self.Algorithm.OnData(slice_obj)
+
+        except Exception as e:
+            logger.error(f"Error in Event Loop: {e}")
+
     def Run(self):
         """Main Data Loop."""
         logger.info("🚀 Starting Engine Loop...")
+        
+        # LOCAL DATA MODE
+        if getattr(self, 'LocalData', None) is not None:
+            for tick in self.LocalData:
+                self.ProcessTick(tick)
+            logger.info("✅ Backtest Data Exhausted.")
+            return
+
+        # KAFKA MODE
         try:
             while True:
                 msg = self.KafkaConsumer.poll(0.1)
@@ -106,50 +176,8 @@ class AlgorithmEngine:
                     logger.error(f"Kafka Error: {msg.error()}")
                     continue
 
-                # 1. Parse Data
-                try:
-                    data = json.loads(msg.value().decode('utf-8'))
-                    symbol = data.get('symbol')
-                    price = data.get('ltp', 0)
-                    volume = data.get('volume', 0)
-                    ts = data.get('timestamp')
-                    
-                    if not symbol or not price: continue
-
-                    # 2. Create Tick Object
-                    time_obj = datetime.fromtimestamp(ts / 1000.0) if ts else datetime.now()
-                    tick = Tick(time_obj, symbol, price, volume)
-
-                    # 3. Update Indicators
-                    if symbol in self.Indicators:
-                        for ind in self.Indicators[symbol]:
-                            ind.Update(time_obj, price)
-
-                    # 4. Create Slice
-                    slice_obj = Slice(time_obj, {symbol: tick})
-                    self.CurrentSlice = slice_obj
-                    
-                    # 5. Inject Time
-                    self.Algorithm.Time = time_obj
-
-                    # --- INTRADAY SQUARE-OFF (3:20 PM IST) ---
-                    # Only applicable for LIVE mode usually, but useful to test in backtest
-                    if not self.BacktestMode:
-                        current_time = datetime.now().time()
-                        # 15:20 = 3:20 PM
-                        if current_time.hour == 15 and current_time.minute >= 20:
-                            logger.info("⏰ EOD Auto-Square Off Triggered!")
-                            self.Algorithm.Liquidate() # Close all positions
-                            # Stop processing further? Or just keep liquidating?
-                            # For safety, we just liquidate and sleep or stop.
-                            time.sleep(60)
-                            continue
-
-                    # 6. Call User Code
-                    self.Algorithm.OnData(slice_obj)
-
-                except Exception as e:
-                    logger.error(f"Error in Event Loop: {e}")
+                data = json.loads(msg.value().decode('utf-8'))
+                self.ProcessTick(data)
 
         except KeyboardInterrupt:
             logger.info("🛑 Stopping Engine...")
