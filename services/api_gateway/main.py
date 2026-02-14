@@ -184,10 +184,11 @@ def get_backtest_trades(run_id: str):
         conn = get_pg_conn()
         cur = conn.cursor()
         cur.execute("""
-            SELECT timestamp, symbol, transaction_type, quantity, price, pnl 
-            FROM backtest_orders 
-            WHERE run_id = %s 
-            ORDER BY timestamp ASC;
+            SELECT bo.timestamp, bo.symbol, bo.transaction_type, bo.quantity, bo.price, bo.pnl, i.symbol AS stock_name
+            FROM backtest_orders bo
+            LEFT JOIN instruments i ON bo.symbol = i.instrument_token
+            WHERE bo.run_id = %s 
+            ORDER BY bo.timestamp ASC;
         """, (run_id,))
         rows = cur.fetchall()
         return [
@@ -197,8 +198,38 @@ def get_backtest_trades(run_id: str):
                 "side": r[2], 
                 "quantity": r[3], 
                 "price": float(r[4]), 
-                "pnl": float(r[5]) if r[5] is not None else 0.0
+                "pnl": float(r[5]) if r[5] is not None else 0.0,
+                "name": r[6] if r[6] else r[1]
             } 
+            for r in rows
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+@app.get("/api/v1/backtest/universe/{run_id}")
+def get_backtest_universe(run_id: str):
+    """Fetch scanner/universe results for a specific backtest run"""
+    conn = None
+    try:
+        conn = get_pg_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT bu.date, bu.symbol, bu.score, i.symbol AS stock_name
+            FROM backtest_universe bu
+            LEFT JOIN instruments i ON bu.symbol = i.instrument_token
+            WHERE bu.run_id = %s
+            ORDER BY bu.date ASC, bu.score DESC;
+        """, (run_id,))
+        rows = cur.fetchall()
+        return [
+            {
+                "date": r[0].isoformat() if r[0] else None,
+                "symbol": r[1],
+                "score": float(r[2]) if r[2] is not None else 0.0,
+                "name": r[3] if r[3] else r[1]
+            }
             for r in rows
         ]
     except Exception as e:
@@ -219,3 +250,151 @@ def get_backtest_logs(run_id: str):
         raise HTTPException(status_code=response.status_code, detail=response.text)
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+
+# --- BACKTEST HISTORY ---
+
+@app.get("/api/v1/backtest/history")
+def get_backtest_history():
+    """List all backtest runs with summary stats"""
+    conn = None
+    try:
+        conn = get_pg_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT 
+                bp.run_id,
+                bp.balance,
+                bp.equity,
+                bp.last_updated,
+                COALESCE(t.trade_count, 0) as trade_count,
+                COALESCE(t.total_pnl, 0) as total_pnl,
+                t.first_trade,
+                t.last_trade
+            FROM backtest_portfolios bp
+            LEFT JOIN (
+                SELECT 
+                    run_id,
+                    COUNT(*) as trade_count,
+                    SUM(pnl) as total_pnl,
+                    MIN(timestamp) as first_trade,
+                    MAX(timestamp) as last_trade
+                FROM backtest_orders
+                GROUP BY run_id
+            ) t ON bp.run_id = t.run_id
+            ORDER BY bp.last_updated DESC;
+        """)
+        rows = cur.fetchall()
+        return [
+            {
+                "run_id": r[0],
+                "final_balance": float(r[1]) if r[1] else 0,
+                "initial_equity": float(r[2]) if r[2] else 100000,
+                "created_at": r[3].isoformat() if r[3] else None,
+                "trade_count": r[4],
+                "total_pnl": float(r[5]) if r[5] else 0,
+                "start_date": r[6].isoformat() if r[6] else None,
+                "end_date": r[7].isoformat() if r[7] else None,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+@app.delete("/api/v1/backtest/{run_id}")
+def delete_backtest(run_id: str):
+    """Delete a specific backtest run and all associated data"""
+    conn = None
+    try:
+        conn = get_pg_conn()
+        cur = conn.cursor()
+        
+        # Delete from all backtest tables (positions cascade from portfolios)
+        cur.execute("DELETE FROM backtest_orders WHERE run_id = %s;", (run_id,))
+        orders_deleted = cur.rowcount
+        
+        cur.execute("DELETE FROM backtest_universe WHERE run_id = %s;", (run_id,))
+        
+        # Delete positions first (FK constraint), then portfolio
+        cur.execute("""
+            DELETE FROM backtest_positions WHERE portfolio_id IN (
+                SELECT id FROM backtest_portfolios WHERE run_id = %s
+            );
+        """, (run_id,))
+
+        cur.execute("DELETE FROM backtest_portfolios WHERE run_id = %s;", (run_id,))
+        
+        conn.commit()
+        cur.close()
+        return {"status": "deleted", "run_id": run_id, "orders_deleted": orders_deleted}
+    except Exception as e:
+        if conn: conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+@app.delete("/api/v1/backtest/history")
+def clear_backtest_history():
+    """Clear ALL backtest data"""
+    conn = None
+    try:
+        conn = get_pg_conn()
+        cur = conn.cursor()
+        
+        cur.execute("DELETE FROM backtest_positions;")
+        cur.execute("DELETE FROM backtest_orders;")
+        cur.execute("DELETE FROM backtest_universe;")
+        cur.execute("DELETE FROM backtest_portfolios;")
+        total = cur.rowcount
+        
+        conn.commit()
+        cur.close()
+        return {"status": "cleared", "message": "All backtest history deleted"}
+    except Exception as e:
+        if conn: conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+
+
+class BackfillStartRequest(BaseModel):
+    start_date: str
+    end_date: str
+    stocks: Optional[List[str]] = None
+    interval: str = "1"
+    unit: str = "minutes"
+
+@app.post("/api/v1/backfill/start")
+def start_backfill(request: BackfillStartRequest):
+    """Trigger multi-stock data backfill"""
+    try:
+        response = requests.post("http://data_backfiller:8001/backfill/start", json=request.dict(), timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Backfiller Unavailable: {e}")
+
+@app.get("/api/v1/backfill/status")
+def get_backfill_status():
+    """Get backfill progress"""
+    try:
+        response = requests.get("http://data_backfiller:8001/backfill/status", timeout=5)
+        if response.status_code == 200:
+            return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Backfiller Unavailable: {e}")
+
+@app.get("/api/v1/backfill/stocks")
+def get_backfill_stocks():
+    """List available stocks for backfill"""
+    try:
+        response = requests.get("http://data_backfiller:8001/backfill/stocks", timeout=5)
+        if response.status_code == 200:
+            return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Backfiller Unavailable: {e}")

@@ -4,5 +4,4 @@ RUN apt-get update && apt-get install -y libpq-dev build-essential && rm -rf /va
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-# We run this as a one-off task, so we don't start it automatically
-CMD ["python", "main.py"]
+CMD ["python", "server.py"]

@@ -61,7 +61,6 @@ export function BacktestRunner({ strategyName, strategyCode }: { strategyName: s
         price: number;
         pnl: number;
     }
-    const [trades, setTrades] = useState<Trade[]>([]);
 
     const stopBacktest = async () => {
         if (!activeRunId) return;
@@ -140,7 +139,7 @@ export function BacktestRunner({ strategyName, strategyCode }: { strategyName: s
                                 const tradesRes = await fetch(`${API_URL}/api/v1/backtest/trades/${runId}`);
                                 if (tradesRes.ok) {
                                     const tradesData = await tradesRes.json();
-                                    setTrades(tradesData);
+                                    // Removed setTrades as we don't display the list anymore
 
                                     // Calculate simple stats from trades if possible
                                     const totalPnL = tradesData.reduce((acc: number, t: Trade) => acc + (t.pnl || 0), 0);
@@ -236,8 +235,8 @@ export function BacktestRunner({ strategyName, strategyCode }: { strategyName: s
                         </div>
                     </TabsContent>
 
-                    <TabsContent value="logs" className="flex-1 h-full flex flex-col">
-                        <div className="flex-1 bg-black text-green-400 font-mono text-xs p-4 rounded-md overflow-y-auto border border-zinc-800 min-h-[300px]">
+                    <TabsContent value="logs" className="flex-1 h-full flex flex-col min-h-0">
+                        <div className="flex-1 bg-black text-green-400 font-mono text-xs p-4 rounded-md overflow-y-auto border border-zinc-800 max-h-[400px]">
                             {logs.length === 0 ? (
                                 <span className="text-zinc-500">Waiting to start...</span>
                             ) : (

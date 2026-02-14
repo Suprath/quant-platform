@@ -6,6 +6,7 @@ import time
 import psycopg2
 from datetime import datetime
 from engine import AlgorithmEngine
+from db import get_db_connection
 
 import requests
 import urllib.parse
@@ -56,6 +57,26 @@ def scan_market(date_str, top_n=5):
                      
         # Top N
         top = sorted(scored, key=lambda x: x['score'], reverse=True)[:top_n]
+        
+        # Persist to Postgres
+        try:
+             pg_conn = get_db_connection()
+             pg_cur = pg_conn.cursor()
+             
+             for item in top:
+                 pg_cur.execute("""
+                     INSERT INTO backtest_universe (run_id, date, symbol, score)
+                     VALUES (%s, %s, %s, %s)
+                     ON CONFLICT (run_id, date, symbol) DO NOTHING
+                 """, (RUN_ID, date_str, item['symbol'], item['score']))
+             
+             pg_conn.commit()
+             pg_cur.close()
+             pg_conn.close()
+             logger.info(f"💾 Saved {len(top)} scanned symbols to DB for {date_str}")
+        except Exception as e:
+             logger.error(f"Failed to save scanner results: {e}")
+
         return [x['symbol'] for x in top]
         
     except Exception as e:
@@ -180,6 +201,25 @@ def run(symbol, start, end, initial_cash):
                  logger.warning("⚠️ Scan returned no results. Fallback to provided symbol.")
         except Exception as e:
              logger.error(f"Scan Failed: {e}")
+
+    # Fallback Persistence: Ensure universe is in DB even if scan failed or returned empty
+    if universe_symbols:
+        try:
+             pg_conn = get_db_connection()
+             pg_cur = pg_conn.cursor()
+             for sym in universe_symbols:
+                 # Check if already exists (scanner might have saved it, or it's a manual symbol)
+                 pg_cur.execute("SELECT 1 FROM backtest_universe WHERE run_id=%s AND date=%s AND symbol=%s", (RUN_ID, start, sym))
+                 if not pg_cur.fetchone():
+                     pg_cur.execute("""
+                         INSERT INTO backtest_universe (run_id, date, symbol, score)
+                         VALUES (%s, %s, %s, %s)
+                     """, (RUN_ID, start, sym, 0.0)) # Score 0 for fallback
+             pg_conn.commit()
+             pg_cur.close()
+             pg_conn.close()
+        except Exception as e:
+             logger.error(f"Failed to persist fallback universe: {e}")
 
     # 5. Fetch Data for Universe
     all_ticks = []

@@ -9,10 +9,12 @@ import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, Loader2, TrendingUp, Activity, DollarSign } from 'lucide-react';
 import Link from 'next/link';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { ScannerResults } from "@/components/ScannerResults";
 
 interface Trade {
     time: string;
     symbol: string;
+    name: string;
     side: 'BUY' | 'SELL';
     quantity: number;
     price: number;
@@ -171,6 +173,18 @@ export default function BacktestResultPage() {
                     </Card>
                     <Card>
                         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                            <CardTitle className="text-sm font-medium">Current Capital</CardTitle>
+                            <DollarSign className="h-4 w-4 text-muted-foreground" />
+                        </CardHeader>
+                        <CardContent>
+                            <div className="text-2xl font-bold">₹{(100000 + stats.netProfit).toFixed(2)}</div>
+                            <p className="text-xs text-muted-foreground">
+                                Starting: ₹100,000
+                            </p>
+                        </CardContent>
+                    </Card>
+                    <Card>
+                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                             <CardTitle className="text-sm font-medium">Win Rate</CardTitle>
                             <TrendingUp className="h-4 w-4 text-muted-foreground" />
                         </CardHeader>
@@ -190,8 +204,20 @@ export default function BacktestResultPage() {
                             <div className="text-2xl font-bold text-red-500">{stats.maxDrawdown.toFixed(2)}%</div>
                         </CardContent>
                     </Card>
+                    <Card>
+                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                            <CardTitle className="text-sm font-medium">Sharpe Ratio</CardTitle>
+                            <Activity className="h-4 w-4 text-muted-foreground" />
+                        </CardHeader>
+                        <CardContent>
+                            <div className="text-2xl font-bold">{stats.sharpeRatio.toFixed(2)}</div>
+                        </CardContent>
+                    </Card>
                 </div>
             )}
+
+            {/* Scanner & Volume Visuals */}
+            <ScannerResults runId={runId} />
 
             {/* Equity Curve */}
             <Card>
@@ -230,7 +256,7 @@ export default function BacktestResultPage() {
                         <TableHeader>
                             <TableRow>
                                 <TableHead>Time</TableHead>
-                                <TableHead>Symbol</TableHead>
+                                <TableHead>Stock</TableHead>
                                 <TableHead>Side</TableHead>
                                 <TableHead>Quantity</TableHead>
                                 <TableHead>Price</TableHead>
@@ -241,7 +267,7 @@ export default function BacktestResultPage() {
                             {trades.slice().reverse().map((trade, i) => (
                                 <TableRow key={i}>
                                     <TableCell className="font-mono text-xs">{new Date(trade.time).toLocaleString()}</TableCell>
-                                    <TableCell>{trade.symbol}</TableCell>
+                                    <TableCell>{trade.name !== trade.symbol ? trade.name : trade.symbol}</TableCell>
                                     <TableCell>
                                         <Badge variant={trade.side === 'BUY' ? 'default' : 'destructive'}>{trade.side}</Badge>
                                     </TableCell>

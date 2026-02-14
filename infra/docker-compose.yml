@@ -142,8 +142,12 @@ services:
     container_name: data_backfiller
     depends_on:
       - questdb
+      - postgres
     env_file:
       - ../.env
+    ports:
+      - "8001:8001"
+    restart: always
 
   scanner:
     build: ../services/scanner

@@ -1,3 +1,5 @@
 aiohttp
 psycopg2-binary
 python-dotenv
+fastapi
+uvicorn

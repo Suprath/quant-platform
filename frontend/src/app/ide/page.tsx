@@ -6,6 +6,8 @@ import { CodeEditor } from "@/components/editor/CodeEditor";
 import { Save, ArrowLeft, FilePlus, Trash2, Edit2 } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { BacktestRunner } from "@/components/BacktestRunner";
+import { DataBackfill } from "@/components/DataBackfill";
+import { BacktestHistory } from "@/components/BacktestHistory";
 import { Input } from "@/components/ui/input";
 import Link from 'next/link';
 import {
@@ -32,8 +34,63 @@ import { Label } from "@/components/ui/label";
 // Mock initial files
 const INITIAL_FILES = [
     { id: '1', name: 'demo_strategy.py', content: 'class DemoStrategy(QCAlgorithm):\n    def Initialize(self):\n        self.SetCash(10000)\n        self.AddEquity("NSE_EQ|RELIANCE")\n' },
-    { id: '2', name: 'momentum.py', content: '# Momentum Strategy\n# Buy when price > SMA(50)\n' },
-    { id: '3', name: 'mean_reversion.py', content: '# Mean Reversion\n# Buy when RSI < 30\n' },
+    {
+        id: '2', name: 'mean_reversion.py', content: `
+import statistics
+from collections import deque
+
+class MeanReversion(QCAlgorithm):
+    def Initialize(self):
+        self.SetCash(100000)
+        self.lookback = 20
+        self.history = {}
+        self.invested = {}
+
+    def OnData(self, data):
+        for symbol in data.Keys:
+            tick = data[symbol]
+            price = tick.Price
+            
+            if symbol not in self.history:
+                self.history[symbol] = deque(maxlen=self.lookback)
+                self.invested[symbol] = False
+            
+            self.history[symbol].append(price)
+            
+            # Need full window
+            if len(self.history[symbol]) < self.lookback:
+                continue
+                
+            # Calculate Bollinger Bands (Simple)
+            mean = statistics.mean(self.history[symbol])
+            stdev = statistics.stdev(self.history[symbol])
+            upper = mean + (2 * stdev)
+            lower = mean - (2 * stdev)
+            
+            # Trading Logic
+            holding = self.Portfolio.get(symbol)
+            qty = holding.Quantity if holding else 0
+            
+            # 1. Buy Signal (Price drops below Lower Band - Oversold)
+            if price < lower and qty <= 0:
+                self.SetHoldings(symbol, 0.1) # Allocate 10%
+                self.Log(f"BUY {symbol} @ {price} (Oversold)")
+                
+            # 2. Sell Signal (Price rises above Upper Band - Overbought)
+            elif price > upper and qty >= 0:
+                self.SetHoldings(symbol, -0.1) # Short 10%
+                self.Log(f"SELL {symbol} @ {price} (Overbought)")
+                
+            # 3. Exit (Mean Reversion)
+            elif qty > 0 and price >= mean:
+                self.Liquidate(symbol)
+                self.Log(f"EXIT LONG {symbol} @ {price} (Mean Reverted)")
+                
+            elif qty < 0 and price <= mean:
+                self.Liquidate(symbol)
+                self.Log(f"EXIT SHORT {symbol} @ {price} (Mean Reverted)")
+` },
+    { id: '3', name: 'momentum_rsi.py', content: '# Momentum Strategy\n# Buy when RSI < 30\n' },
 ];
 
 export default function IdePage() {
@@ -109,6 +166,12 @@ export default function IdePage() {
         }
     };
 
+    const startRename = (id: string, currentName: string) => {
+        setFileToRename(id);
+        setRenameFileName(currentName);
+        setIsRenameOpen(true);
+    };
+
     const handleRenameFile = () => {
         if (!fileToRename || !renameFileName) return;
         const updatedFiles = files.map(f => f.id === fileToRename ? { ...f, name: renameFileName } : f);
@@ -128,7 +191,7 @@ export default function IdePage() {
     };
 
     return (
-        <div className="flex h-screen flex-col bg-background">
+        <div className="flex min-h-screen flex-col bg-background">
             <header className="flex items-center justify-between border-b px-6 py-3">
                 <div className="flex items-center gap-2">
                     <Link href="/">
@@ -147,7 +210,7 @@ export default function IdePage() {
                 </div>
             </header>
 
-            <div className="flex flex-1 overflow-hidden">
+            <div className="flex h-[65vh] overflow-hidden">
                 {/* Sidebar */}
                 <aside className="w-64 border-r bg-muted/20 flex flex-col">
                     <div className="p-4 border-b flex items-center justify-between">
@@ -239,6 +302,12 @@ export default function IdePage() {
                         onChange={(value) => setCode(value || "")}
                     />
                 </main>
+            </div>
+
+            {/* Data Backfill + History */}
+            <div className="px-4 pb-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <DataBackfill />
+                <BacktestHistory />
             </div>
 
             {/* Rename Dialog */}

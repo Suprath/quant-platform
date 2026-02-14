@@ -103,6 +103,17 @@ def ensure_schema(conn):
                 pnl DECIMAL(10, 2) DEFAULT 0.0
             );
         """)
+
+        # 8. Backtest Universe (Scanner Results)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_universe (
+                run_id VARCHAR(100),
+                date DATE,
+                symbol VARCHAR(50),
+                score DECIMAL(10, 4),
+                PRIMARY KEY (run_id, date, symbol)
+            );
+        """)
         
         # Initialize default portfolio if not exists
         cur.execute("INSERT INTO portfolios (user_id, balance, equity) VALUES ('default_user', 20000.00, 20000.00) ON CONFLICT (user_id) DO NOTHING;")
