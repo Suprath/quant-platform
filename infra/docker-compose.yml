@@ -26,7 +26,7 @@ services:
     build: ../services/ingestion
     container_name: upstox_ingestor
     depends_on:
-      - kafka  # REMOVED: condition: service_healthy
+      - kafka # REMOVED: condition: service_healthy
     environment:
       - PYTHONUNBUFFERED=1
     volumes:
@@ -96,7 +96,7 @@ services:
       - PYTHONUNBUFFERED=1
     env_file:
       - ../.env
-    restart: always 
+    restart: always
 
   feature_engine:
     build: ../services/feature_engine
@@ -170,7 +170,7 @@ services:
       - QUESTDB_URL=http://questdb_tsdb:9000
     volumes:
       - ../services/optimizer:/app
-    profiles: ["optimize"]  # Only start when explicitly requested
+    profiles: [ "optimize" ] # Only start when explicitly requested
 
   doctor:
     build: ../services/system_doctor
@@ -191,7 +191,7 @@ services:
       - ../.env
     volumes:
       - ../services/historical_replayer:/app
-    profiles: ["replay"]  # Only start when explicitly requested
+    profiles: [ "replay" ] # Only start when explicitly requested
 
   grafana:
     image: grafana/grafana:latest
@@ -209,6 +209,18 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+    restart: always
+
+  frontend:
+    build: ../frontend
+    container_name: quant_frontend
+    ports:
+      - "3001:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8080
+      - API_INTERNAL_URL=http://api_gateway:8000
+    depends_on:
+      - api_gateway
     restart: always
 
 volumes:
