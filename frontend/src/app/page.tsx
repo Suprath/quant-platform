@@ -3,7 +3,7 @@ import { ServiceHealth } from "@/components/ServiceHealth";
 import { TradingDashboard } from "@/components/TradingDashboard";
 import Link from 'next/link';
 import { Button } from "@/components/ui/button";
-import { Code, Terminal } from 'lucide-react';
+import { Code, Terminal, Book } from 'lucide-react';
 
 export default function DashboardPage() {
   return (
@@ -17,6 +17,11 @@ export default function DashboardPage() {
           <Link href="/ide">
             <Button variant="outline">
               <Code className="mr-2 h-4 w-4" /> Strategy IDE
+            </Button>
+          </Link>
+          <Link href="/docs">
+            <Button variant="outline">
+              <Book className="mr-2 h-4 w-4" /> API Docs
             </Button>
           </Link>
           <div className="text-sm text-muted-foreground ml-4">
