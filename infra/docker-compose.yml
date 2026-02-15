@@ -197,24 +197,6 @@ services:
       - ../services/historical_replayer:/app
     profiles: [ "replay" ] # Only start when explicitly requested
 
-  grafana:
-    image: grafana/grafana:latest
-    container_name: quant_grafana
-    ports:
-      - "3000:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
-      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
-      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards/json
-    depends_on:
-      - questdb
-      - postgres
-    environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
-    restart: always
-
   frontend:
     build: ../frontend
     container_name: quant_frontend
@@ -232,4 +214,5 @@ volumes:
   postgres_data:
   minio_data:
   kafka_data:
-  grafana_data:
+
+

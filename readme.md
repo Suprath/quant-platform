@@ -158,7 +158,7 @@ Results (Order History, Equity Curve) are saved to PostgreSQL tables:
 - `backtest_orders`
 - `backtest_positions`
 
-Visualize results using the **Grafana Backtest Dashboard**.
+Visualize results using the **Frontend Dashboard**.
 
 ---
 
