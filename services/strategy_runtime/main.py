@@ -7,6 +7,8 @@ import uvicorn
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from engine import AlgorithmEngine
+from db import get_db_connection
+import glob
 
 # Config
 BACKTEST_MODE = os.getenv('BACKTEST_MODE', 'false').lower() == 'true'
@@ -26,6 +28,10 @@ class BacktestRequest(BaseModel):
     end_date: str
     initial_cash: float
     strategy_name: str = "CustomStrategy"
+
+class LiveStartRequest(BaseModel):
+    strategy_name: str
+    capital: float
 
 def run_live_strategy():
     """Runs the strategy in LIVE mode."""
@@ -54,6 +60,122 @@ def startup_event():
 
 # Global Process Store
 active_processes = {} # run_id -> subprocess.Popen
+ACTIVE_ENGINE = None # Singleton for Live Trading Engine
+ACTIVE_STRATEGY_NAME = None
+
+def run_live_thread(engine, strategy_name, capital):
+    global ACTIVE_ENGINE
+    ACTIVE_ENGINE = engine
+    
+    # Update DB Capital
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        # Reset Portfolio for default_user
+        cur.execute("UPDATE portfolios SET balance=%s WHERE user_id='default_user'", (capital,))
+        # If not exists, insert
+        if cur.rowcount == 0:
+             cur.execute("INSERT INTO portfolios (user_id, balance) VALUES ('default_user', %s)", (capital,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Failed to set capital: {e}")
+
+    try:
+        module_path, class_name = strategy_name.rsplit('.', 1)
+        engine.LoadAlgorithm(module_path, class_name)
+        engine.Initialize()
+        engine.Run()
+    except Exception as e:
+        logger.error(f"Live Thread Error: {e}")
+    finally:
+        ACTIVE_ENGINE = None
+
+@app.get("/strategies")
+def list_strategies():
+    """List available strategy files in the strategies directory."""
+    files = glob.glob("strategies/*.py")
+    strategies = []
+    for f in files:
+        if "backtest_" in f: continue
+        if "__init__" in f: continue
+        
+        # Parse classes
+        with open(f, 'r') as file:
+            content = file.read()
+            # Simple regex search for classes inheriting QCAlgorithm
+            import re
+            matches = re.findall(r'class\s+(\w+)\s*\(\s*QCAlgorithm\s*\)', content)
+            
+            # Module format: strategies.filename.ClassName
+            base_name = os.path.basename(f).replace(".py", "")
+            for cls in matches:
+                strategies.append({
+                    "name": f"{cls} ({base_name})",
+                    "value": f"strategies.{base_name}.{cls}",
+                    "file": f
+                })
+    return {"strategies": strategies}
+
+@app.post("/live/start")
+def start_live(request: LiveStartRequest):
+    global ACTIVE_ENGINE, ACTIVE_STRATEGY_NAME
+    
+    if ACTIVE_ENGINE and ACTIVE_ENGINE.IsRunning:
+        return {"status": "error", "message": "Live strategy already running. Stop it first."}
+        
+    engine = AlgorithmEngine(backtest_mode=False)
+    ACTIVE_STRATEGY_NAME = request.strategy_name
+    
+    threading.Thread(target=run_live_thread, args=(engine, request.strategy_name, request.capital), daemon=True).start()
+    
+    return {"status": "started", "message": f"Started {request.strategy_name} with ₹{request.capital}"}
+
+@app.post("/live/stop")
+def stop_live():
+    global ACTIVE_ENGINE
+    if ACTIVE_ENGINE:
+        ACTIVE_ENGINE.Stop()
+        return {"status": "stopped", "message": "Stopping signal sent."}
+    return {"status": "not_running", "message": "No live strategy running."}
+
+    return {"status": "not_running", "message": "No live strategy running."}
+
+class StrategySaveRequest(BaseModel):
+    name: str
+    code: str
+
+@app.post("/strategies/save")
+def save_strategy(request: StrategySaveRequest):
+    """Save a strategy file to the strategies directory."""
+    try:
+        # Sanitize filename
+        filename = request.name
+        if not filename.endswith(".py"):
+            filename += ".py"
+        
+        # Security check: Prevent directory traversal
+        if ".." in filename or "/" in filename or "\\" in filename:
+             raise HTTPException(status_code=400, detail="Invalid filename")
+
+        filepath = os.path.join("strategies", filename)
+        with open(filepath, "w") as f:
+            f.write(request.code)
+            
+        return {"status": "saved", "message": f"Strategy {filename} saved successfully."}
+    except Exception as e:
+        logger.error(f"Failed to save strategy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/live/status")
+def get_live_status():
+    global ACTIVE_ENGINE, ACTIVE_STRATEGY_NAME
+    if ACTIVE_ENGINE and ACTIVE_ENGINE.IsRunning:
+        return {
+            "strategy": ACTIVE_STRATEGY_NAME,
+            **ACTIVE_ENGINE.GetLiveStatus()
+        }
+    return {"status": "stopped"}
 
 def run_backtest_process(run_id: str, request: BacktestRequest, strategy_file_path: str):
     logger.info(f"🛑 Starting Backtest Job: {run_id}")

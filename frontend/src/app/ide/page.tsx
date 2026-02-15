@@ -182,12 +182,33 @@ export default function IdePage() {
         setFileToRename(null);
     };
 
-    const handleSave = () => {
+    const handleSave = async () => {
         const updatedFiles = files.map(f => f.id === activeFileId ? { ...f, content: code } : f);
         setFiles(updatedFiles);
         saveToStorage(updatedFiles);
-        // Optional: Show toast
-        alert("File Saved!");
+
+        // Save to Backend for Live Trading
+        try {
+            const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+            const res = await fetch(`${API_URL}/api/v1/strategies/save`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: activeFile.name,
+                    code: code
+                })
+            });
+
+            if (res.ok) {
+                alert("File Saved locally and successfully synced to Backend!");
+            } else {
+                console.error("Backend save failed");
+                alert("File Saved locally BUT failed to sync to Backend.");
+            }
+        } catch (e) {
+            console.error("Failed to save to backend", e);
+            alert("File Saved locally BUT failed to connect to Backend.");
+        }
     };
 
     return (

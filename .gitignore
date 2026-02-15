@@ -18,5 +18,11 @@ docker-compose.override.yml
 *.swp
 .DS_Store
 
+
 # Logs
 *.log
+logs/
+
+# Backtest Strategies
+strategies/backtest_*.py
+

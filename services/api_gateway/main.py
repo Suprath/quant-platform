@@ -138,6 +138,78 @@ def search_instruments(query: str = Query(..., min_length=3)):
     finally:
         if conn: conn.close()
 
+class LiveStartRequest(BaseModel):
+    strategy_name: str
+    capital: float
+
+class StrategySaveRequest(BaseModel):
+    name: str
+    code: str
+
+@app.get("/api/v1/strategies")
+def list_strategies():
+    """Proxy to Strategy Runtime"""
+    try:
+        response = requests.get("http://strategy_runtime:8000/strategies", timeout=5)
+        if response.status_code == 200:
+             return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+
+@app.post("/api/v1/live/start")
+def start_live(request: LiveStartRequest):
+    """Proxy to Strategy Runtime"""
+    try:
+        response = requests.post(
+            "http://strategy_runtime:8000/live/start",
+            json=request.dict(),
+            timeout=5
+        )
+        if response.status_code == 200:
+             return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+
+@app.post("/api/v1/live/stop")
+def stop_live():
+    """Proxy to Strategy Runtime"""
+    try:
+        response = requests.post("http://strategy_runtime:8000/live/stop", timeout=5)
+        if response.status_code == 200:
+             return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+
+@app.get("/api/v1/live/status")
+def get_live_status():
+    """Proxy to Strategy Runtime"""
+    try:
+        response = requests.get("http://strategy_runtime:8000/live/status", timeout=5)
+        if response.status_code == 200:
+             return response.json()
+        # Fallback if 404/etc
+        return {"status": "stopped", "message": "Runtime unreachable or error"}
+    except requests.exceptions.RequestException as e:
+        return {"status": "stopped", "message": f"Runtime Unavailable: {e}"}
+
+@app.post("/api/v1/strategies/save")
+def save_strategy(request: StrategySaveRequest):
+    """Save Strategy Proxy"""
+    try:
+        response = requests.post(
+            "http://strategy_runtime:8000/strategies/save",
+            json=request.dict(),
+            timeout=5
+        )
+        if response.status_code == 200:
+             return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+
 class BacktestRequest(BaseModel):
     strategy_code: str
     symbol: str

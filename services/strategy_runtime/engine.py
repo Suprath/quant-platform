@@ -52,6 +52,7 @@ class AlgorithmEngine:
         
         # Init Exchange
         self.Exchange = PaperExchange(DB_CONF, backtest_mode=self.BacktestMode, run_id=self.RunID)
+        self.IsRunning = False
 
     def LoadAlgorithm(self, module_name, class_name):
         """Dynamically load user algorithm."""
@@ -169,7 +170,8 @@ class AlgorithmEngine:
 
         # KAFKA MODE
         try:
-            while True:
+            self.IsRunning = True
+            while self.IsRunning:
                 msg = self.KafkaConsumer.poll(0.1)
                 if msg is None: continue
                 if msg.error():
@@ -182,7 +184,14 @@ class AlgorithmEngine:
         except KeyboardInterrupt:
             logger.info("🛑 Stopping Engine...")
         finally:
-            self.KafkaConsumer.close()
+            self.IsRunning = False
+            if self.KafkaConsumer:
+                self.KafkaConsumer.close()
+
+    def Stop(self):
+        """Stop the engine loop."""
+        self.IsRunning = False
+        logger.info("🛑 Stopping Engine Loop requested.")
 
     def SyncPortfolio(self):
         """Sync Portfolio state from DB to User Algorithm."""
@@ -308,6 +317,51 @@ class AlgorithmEngine:
         if success:
             logger.info(f"✅ Executed SetHoldings: {action} {abs(order_qty)} {symbol}")
             self.SyncPortfolio() # Update state immediately
+
+    def GetLiveStatus(self):
+        """
+        Return current live statistics.
+        """
+        portfolio = self.Algorithm.Portfolio
+        cash = portfolio.get('Cash', 0.0)
+        
+        # Calculate Equity
+        equity = cash
+        holdings = []
+        
+        for symbol, holding in portfolio.items():
+            if symbol == 'Cash' or symbol == 'TotalPortfolioValue': continue # specific keys
+            if isinstance(holding, SecurityHolding) and holding.Invested:
+                # Get current price
+                price = holding.AveragePrice # Default
+                if self.CurrentSlice and self.CurrentSlice.ContainsKey(symbol):
+                     price = self.CurrentSlice[symbol].Price
+                
+                market_video = holding.Quantity * price
+                unrealized_pnl = (price - holding.AveragePrice) * holding.Quantity
+                
+                equity += market_video
+                
+                holdings.append({
+                    "symbol": symbol,
+                    "quantity": holding.Quantity,
+                    "avg_price": holding.AveragePrice,
+                    "current_price": price,
+                    "market_value": market_video,
+                    "unrealized_pnl": unrealized_pnl
+                })
+                
+        initial_capital = 100000.0 # TODO: Store initial capital somewhere or pass it in
+        # We can try to fetch initial from DB or assume it based on first run?
+        # For now, let's just return what we have. Frontend can calculate PnL % if it knows start capital,
+        # or we just return Total PnL = Equity - Initial (if we knew Initial).
+        
+        return {
+            "status": "running" if self.IsRunning else "stopped",
+            "cash": cash,
+            "equity": equity,
+            "holdings": holdings
+        }
 
     def Liquidate(self, symbol=None):
         if symbol:

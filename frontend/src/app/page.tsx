@@ -2,6 +2,7 @@
 import { ServiceHealth } from "@/components/ServiceHealth";
 import { TradingDashboard } from "@/components/TradingDashboard";
 import Link from 'next/link';
+import { LiveTradingControl } from '@/components/LiveTradingControl';
 import { Button } from "@/components/ui/button";
 import { Code, Terminal, Book } from 'lucide-react';
 
@@ -40,6 +41,14 @@ export default function DashboardPage() {
         <section>
           <h2 className="text-xl font-semibold mb-4">Live Trading Monitor</h2>
           <TradingDashboard />
+        </section>
+
+        {/* Row 3: Live Trading Control */}
+        <section>
+          <h2 className="text-xl font-semibold mb-4">Live Trading Control</h2>
+          <div className="grid gap-6">
+            <LiveTradingControl />
+          </div>
         </section>
       </main>
     </div>
