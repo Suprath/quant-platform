@@ -66,16 +66,27 @@ ACTIVE_STRATEGY_NAME = None
 def run_live_thread(engine, strategy_name, capital):
     global ACTIVE_ENGINE
     ACTIVE_ENGINE = engine
+    engine.SetInitialCapital(capital)
     
     # Update DB Capital
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        # Reset Portfolio for default_user
-        cur.execute("UPDATE portfolios SET balance=%s WHERE user_id='default_user'", (capital,))
-        # If not exists, insert
-        if cur.rowcount == 0:
-             cur.execute("INSERT INTO portfolios (user_id, balance) VALUES ('default_user', %s)", (capital,))
+        
+        # 1. Get Portfolio ID
+        cur.execute("SELECT id FROM portfolios WHERE user_id='default_user'")
+        row = cur.fetchone()
+        
+        if row:
+            pid = row[0]
+            # 2. Clear old positions for a fresh start
+            cur.execute("DELETE FROM positions WHERE portfolio_id=%s", (pid,))
+            # 3. Reset Balance and Equity
+            cur.execute("UPDATE portfolios SET balance=%s, equity=%s WHERE id=%s", (capital, capital, pid))
+        else:
+            # Create new
+            cur.execute("INSERT INTO portfolios (user_id, balance, equity) VALUES ('default_user', %s, %s)", (capital, capital))
+            
         conn.commit()
         conn.close()
     except Exception as e:
@@ -160,7 +171,11 @@ def save_strategy(request: StrategySaveRequest):
 
         filepath = os.path.join("strategies", filename)
         with open(filepath, "w") as f:
-            f.write(request.code)
+            code = request.code
+            # Auto-prepend required imports if missing
+            if "from quant_sdk.algorithm import QCAlgorithm" not in code and "import QCAlgorithm" not in code:
+                code = "from quant_sdk.algorithm import QCAlgorithm\n\n" + code
+            f.write(code)
             
         return {"status": "saved", "message": f"Strategy {filename} saved successfully."}
     except Exception as e:
@@ -254,7 +269,11 @@ def start_backtest(request: BacktestRequest, background_tasks: BackgroundTasks):
     strategy_path = os.path.join("strategies", strategy_filename)
     
     with open(strategy_path, "w") as f:
-        f.write(request.strategy_code)
+        code = request.strategy_code
+        # Auto-prepend required imports if missing
+        if "from quant_sdk.algorithm import QCAlgorithm" not in code and "import QCAlgorithm" not in code:
+            code = "from quant_sdk.algorithm import QCAlgorithm\n\n" + code
+        f.write(code)
 
     # Start Backtest in Background
     background_tasks.add_task(run_backtest_process, run_id, request, strategy_path)

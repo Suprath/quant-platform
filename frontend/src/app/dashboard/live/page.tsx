@@ -31,6 +31,7 @@ interface LiveStatus {
     strategy?: string;
     cash: number;
     equity: number;
+    initial_capital?: number;
     holdings: Holding[];
 }
 
@@ -40,6 +41,16 @@ export default function LiveDashboardPage() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [equityHistory, setEquityHistory] = useState<{ time: string, value: number }[]>([]);
+
+    // Helper to map ISINs to Readable Names (Temporary until backend provides name)
+    const getSymbolName = (symbol: string) => {
+        if (symbol.includes('INE002A01018')) return 'RELIANCE INDUSTRIES';
+        if (symbol.includes('INE009A01021')) return 'INFOSYS LTD';
+        if (symbol.includes('INE467B01029')) return 'TATA CONSULTANCY';
+
+        // Return cleaned up version if not found
+        return symbol.replace('NSE_EQ|', '');
+    };
 
     const fetchStatus = React.useCallback(async () => {
         try {
@@ -121,7 +132,7 @@ export default function LiveDashboardPage() {
         );
     }
 
-    const totalPnL = status.equity - 100000; // Assuming 100k start, ideally should come from backend
+    const totalPnL = status.equity - (status.initial_capital || 100000); // Use backend initial capital
     const pnlColor = totalPnL >= 0 ? "text-green-500" : "text-red-500";
 
     return (
@@ -203,7 +214,7 @@ export default function LiveDashboardPage() {
                             <Table>
                                 <TableHeader>
                                     <TableRow>
-                                        <TableHead>Symbol</TableHead>
+                                        <TableHead>Stock Symbol</TableHead>
                                         <TableHead className="text-right">Qty</TableHead>
                                         <TableHead className="text-right">Avg Price</TableHead>
                                         <TableHead className="text-right">LTP</TableHead>
@@ -218,8 +229,13 @@ export default function LiveDashboardPage() {
                                     ) : (
                                         status.holdings.map((h) => (
                                             <TableRow key={h.symbol}>
-                                                <TableCell className="font-medium">{h.symbol}</TableCell>
-                                                <TableCell className="text-right">{h.quantity}</TableCell>
+                                                <TableCell className="font-medium">
+                                                    <div>{getSymbolName(h.symbol)}</div>
+                                                    <div className="text-xs text-muted-foreground">{h.symbol}</div>
+                                                </TableCell>
+                                                <TableCell className={`text-right ${h.quantity < 0 ? 'text-red-500 font-bold' : ''}`}>
+                                                    {h.quantity} {h.quantity < 0 && <span className="text-[10px] uppercase font-normal ml-1">(Short)</span>}
+                                                </TableCell>
                                                 <TableCell className="text-right">₹{h.avg_price?.toFixed(2) || '0.00'}</TableCell>
                                                 <TableCell className="text-right">₹{h.current_price?.toFixed(2) || '0.00'}</TableCell>
                                                 <TableCell className={`text-right ${h.unrealized_pnl >= 0 ? "text-green-500" : "text-red-500"}`}>

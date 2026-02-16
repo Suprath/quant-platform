@@ -116,7 +116,7 @@ def ensure_schema(conn):
         """)
         
         # Initialize default portfolio if not exists
-        cur.execute("INSERT INTO portfolios (user_id, balance, equity) VALUES ('default_user', 20000.00, 20000.00) ON CONFLICT (user_id) DO NOTHING;")
+        cur.execute("INSERT INTO portfolios (user_id, balance, equity) VALUES ('default_user', 100000.00, 100000.00) ON CONFLICT (user_id) DO NOTHING;")
 
         conn.commit()
         cur.close()

@@ -4,8 +4,28 @@ import psycopg2
 logger = logging.getLogger("PaperExchange")
 
 class PaperExchange:
-    # Brokerage fee: 0.05% per trade (0.1% round trip)
-    BROKERAGE_PCT = 0.0005
+    """
+    Indian Intraday Transaction Cost Model (NSE Equity - MIS/Intraday)
+    Realistic charges as per Indian regulations:
+    """
+    # Brokerage: Flat ₹20 per order or 0.03%, whichever is lower (Zerodha model)
+    BROKERAGE_FLAT = 20.0
+    BROKERAGE_PCT = 0.0003  # 0.03%
+
+    # STT (Securities Transaction Tax): 0.025% on SELL side only (Intraday)
+    STT_PCT = 0.00025
+
+    # Exchange Transaction Charges (NSE): 0.00345%
+    EXCHANGE_TXN_PCT = 0.0000345
+
+    # SEBI Turnover Fee: 0.0001%
+    SEBI_FEE_PCT = 0.000001
+
+    # Stamp Duty: 0.003% on BUY side only
+    STAMP_DUTY_PCT = 0.00003
+
+    # GST: 18% on (brokerage + exchange charges)
+    GST_PCT = 0.18
 
     def __init__(self, db_config, backtest_mode=False, run_id=None):
         self.db_config = db_config
@@ -16,17 +36,41 @@ class PaperExchange:
     def _get_conn(self):
         return psycopg2.connect(**self.db_config)
 
+    def calculate_transaction_costs(self, turnover, side):
+        """
+        Calculate realistic Indian intraday transaction costs.
+        side: 'BUY' or 'SELL'
+        Returns total charges as a positive number.
+        """
+        # 1. Brokerage: min(₹20, 0.03% of turnover)
+        brokerage = min(self.BROKERAGE_FLAT, turnover * self.BROKERAGE_PCT)
+
+        # 2. STT: 0.025% on SELL side only
+        stt = turnover * self.STT_PCT if side == 'SELL' else 0.0
+
+        # 3. Exchange Transaction Charges
+        exchange_txn = turnover * self.EXCHANGE_TXN_PCT
+
+        # 4. SEBI Turnover Fee
+        sebi_fee = turnover * self.SEBI_FEE_PCT
+
+        # 5. Stamp Duty: 0.003% on BUY side only
+        stamp_duty = turnover * self.STAMP_DUTY_PCT if side == 'BUY' else 0.0
+
+        # 6. GST: 18% on (brokerage + exchange charges)
+        gst = (brokerage + exchange_txn) * self.GST_PCT
+
+        total = brokerage + stt + exchange_txn + sebi_fee + stamp_duty + gst
+        return round(total, 2)
+
     def calculate_position_size(self, price, balance):
         """
-        Calculate position size based on user request: 100% of amount at once.
-        Capital: ₹5,000 (standardized)
+        Calculate position size. Uses 100% of available cash (no artificial leverage).
         """
         if price <= 0:
             return 1
         
-        # User requested 100% allocation with 5x Leverage for Phase 8 goal
-        LEVERAGE = 5
-        qty = int((balance * LEVERAGE) / price)
+        qty = int(balance / price)
         return max(1, qty)
 
     def execute_order(self, signal):
@@ -84,30 +128,30 @@ class PaperExchange:
                 pos = cur.fetchone()
                 
                 if pos and pos[0] < 0:
-                    # Closing/Reducing a SHORT
-                    current_qty, avg_sell_price = int(pos[0]), float(pos[1])
+                    # Closing/Reducing a SHORT (Buying back)
+                    current_qty = int(pos[0])
                     qty_to_close = min(abs(current_qty), quantity)
-                    trade_value = price * qty_to_close
-                    brokerage = trade_value * self.BROKERAGE_PCT * 2  # Round trip
-                    pnl = (avg_sell_price - price) * qty_to_close - brokerage
-                    revenue = price * qty_to_close # Actually cost, but we subtract from balance? No, we add (SellPrice * Qty) then subtract (BuyPrice * Qty)
-                    # Simplified: Balance += (AvgSellPrice - price) * qty_to_close? No, that's just PnL.
-                    # Correct cash flow: 
-                    # When Shorting: Balance += SellPrice * Qty
-                    # When Covering: Balance -= BuyPrice * Qty
-                    new_balance = balance + pnl # Balance updated by P&L
+                    
+                    cost_to_cover = price * qty_to_close
+                    charges = self.calculate_transaction_costs(cost_to_cover, 'BUY')
+                    
+                    # Cash Impact: We pay cash to buy back
+                    new_balance = balance - cost_to_cover - charges
                     cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
                     
-                    new_qty = current_qty + quantity
+                    new_qty = current_qty + qty_to_close # Adding positive to negative
                     if new_qty == 0:
                         cur.execute(f"DELETE FROM {positions_table} WHERE portfolio_id = %s AND symbol = %s", (pid, symbol))
                     else:
                         cur.execute(f"UPDATE {positions_table} SET quantity = %s WHERE portfolio_id = %s AND symbol = %s", (new_qty, pid, symbol))
                     
-                    logger.info(f"🔵 COVERED {quantity} {symbol} @ {price} | PnL: {pnl:.2f}")
+                    # PnL Calculation for Record Keeping
+                    avg_sell_price = float(pos[1])
+                    pnl = (avg_sell_price - price) * qty_to_close - charges
+                    
+                    logger.info(f"🔵 COVERED {qty_to_close} {symbol} @ {price} | PnL: {pnl:.2f}")
                     
                     if self.backtest_mode:
-                        # Use simulated timestamp for backtest accuracy
                         trade_time = signal.get('timestamp') 
                         insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price, pnl, timestamp) VALUES (%s, %s, %s, %s, %s, %s, %s)"
                         cur.execute(insert_query, (self.run_id, symbol, action, quantity, price, pnl, trade_time))
@@ -115,9 +159,16 @@ class PaperExchange:
                         insert_query = f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price, pnl) VALUES (%s, %s, %s, %s, %s, %s)"
                         cur.execute(insert_query, (strategy_id, symbol, action, quantity, price, pnl))
                 else:
-                    # Opening/Increasing a LONG
-                    if balance * 5 >= cost: # Ensure we have 5x buying power
-                        # DO NOT subtract cost from balance. Balance = Total Equity.
+                    # Opening/Increasing a LONG (Buying)
+                    cost = price * quantity
+                    charges = self.calculate_transaction_costs(cost, 'BUY')
+                    total_outflow = cost + charges
+                    
+                    if balance >= total_outflow: # Simple Cash Check
+                        # Deduct Cash
+                        new_balance = balance - total_outflow
+                        cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
+
                         cur.execute(f"""
                             INSERT INTO {positions_table} (portfolio_id, symbol, quantity, avg_price)
                             VALUES (%s, %s, %s, %s)
@@ -136,7 +187,7 @@ class PaperExchange:
                              insert_query = f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
                              cur.execute(insert_query, (strategy_id, symbol, action, quantity, price))
                     else:
-                        logger.warning(f"❌ Insufficient Funds (Leveraged) for {symbol}. Req: {cost}, Bal: {balance}")
+                        logger.warning(f"❌ Insufficient Cash for {symbol}. Req: {total_outflow}, Bal: {balance}")
                         return False
 
             elif action == 'SELL':
@@ -145,13 +196,15 @@ class PaperExchange:
                 pos = cur.fetchone()
                 
                 if pos and pos[0] > 0:
-                    # Closing/Reducing a LONG
-                    current_qty, avg_buy_price = int(pos[0]), float(pos[1])
+                    # Closing/Reducing a LONG (Selling)
+                    current_qty = int(pos[0])
                     qty_to_close = min(current_qty, quantity)
-                    trade_value = price * qty_to_close
-                    brokerage = trade_value * self.BROKERAGE_PCT * 2  # Round trip
-                    pnl = (price - avg_buy_price) * qty_to_close - brokerage
-                    new_balance = balance + pnl # Balance updated only by P&L
+                    
+                    proceeds = price * qty_to_close
+                    charges = self.calculate_transaction_costs(proceeds, 'SELL')
+                    
+                    # Cash Impact: We receive cash minus charges
+                    new_balance = balance + proceeds - charges
                     cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
                     
                     new_qty = current_qty - quantity
@@ -160,6 +213,10 @@ class PaperExchange:
                     else:
                         cur.execute(f"UPDATE {positions_table} SET quantity = %s WHERE portfolio_id = %s AND symbol = %s", (new_qty, pid, symbol))
                         
+                    # PnL for Record
+                    avg_buy_price = float(pos[1])
+                    pnl = (price - avg_buy_price) * qty_to_close - charges
+                    
                     logger.info(f"🔴 SOLD {quantity} {symbol} @ {price} | PnL: {pnl:.2f}")
                     if self.backtest_mode:
                         trade_time = signal.get('timestamp')
@@ -169,29 +226,35 @@ class PaperExchange:
                         insert_query = f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price, pnl) VALUES (%s, %s, %s, %s, %s, %s)"
                         cur.execute(insert_query, (strategy_id, symbol, action, quantity, price, pnl))
                 else:
-                    # Opening/Increasing a SHORT
-                    if balance * 5 >= cost: # Leverage check
-                        # Store short as negative quantity. Avg price is the sell price.
-                        cur.execute(f"""
-                            INSERT INTO {positions_table} (portfolio_id, symbol, quantity, avg_price)
-                            VALUES (%s, %s, %s, %s)
-                            ON CONFLICT (portfolio_id, symbol) 
-                            DO UPDATE SET 
-                                avg_price = (({positions_table}.avg_price * ABS({positions_table}.quantity)) + (%s * %s)) / (ABS({positions_table}.quantity) + %s),
-                                quantity = {positions_table}.quantity - %s
-                        """, (pid, symbol, -quantity, price, price, quantity, quantity, quantity))
+                    # Opening/Increasing a SHORT (Short Selling — allowed in Indian intraday/MIS)
+                    # Cash Model: When shorting, we credit proceeds to Cash.
+                    # Position is stored as negative quantity.
+                    # Equity = Cash + (Qty * Price). Since Qty is negative, Equity stays correct.
+                    
+                    proceeds = price * quantity
+                    charges = self.calculate_transaction_costs(proceeds, 'SELL')
+                    net_proceeds = proceeds - charges
+                    
+                    new_balance = balance + net_proceeds
+                    cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
+                    
+                    cur.execute(f"""
+                        INSERT INTO {positions_table} (portfolio_id, symbol, quantity, avg_price)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (portfolio_id, symbol) 
+                        DO UPDATE SET 
+                            avg_price = (({positions_table}.avg_price * ABS({positions_table}.quantity)) + (%s * %s)) / (ABS({positions_table}.quantity) + %s),
+                            quantity = {positions_table}.quantity - %s
+                    """, (pid, symbol, -quantity, price, price, quantity, quantity, quantity))
                         
-                        logger.info(f"🔻 SHORTED {quantity} {symbol} @ {price}")
-                        if self.backtest_mode:
-                            trade_time = signal.get('timestamp')
-                            insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price, timestamp) VALUES (%s, %s, %s, %s, %s, %s)"
-                            cur.execute(insert_query, (self.run_id, symbol, action, quantity, price, trade_time))
-                        else:
-                            insert_query = f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
-                            cur.execute(insert_query, (strategy_id, symbol, action, quantity, price))
+                    logger.info(f"🔻 SHORTED {quantity} {symbol} @ {price}")
+                    if self.backtest_mode:
+                        trade_time = signal.get('timestamp')
+                        insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price, timestamp) VALUES (%s, %s, %s, %s, %s, %s)"
+                        cur.execute(insert_query, (self.run_id, symbol, action, quantity, price, trade_time))
                     else:
-                        logger.warning(f"❌ Insufficient Funds (Leveraged) for {symbol}. Req: {cost}, Bal: {balance}")
-                        return False
+                        insert_query = f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
+                        cur.execute(insert_query, (strategy_id, symbol, action, quantity, price))
 
             conn.commit()
             return True

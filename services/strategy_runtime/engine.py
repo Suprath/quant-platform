@@ -3,7 +3,7 @@ import json
 import logging
 import importlib
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from confluent_kafka import Consumer
 from quant_sdk.data import Tick, Slice
 from quant_sdk.algorithm import Resolution
@@ -34,6 +34,12 @@ class SecurityHolding:
         return self.Quantity != 0
 
 class AlgorithmEngine:
+    # Indian Market Hours (IST)
+    MARKET_OPEN_HOUR = 9
+    MARKET_OPEN_MINUTE = 15
+    SQUARE_OFF_HOUR = 15
+    SQUARE_OFF_MINUTE = 20
+
     def __init__(self, run_id=None, backtest_mode=False):
         self.Algorithm = None
         self.SubscriptionManager = SubscriptionManager()
@@ -44,6 +50,10 @@ class AlgorithmEngine:
         self.KafkaConsumer = None
         self.CurrentSlice = None
         self.UniverseSettings = None # Stores selection function
+        self.Leverage = 1.0  # Default: No leverage. User can override via strategy.
+        self._squared_off_today = False  # Track if we already squared off today
+        self._last_square_off_date = None
+        self._last_prices = {}  # Cache: symbol -> last known price
         
         # Connect to DB
         conn = get_db_connection()
@@ -89,7 +99,6 @@ class AlgorithmEngine:
         # Topic selection
         topic = f'market.enriched.ticks.{self.RunID}' if self.BacktestMode else 'market.enriched.ticks'
         self.KafkaConsumer.subscribe([topic])
-        self.KafkaConsumer.subscribe([topic])
         logger.info(f"📡 Subscribed to Kafka Topic: {topic}")
 
     def AddUniverse(self, selection_function):
@@ -110,6 +119,33 @@ class AlgorithmEngine:
         self.LocalData = ticks
         logger.info(f"📁 Loaded {len(ticks)} ticks for Local Backtest")
 
+    # Indian Standard Time offset
+    IST = timezone(timedelta(hours=5, minutes=30))
+
+    def _to_ist(self, time_obj):
+        """Convert a naive/UTC datetime to IST for market hours checks."""
+        if time_obj.tzinfo is None:
+            # Assume UTC (Docker containers default to UTC)
+            return time_obj.replace(tzinfo=timezone.utc).astimezone(self.IST)
+        return time_obj.astimezone(self.IST)
+
+    def _is_market_hours(self, time_obj):
+        """Check if current time is within NSE trading hours (9:15 AM - 3:30 PM IST)."""
+        ist = self._to_ist(time_obj)
+        h, m = ist.hour, ist.minute
+        market_open = h > self.MARKET_OPEN_HOUR or (h == self.MARKET_OPEN_HOUR and m >= self.MARKET_OPEN_MINUTE)
+        market_close = h < 15 or (h == 15 and m <= 30)
+        return market_open and market_close
+
+    def _should_square_off(self, time_obj):
+        """Check if it's time for mandatory intraday square-off (3:20 PM IST)."""
+        ist = self._to_ist(time_obj)
+        today = ist.date()
+        if self._last_square_off_date == today:
+            return False  # Already squared off today
+        h, m = ist.hour, ist.minute
+        return h == self.SQUARE_OFF_HOUR and m >= self.SQUARE_OFF_MINUTE
+
     def ProcessTick(self, tick_dict):
         # 1. Parse Data
         try:
@@ -126,9 +162,17 @@ class AlgorithmEngine:
             time_obj = datetime.fromtimestamp(ts / 1000.0) if ts else datetime.now()
             tick = Tick(time_obj, symbol, price, volume)
 
+            # --- MARKET HOURS FILTER (9:15 AM - 3:30 PM IST) ---
+            # Only apply in LIVE mode. Backtest data is already curated.
+            if not self.BacktestMode and not self._is_market_hours(time_obj):
+                return  # Skip pre/post-market ticks
+
             # Ensure Portfolio has entry
             if symbol not in self.Algorithm.Portfolio:
                 self.Algorithm.Portfolio[symbol] = SecurityHolding(symbol)
+
+            # Cache last known price for each symbol (used by Liquidate)
+            self._last_prices[symbol] = price
 
             # 3. Update Indicators
             if symbol in self.Indicators:
@@ -143,15 +187,27 @@ class AlgorithmEngine:
             self.Algorithm.Time = time_obj
 
             # --- INTRADAY SQUARE-OFF (3:20 PM IST) ---
-            # Only applicable for LIVE mode usually, but useful to test in backtest
-            if not self.BacktestMode:
-                 # Live logic
-                 pass
-            elif self.BacktestMode and time_obj.hour == 15 and time_obj.minute >= 20:
-                 # Backtest EOD logic
-                 pass
+            # Indian rule: ALL intraday positions must be closed by 3:20 PM.
+            if self._should_square_off(time_obj):
+                self.SyncPortfolio()
+                has_positions = any(
+                    isinstance(h, SecurityHolding) and h.Invested
+                    for sym, h in self.Algorithm.Portfolio.items()
+                    if sym not in ('Cash', 'TotalPortfolioValue')
+                )
+                if has_positions:
+                    logger.info("⏰ 3:20 PM IST — AUTO SQUARE-OFF: Liquidating all intraday positions")
+                    self.Liquidate()
+                self._last_square_off_date = self._to_ist(time_obj).date()
+                return  # No new trades after square-off
 
-            # 6. Call User Code
+            # 6. Reset square-off flag for new day
+            ist_now = self._to_ist(time_obj)
+            today = ist_now.date()
+            if self._last_square_off_date and self._last_square_off_date != today:
+                self._last_square_off_date = None
+
+            # 7. Call User Code
             self.Algorithm.OnData(slice_obj)
 
         except Exception as e:
@@ -263,17 +319,30 @@ class AlgorithmEngine:
         """
         pass
         
+    def SetLeverage(self, leverage):
+        """Set intraday leverage multiplier. Default is 1x (no leverage)."""
+        self.Leverage = float(leverage)
+        logger.info(f"⚙️ Leverage set to {self.Leverage}x")
+
     def SetHoldings(self, symbol, percentage):
         """
-        Logic for setting holdings to a specific percentage.
+        Set holdings for a symbol to a target percentage of portfolio equity.
+        percentage: 0.1 = 10% long, -0.1 = 10% short, 0 = flat
+        Uses self.Leverage (default 1x, configurable via SetLeverage).
         """
         # 1. Sync Portfolio to get latest Balance
         self.SyncPortfolio()
         
-        balance = self.Algorithm.Portfolio.get('Cash', 5000.0)
+        cash = self.Algorithm.Portfolio.get('Cash', 0.0)
+        
+        # Calculate total equity (cash + position values)
+        total_equity = cash
+        for sym, holding in self.Algorithm.Portfolio.items():
+            if sym in ('Cash', 'TotalPortfolioValue'): continue
+            if isinstance(holding, SecurityHolding) and holding.Invested:
+                total_equity += abs(holding.Quantity) * holding.AveragePrice
         
         # 2. Get Current Price
-        # We need the last tick price for this symbol
         if not self.CurrentSlice or not self.CurrentSlice.ContainsKey(symbol):
             logger.warning(f"Cannot SetHoldings: No data for {symbol}")
             return
@@ -282,14 +351,9 @@ class AlgorithmEngine:
         if price <= 0: return
 
         # 3. Calculate Target Quantity
-        # Leverage is 1.0 by default in SDK usually, but PaperExchange uses 5.0.
-        # Let's assume 1.0 for calculation here, PaperExchange adds leverage safety.
-        # Wait, if I want 100% allocation, I need to know buying power.
-        # PaperExchange: `calculate_position_size` uses 5x leverage.
-        
-        # Let's match PaperExchange logic:
-        buying_power = balance * 5 # 5x Leverage
-        target_value = buying_power * percentage
+        # buying_power = equity * leverage
+        buying_power = total_equity * self.Leverage
+        target_value = buying_power * percentage  # Negative for short
         target_qty = int(target_value / price)
         
         # 4. Get Current Quantity
@@ -337,41 +401,90 @@ class AlgorithmEngine:
                 if self.CurrentSlice and self.CurrentSlice.ContainsKey(symbol):
                      price = self.CurrentSlice[symbol].Price
                 
-                market_video = holding.Quantity * price
+                market_value = holding.Quantity * price
                 unrealized_pnl = (price - holding.AveragePrice) * holding.Quantity
                 
-                equity += market_video
+                equity += market_value
                 
                 holdings.append({
                     "symbol": symbol,
                     "quantity": holding.Quantity,
                     "avg_price": holding.AveragePrice,
                     "current_price": price,
-                    "market_value": market_video,
+                    "market_value": market_value,
                     "unrealized_pnl": unrealized_pnl
                 })
                 
-        initial_capital = 100000.0 # TODO: Store initial capital somewhere or pass it in
-        # We can try to fetch initial from DB or assume it based on first run?
-        # For now, let's just return what we have. Frontend can calculate PnL % if it knows start capital,
-        # or we just return Total PnL = Equity - Initial (if we knew Initial).
-        
         return {
             "status": "running" if self.IsRunning else "stopped",
             "cash": cash,
             "equity": equity,
+            "initial_capital": getattr(self, 'InitialCapital', 100000.0),
             "holdings": holdings
         }
 
+    def SetInitialCapital(self, capital):
+        self.InitialCapital = float(capital)
+
     def Liquidate(self, symbol=None):
+        """
+        Close all positions (or a specific symbol).
+        Uses cached last-known prices instead of CurrentSlice,
+        so it works in backtests where CurrentSlice has only one symbol.
+        """
         if symbol:
-            self.SetHoldings(symbol, 0)
-        else:
-            # Liquidate all
+            # Liquidate single symbol
             self.SyncPortfolio()
+            holding = self.Algorithm.Portfolio.get(symbol)
+            if isinstance(holding, SecurityHolding) and holding.Invested:
+                price = self._last_prices.get(symbol)
+                if not price and self.CurrentSlice and self.CurrentSlice.ContainsKey(symbol):
+                    price = self.CurrentSlice[symbol].Price
+                if not price:
+                    price = holding.AveragePrice  # Last resort fallback
+
+                action = "SELL" if holding.Quantity > 0 else "BUY"
+                signal = {
+                    "symbol": symbol,
+                    "action": action,
+                    "quantity": abs(holding.Quantity),
+                    "price": price,
+                    "strategy_id": "USER_ALGO",
+                    "timestamp": self.Algorithm.Time if self.BacktestMode else None
+                }
+                success = self.Exchange.execute_order(signal)
+                if success:
+                    logger.info(f"✅ Liquidated {symbol}: {action} {abs(holding.Quantity)} @ {price}")
+                    self.SyncPortfolio()
+        else:
+            # Liquidate ALL positions
+            self.SyncPortfolio()
+            symbols_to_close = []
             for sym, holding in self.Algorithm.Portfolio.items():
-                 if isinstance(holding, SecurityHolding) and holding.Invested:
-                     self.SetHoldings(sym, 0)
+                if isinstance(holding, SecurityHolding) and holding.Invested:
+                    symbols_to_close.append((sym, holding))
+
+            for sym, holding in symbols_to_close:
+                price = self._last_prices.get(sym)
+                if not price and self.CurrentSlice and self.CurrentSlice.ContainsKey(sym):
+                    price = self.CurrentSlice[sym].Price
+                if not price:
+                    price = holding.AveragePrice  # Last resort fallback
+
+                action = "SELL" if holding.Quantity > 0 else "BUY"
+                signal = {
+                    "symbol": sym,
+                    "action": action,
+                    "quantity": abs(holding.Quantity),
+                    "price": price,
+                    "strategy_id": "USER_ALGO",
+                    "timestamp": self.Algorithm.Time if self.BacktestMode else None
+                }
+                success = self.Exchange.execute_order(signal)
+                if success:
+                    logger.info(f"✅ Liquidated {sym}: {action} {abs(holding.Quantity)} @ {price}")
+
+            self.SyncPortfolio()
 
 if __name__ == "__main__":
     pass

@@ -121,7 +121,10 @@ def fetch_historical_data(symbol, start_date, end_date, timeframe='1m'):
         if 'T' not in start_date:
             start_date = f"{start_date}T00:00:00.000000Z"
         if 'T' not in end_date:
-            end_date = f"{end_date}T00:00:00.000000Z"
+            # Add +1 day to make end date inclusive (user expects Jan 9 to include Jan 9 data)
+            from datetime import datetime as dt, timedelta
+            end_dt = dt.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+            end_date = end_dt.strftime("%Y-%m-%dT00:00:00.000000Z")
     except:
         pass
 
@@ -138,18 +141,29 @@ def fetch_historical_data(symbol, start_date, end_date, timeframe='1m'):
     return candles
 
 def ohlc_to_ticks(timestamp, open_price, high, low, close, volume):
-    """Convert OHLC to Ticks (Mocking tick data from candles)"""
+    """
+    Convert OHLC to Ticks with direction-aware price path.
+    Bullish candle (close > open): O → L → H → C
+    Bearish candle (close < open): O → H → L → C
+    This reduces directional bias in backtests.
+    """
     ticks = []
     base_ts = int(timestamp.timestamp() * 1000)
     vol_per_tick = int(volume / 4)
     
-    # Open
+    # Open (always first)
     ticks.append({"ltp": open_price, "v": vol_per_tick, "timestamp": base_ts})
-    # High
-    ticks.append({"ltp": high, "v": vol_per_tick, "timestamp": base_ts + 15000})
-    # Low
-    ticks.append({"ltp": low, "v": vol_per_tick, "timestamp": base_ts + 30000})
-    # Close
+    
+    if close >= open_price:
+        # Bullish: O → L → H → C (dips then rallies)
+        ticks.append({"ltp": low, "v": vol_per_tick, "timestamp": base_ts + 15000})
+        ticks.append({"ltp": high, "v": vol_per_tick, "timestamp": base_ts + 30000})
+    else:
+        # Bearish: O → H → L → C (rallies then dips)
+        ticks.append({"ltp": high, "v": vol_per_tick, "timestamp": base_ts + 15000})
+        ticks.append({"ltp": low, "v": vol_per_tick, "timestamp": base_ts + 30000})
+    
+    # Close (always last)
     ticks.append({"ltp": close, "v": vol_per_tick, "timestamp": base_ts + 45000})
     
     return ticks
@@ -187,39 +201,40 @@ def run(symbol, start, end, initial_cash):
     engine.Algorithm.Portfolio['Cash'] = initial_cash
     engine.Algorithm.Portfolio['TotalPortfolioValue'] = initial_cash
     
-    # 4. Universe Selection
-    universe_symbols = [symbol]
+    # 4. Universe Selection — Scan EACH trading day in the range
+    universe_symbols = set()
     if engine.UniverseSettings:
-        logger.info("🌌 Dynamic Universe Requested. Scanning Market...")
+        logger.info("🌌 Dynamic Universe Requested. Scanning each trading day...")
         try:
-             # Run Scan for Start Date
-             scanned = scan_market(start)
-             if scanned:
-                 universe_symbols = scanned
-                 logger.info(f"🌌 Universe Selected: {universe_symbols}")
-             else:
-                 logger.warning("⚠️ Scan returned no results. Fallback to provided symbol.")
-        except Exception as e:
-             logger.error(f"Scan Failed: {e}")
+            from datetime import datetime as dt, timedelta
+            start_dt = dt.strptime(start, "%Y-%m-%d") if isinstance(start, str) and 'T' not in start else dt.strptime(start.split('T')[0], "%Y-%m-%d")
+            end_dt = dt.strptime(end, "%Y-%m-%d") if isinstance(end, str) and 'T' not in end else dt.strptime(end.split('T')[0], "%Y-%m-%d")
 
-    # Fallback Persistence: Ensure universe is in DB even if scan failed or returned empty
-    if universe_symbols:
-        try:
-             pg_conn = get_db_connection()
-             pg_cur = pg_conn.cursor()
-             for sym in universe_symbols:
-                 # Check if already exists (scanner might have saved it, or it's a manual symbol)
-                 pg_cur.execute("SELECT 1 FROM backtest_universe WHERE run_id=%s AND date=%s AND symbol=%s", (RUN_ID, start, sym))
-                 if not pg_cur.fetchone():
-                     pg_cur.execute("""
-                         INSERT INTO backtest_universe (run_id, date, symbol, score)
-                         VALUES (%s, %s, %s, %s)
-                     """, (RUN_ID, start, sym, 0.0)) # Score 0 for fallback
-             pg_conn.commit()
-             pg_cur.close()
-             pg_conn.close()
+            current = start_dt
+            while current <= end_dt:
+                # Skip weekends (Sat=5, Sun=6) — NSE is closed
+                if current.weekday() < 5:
+                    date_str = current.strftime("%Y-%m-%d")
+                    scanned = scan_market(date_str)
+                    if scanned:
+                        universe_symbols.update(scanned)
+                        logger.info(f"🌌 Day {date_str}: Scanned {len(scanned)} stocks")
+                    else:
+                        logger.info(f"📅 Day {date_str}: No scanner results (holiday?)")
+                current += timedelta(days=1)
+
+            if universe_symbols:
+                logger.info(f"🌌 Total Universe: {len(universe_symbols)} unique symbols across all days")
+            else:
+                logger.warning("⚠️ Scan returned no results for any day. Fallback to provided symbol.")
+                universe_symbols = {symbol}
         except Exception as e:
-             logger.error(f"Failed to persist fallback universe: {e}")
+            logger.error(f"Scan Failed: {e}")
+            universe_symbols = {symbol}
+    else:
+        universe_symbols = {symbol}
+
+    universe_symbols = list(universe_symbols)
 
     # 5. Fetch Data for Universe
     all_ticks = []
