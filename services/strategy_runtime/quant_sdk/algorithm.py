@@ -23,10 +23,41 @@ class QCAlgorithm(ABC):
     """
     def __init__(self, engine=None):
         self.Engine = engine
-        self.Portfolio = {} # Symbol -> Position Object
+        self.Portfolio = PortfolioManager() # Replaced raw dict with Manager
         self.Time = datetime.now()
         self.IsWarmingUp = False
         self._logger = logging.getLogger("UserAlgorithm")
+
+class PortfolioManager(dict):
+    """
+    Manages Portfolio State with helper properties.
+    Behaves like a dictionary but provides .Cash, .TotalPortfolioValue, etc.
+    """
+    def __init__(self):
+        super().__init__()
+        self['Cash'] = 100000.0
+        self['TotalPortfolioValue'] = 100000.0
+
+    @property
+    def Cash(self):
+        return self.get('Cash', 0.0)
+
+    @property
+    def TotalPortfolioValue(self):
+        return self.get('TotalPortfolioValue', 0.0)
+
+    @property
+    def TotalHoldingsValue(self):
+        return self.TotalPortfolioValue - self.Cash
+
+    @property
+    def Invested(self):
+        """Returns True if we have any holdings."""
+        return self.TotalHoldingsValue > 0
+    
+    @property
+    def MarginRemaining(self):
+        return self.Cash # Simplified for now
 
     @abstractmethod
     def Initialize(self):

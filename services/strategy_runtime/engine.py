@@ -257,6 +257,34 @@ class AlgorithmEngine:
         Calculate Total Portfolio Value (Equity) in Realtime.
         Equity = Cash + Sum(Position Value).
         """
+        # 1. Update Position Values based on latest price
+        positions_value = 0.0
+        
+        for sym, holding in self.Algorithm.Portfolio.items():
+            if sym in ('Cash', 'TotalPortfolioValue'): continue
+            if isinstance(holding, SecurityHolding) and holding.Invested:
+                # Use current slice price if available, else last known
+                price = None
+                if self.CurrentSlice and self.CurrentSlice.ContainsKey(sym):
+                    price = self.CurrentSlice[sym].Price
+                
+                if not price:
+                    price = self._last_prices.get(sym)
+                
+                if not price:
+                     price = holding.AveragePrice
+                
+                positions_value += holding.Quantity * price
+        
+        # 2. Update Portfolio State
+        self.Algorithm.Portfolio['TotalPortfolioValue'] = self.Algorithm.Portfolio.Cash + positions_value
+        return self.Algorithm.Portfolio.TotalPortfolioValue
+
+    def CalculatePortfolioValue(self):
+        """
+        Calculate Total Portfolio Value (Equity) in Realtime.
+        Equity = Cash + Sum(Position Value).
+        """
         cash = self.Algorithm.Portfolio.get('Cash', 0.0)
         equity = cash
         
@@ -286,6 +314,9 @@ class AlgorithmEngine:
         
         # Initialize Portfolio from DB (First Sync)
         self.SyncPortfolio()
+        
+        # Inject Initial Equity Point (t=0) for Statistics
+        self.EquityCurve.append({'timestamp': datetime.now(), 'equity': self.Algorithm.Portfolio.TotalPortfolioValue})
         
         # LOCAL DATA MODE
         if getattr(self, 'LocalData', None) is not None:
@@ -383,7 +414,7 @@ class AlgorithmEngine:
                 # Update Total Value (Cash + Equity) using Realtime Calculator
                 self.CalculatePortfolioValue()
                 
-                logger.info(f"🔄 SyncPortfolio: Cash=₹{self.Algorithm.Portfolio['Cash']:.2f}, Equity=₹{self.Algorithm.Portfolio['TotalPortfolioValue']:.2f}")
+                logger.info(f"🔄 SyncPortfolio: Cash=₹{self.Algorithm.Portfolio.Cash:.2f}, Equity=₹{self.Algorithm.Portfolio.TotalPortfolioValue:.2f}")
 
         except Exception as e:
             logger.error(f"SyncPortfolio Error: {e}")
@@ -451,8 +482,8 @@ class AlgorithmEngine:
              initial_equity = df['equity'].iloc[0] if len(df) > 0 else 100000
              final_equity = df['equity'].iloc[-1]
              
-             stats['net_profit'] = final_equity - initial_equity
-             stats['total_return'] = ((final_equity - initial_equity) / initial_equity) * 100
+             stats['net_profit'] = float(final_equity - initial_equity)
+             stats['total_return'] = float(((final_equity - initial_equity) / initial_equity) * 100)
      
              # Sharpe Ratio (Daily, Risk Free Rate 6% = 0.06/252)
              if len(df['returns']) > 1:
@@ -461,12 +492,16 @@ class AlgorithmEngine:
                  std_dev = excess_returns.std()
                  if std_dev > 0:
                      sharpe = (excess_returns.mean() / std_dev) * (252 ** 0.5)
-                     stats['sharpe_ratio'] = round(sharpe, 2)
+                     stats['sharpe_ratio'] = float(round(sharpe, 2))
+                 else:
+                     logger.warning("⚠️ StdDev is 0 (Flat Returns?), Sharpe = 0")
+             else:
+                 logger.warning(f"⚠️ Not enough data for Sharpe ({len(df['returns'])} returns)")
      
              # Max Drawdown
              rolling_max = df['equity'].cummax()
              drawdown = (df['equity'] - rolling_max) / rolling_max
-             stats['max_drawdown'] = round(drawdown.min() * 100, 2)
+             stats['max_drawdown'] = float(round(drawdown.min() * 100, 2))
 
         # 2. Trade Stats from DB
         try:
