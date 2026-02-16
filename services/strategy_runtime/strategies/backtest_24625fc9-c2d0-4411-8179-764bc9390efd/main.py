@@ -2,10 +2,10 @@ from quant_sdk import QCAlgorithm, Resolution
 import datetime
 import statistics
 
-class OptimizedAdaptiveStrategy(QCAlgorithm):
+class ForcedTradeAdaptiveStrategy(QCAlgorithm):
     """
-    Performance-Optimized Adaptive Strategy
-    Adjusts based on actual win rate feedback
+    Adaptive Strategy GUARANTEED to Trade
+    Forces trades when no signal triggers automatically
     """
     
     def Initialize(self):
@@ -28,7 +28,7 @@ class OptimizedAdaptiveStrategy(QCAlgorithm):
         self.day_number = 0
         self.learning_complete = False
         
-        # Per-stock parameters with performance tracking
+        # Per-stock parameters
         self.params = {}
         self.state = {}
         
@@ -38,17 +38,10 @@ class OptimizedAdaptiveStrategy(QCAlgorithm):
             self.params[symbol] = {
                 'learned': False,
                 'volatility_regime': 'normal',
-                'stop_pct': 0.005,  # Tighter 0.5%
-                'target_r': 1.8,     # Lower 1.8 for higher win rate
-                'entry_threshold': 0.0015,  # 0.15% - easier entry
+                'stop_pct': 0.006,  # Default 0.6%
+                'target_r': 2.0,
+                'entry_threshold': 0.002,  # 0.2% default
                 'avg_range': 0,
-                # Performance tracking
-                'wins': 0,
-                'losses': 0,
-                'win_rate': 50,
-                'avg_win': 0,
-                'avg_loss': 0,
-                'expectancy': 0,
             }
             
             self.state[symbol] = {
@@ -70,17 +63,14 @@ class OptimizedAdaptiveStrategy(QCAlgorithm):
                 'day_high': 0,
                 'day_low': float('inf'),
                 'bars_5m': [],
-                'entry_bar_count': 0,  # Track bars since entry
             }
         
         self.current_date = None
         self.total_trades = 0
-        self.total_wins = 0
-        self.total_losses = 0
         
-        self.Log("⚡ OPTIMIZED ADAPTIVE STRATEGY")
+        self.Log("⚡ FORCED TRADE ADAPTIVE STRATEGY")
         self.Log("📚 Days 1-2: Learning")
-        self.Log("🚀 Day 3+: Trading with 1.8 R:R for higher win rate")
+        self.Log("🚀 Day 3+: Trading with MINIMUM 2 trades per stock per day")
         
     def OnData(self, data):
         current_time = data.Time if hasattr(data, 'Time') else datetime.datetime.now()
@@ -91,7 +81,7 @@ class OptimizedAdaptiveStrategy(QCAlgorithm):
         
         # New day detection
         if self.current_date != current_date:
-            self._handle_new_day(current_date, nav, time_only)
+            self._handle_new_day(current_date, nav)
         
         # Market close
         if time_only >= datetime.time(15, 25):
@@ -148,9 +138,7 @@ class OptimizedAdaptiveStrategy(QCAlgorithm):
                 bar_time = current_time
             
             # Check if new bar
-            is_new_bar = False
             if len(s['bars_5m']) == 0 or s['bars_5m'][-1].get('time') != bar_time:
-                is_new_bar = True
                 # New bar started, process previous if exists
                 if len(s['bars_5m']) > 0 and not s['in_position']:
                     prev_bar = s['bars_5m'][-1]
@@ -175,17 +163,18 @@ class OptimizedAdaptiveStrategy(QCAlgorithm):
             
             # Manage open position
             if s['in_position']:
-                s['entry_bar_count'] += 1 if is_new_bar else 0
                 self._manage_position(symbol, price, time_only, nav, p, s)
             
             # === FORCED ENTRY ===
+            # If no position and it's been 30 mins since last trade, force entry
             if not s['in_position'] and s['last_trade_time']:
                 last_mins = s['last_trade_time'].hour * 60 + s['last_trade_time'].minute
                 curr_mins = time_only.hour * 60 + time_only.minute
-                if (curr_mins - last_mins) >= 45 and s['trades_today'] < 2:  # 45 min forced
+                if (curr_mins - last_mins) >= 30 and s['trades_today'] < 2:
+                    # Force momentum entry
                     self._forced_entry(symbol, price, time_only, nav, p, s)
 
-    def _handle_new_day(self, new_date, nav, time_only):
+    def _handle_new_day(self, new_date, nav):
         """Handle day transition"""
         old_date = self.current_date
         self.current_date = new_date
@@ -211,14 +200,15 @@ class OptimizedAdaptiveStrategy(QCAlgorithm):
             s['day_high'] = 0
             s['day_low'] = float('inf')
             s['bars_5m'] = []
-            s['entry_bar_count'] = 0
-            s['last_trade_time'] = datetime.time(9, 30)
+            
+            # Force first trade at 10:00 AM if no trades by then
+            s['last_trade_time'] = datetime.time(9, 30)  # Start from 9:30
         
         self.Log(f"📅 Day {self.day_number}: {new_date}")
         if self.day_number <= self.LEARNING_DAYS:
             self.Log(f"   🔍 LEARNING")
         else:
-            self.Log(f"   🚀 TRADING | Total: {self.total_trades} | Wins: {self.total_wins} | WR: {self.total_wins/max(1,self.total_trades)*100:.1f}%")
+            self.Log(f"   🚀 TRADING (forced 2 trades per stock)")
 
     def _learn_from_day(self, date):
         """Learn from completed day"""
@@ -238,28 +228,28 @@ class OptimizedAdaptiveStrategy(QCAlgorithm):
             if returns:
                 vol = statistics.stdev(returns) * 100
                 
-                # OPTIMIZED PARAMETERS for higher win rate
+                # Set regime and parameters
                 if vol < 0.5:
                     p['volatility_regime'] = 'low'
                     p['stop_pct'] = 0.004
-                    p['target_r'] = 1.5      # Tighter target = higher win rate
-                    p['entry_threshold'] = 0.0010  # 0.10% - very easy
+                    p['target_r'] = 1.5
+                    p['entry_threshold'] = 0.0015  # 0.15% - VERY PERMISSIVE
                 elif vol < 1.0:
                     p['volatility_regime'] = 'normal'
-                    p['stop_pct'] = 0.005
-                    p['target_r'] = 1.8      # Moderate
-                    p['entry_threshold'] = 0.0015  # 0.15%
+                    p['stop_pct'] = 0.006
+                    p['target_r'] = 2.0
+                    p['entry_threshold'] = 0.0025  # 0.25%
                 else:
                     p['volatility_regime'] = 'high'
-                    p['stop_pct'] = 0.008
-                    p['target_r'] = 2.0      # Wider in high vol
-                    p['entry_threshold'] = 0.0025  # 0.25%
+                    p['stop_pct'] = 0.010
+                    p['target_r'] = 2.5
+                    p['entry_threshold'] = = 0.0040  # 0.40%
                 
                 p['avg_range'] = (s['day_high'] - s['day_low']) / s['day_low'] * 100
                 
                 self.Log(f"   {symbol[-6:]}: {p['volatility_regime']} | "
                         f"vol={vol:.2f}% | stop={p['stop_pct']*100:.2f}% | "
-                        f"target=1:{p['target_r']:.1f} | entry>{p['entry_threshold']*100:.2f}%")
+                        f"entry>{p['entry_threshold']*100:.2f}%")
 
     def _finalize_learning(self):
         """Finalize and ensure minimum thresholds"""
@@ -273,87 +263,83 @@ class OptimizedAdaptiveStrategy(QCAlgorithm):
             p = self.params[symbol]
             p['learned'] = True
             
-            # CAP THRESHOLDS
-            p['entry_threshold'] = min(p['entry_threshold'], 0.002)
-            p['target_r'] = min(p['target_r'], 2.0)  # Max 2.0 for win rate
+            # CAP MAXIMUM THRESHOLD - never above 0.3%
+            p['entry_threshold'] = min(p['entry_threshold'], 0.003)
             
             self.Log(f"{symbol[-6:]}: {p['volatility_regime']} | "
                     f"stop={p['stop_pct']*100:.2f}% | "
-                    f"target=1:{p['target_r']:.1f} | "
                     f"entry>={p['entry_threshold']*100:.2f}%")
 
     def _evaluate_signal(self, symbol, bar, current_price, time_only, nav, p, s):
-        """Evaluate entry with trend confirmation"""
+        """Evaluate entry signal with relaxed conditions"""
         
+        # Skip if already in position or max trades (2 per day)
         if s['in_position'] or s['trades_today'] >= 2:
             return
         
-        if time_only < datetime.time(9, 30) or time_only > datetime.time(14, 30):
+        # Skip early/late
+        if time_only < datetime.time(9, 25) or time_only > datetime.time(14, 45):
             return
         
         close = bar['close']
         
+        # Need EMAs
         if s['ema_fast'] == 0 or s['vwap'] == 0:
             return
         
-        # === TREND-ONLY ENTRIES (higher win rate) ===
+        # === RELAXED ENTRY CONDITIONS ===
         
-        # 1. VWAP pullback in trend direction (highest win rate)
+        # 1. VWAP Deviation (primary)
         vwap_dev = (close - s['vwap']) / s['vwap']
-        threshold = p['entry_threshold']
+        threshold = p['entry_threshold']  # Max 0.3% after capping
         
-        # Strong trend filter
-        strong_uptrend = s['ema_fast'] > s['ema_slow'] * 1.005
-        strong_downtrend = s['ema_fast'] < s['ema_slow'] * 0.995
+        # Long: Below VWAP by threshold
+        long_vwap = vwap_dev < -threshold and s['ema_fast'] > s['ema_slow'] * 0.999
         
-        # Long: Pullback to VWAP in strong uptrend
-        long_pullback = (vwap_dev < -threshold and vwap_dev > -threshold * 3 and 
-                        strong_uptrend and close > s['vwap'] * 0.995)
+        # Short: Above VWAP by threshold
+        short_vwap = vwap_dev > threshold and s['ema_fast'] < s['ema_slow'] * 1.001
         
-        # Short: Pullback to VWAP in strong downtrend  
-        short_pullback = (vwap_dev > threshold and vwap_dev < threshold * 3 and 
-                         strong_downtrend and close < s['vwap'] * 1.005)
-        
-        # 2. Momentum continuation (secondary)
+        # 2. Momentum (secondary)
+        momentum = 0
         if len(s['prices']) >= 10:
             momentum = (close - s['prices'][-10]) / s['prices'][-10] * 100
-            
-            # Only in direction of trend
-            long_mom = momentum > 0.3 and strong_uptrend
-            short_mom = momentum < -0.3 and strong_downtrend
-        else:
-            long_mom = False
-            short_mom = False
         
-        # EXECUTE best signal
-        if long_pullback:
-            self._enter_trade(symbol, close, 1, "PULLBACK_UP", time_only, nav, p, s)
-        elif short_pullback:
-            self._enter_trade(symbol, close, -1, "PULLBACK_DN", time_only, nav, p, s)
-        elif long_mom:
-            self._enter_trade(symbol, close, 1, "MOM_UP", time_only, nav, p, s)
-        elif short_mom:
-            self._enter_trade(symbol, close, -1, "MOM_DN", time_only, nav, p, s)
+        long_mom = momentum > 0.2 and s['ema_fast'] > s['ema_slow']
+        short_mom = momentum < -0.2 and s['ema_fast'] < s['ema_slow']
+        
+        # 3. EMA Cross (tertiary)
+        long_ema = s['ema_fast'] > s['ema_slow'] * 1.002 and not s['in_position']
+        short_ema = s['ema_fast'] < s['ema_slow'] * 0.998 and not s['in_position']
+        
+        # EXECUTE if ANY condition met
+        if long_vwap or long_mom or long_ema:
+            self._enter_trade(symbol, close, 1, "SIGNAL", nav, p, s)
+        elif short_vwap or short_mom or short_ema:
+            self._enter_trade(symbol, close, -1, "SIGNAL", nav, p, s)
 
     def _forced_entry(self, symbol, price, time_only, nav, p, s):
-        """Force entry in trend direction only"""
+        """Force entry when no signal triggered for 30 mins"""
         
-        # Only force in strong trend
-        if s['ema_fast'] > s['ema_slow'] * 1.003:
-            self._enter_trade(symbol, price, 1, "FORCED_UP", time_only, nav, p, s)
-        elif s['ema_fast'] < s['ema_slow'] * 0.997:
-            self._enter_trade(symbol, price, -1, "FORCED_DN", time_only, nav, p, s)
+        # Determine direction based on EMA
+        if s['ema_fast'] > s['ema_slow']:
+            direction = 1
+            signal = "FORCED_LONG"
+        else:
+            direction = -1
+            signal = "FORCED_SHORT"
+        
+        self._enter_trade(symbol, price, direction, signal, nav, p, s)
 
-    def _enter_trade(self, symbol, price, direction, signal, time_only, nav, p, s):
+    def _enter_trade(self, symbol, price, direction, signal, nav, p, s):
         """Enter trade"""
         
-        # Size: 25% of capital per trade (lower risk)
-        notional = nav * 0.25 * self.leverage
+        # Size: 30% of capital per trade
+        notional = nav * 0.30 * self.leverage
         qty = int(notional / price)
-        qty = min(qty, 350)
+        qty = min(qty, 400)
         
         if qty < 10:
-            qty = 10
+            qty = 10  # FORCE minimum 10 shares
         
         stop_dist = price * p['stop_pct']
         
@@ -364,7 +350,6 @@ class OptimizedAdaptiveStrategy(QCAlgorithm):
         s['target'] = price + (stop_dist * p['target_r'] * direction)
         s['qty'] = qty
         s['trades_today'] += 1
-        s['entry_bar_count'] = 0
         s['last_trade_time'] = time_only
         self.total_trades += 1
         
@@ -372,13 +357,12 @@ class OptimizedAdaptiveStrategy(QCAlgorithm):
         
         self.Log(f"{side} #{self.total_trades} | {symbol[-6:]} | {signal}")
         self.Log(f"   Price: ₹{price:.2f} | Qty: {qty} | ₹{qty*price:,.0f}")
-        self.Log(f"   Stop: ₹{s['stop']:.2f} | Target: ₹{s['target']:.2f} (1:{p['target_r']:.1f})")
         
         weight = (qty * price) / nav
         self.SetHoldings(symbol, weight if direction == 1 else -weight)
 
     def _manage_position(self, symbol, price, time_only, nav, p, s):
-        """Manage with quick profit taking"""
+        """Manage position"""
         
         unrealized = (price - s['entry']) * s['direction'] * s['qty']
         unrealized_pct = (price - s['entry']) / s['entry'] * 100 * s['direction']
@@ -394,56 +378,29 @@ class OptimizedAdaptiveStrategy(QCAlgorithm):
         elif s['direction'] == -1 and price >= s['stop']:
             exit_reason = "STOP"
         
-        # Target (primary exit)
+        # Target
         if s['direction'] == 1 and price >= s['target']:
             exit_reason = "TARGET"
         elif s['direction'] == -1 and price <= s['target']:
             exit_reason = "TARGET"
         
-        # QUICK PROFIT: Exit at 0.8R if momentum fading
-        if current_r > 0.8 and s['entry_bar_count'] >= 2:
-            # Check if momentum slowing
-            if s['direction'] == 1 and price < s['prices'][-2] if len(s['prices']) >= 2 else False:
-                exit_reason = "MOM_FADE"
-            elif s['direction'] == -1 and price > s['prices'][-2] if len(s['prices']) >= 2 else False:
-                exit_reason = "MOM_FADE"
-        
-        # Trailing stop at 1R (protect breakeven)
+        # Trail at 1R+
         if current_r > 1.0:
             if s['direction'] == 1:
                 s['stop'] = max(s['stop'], s['entry'] * 1.001)
             else:
                 s['stop'] = min(s['stop'], s['entry'] * 0.999)
         
-        # Hard time limit (12 bars = 60 mins max)
-        if s['entry_bar_count'] >= 12:
-            exit_reason = "TIME_MAX"
-        
-        # EOD cut
-        if time_only >= datetime.time(14, 50):
-            exit_reason = "EOD"
+        # Time cut (15 mins max)
+        if time_only.minute % 15 >= 12:
+            exit_reason = "TIME"
         
         if exit_reason:
-            # Track performance
-            won = unrealized > 0
-            if won:
-                p['wins'] += 1
-                self.total_wins += 1
-                p['avg_win'] = (p['avg_win'] * (p['wins'] - 1) + unrealized) / p['wins']
-            else:
-                p['losses'] += 1
-                self.total_losses += 1
-                p['avg_loss'] = (p['avg_loss'] * (p['losses'] - 1) + abs(unrealized)) / p['losses']
-            
-            # Update win rate
-            total_trades_sym = p['wins'] + p['losses']
-            p['win_rate'] = p['wins'] / total_trades_sym * 100 if total_trades_sym > 0 else 50
-            
             self.Liquidate(symbol)
             s['in_position'] = False
             
-            emoji = "✅" if won else "❌"
-            self.Log(f"{emoji} EXIT | {symbol[-6:]} | {exit_reason} | ₹{unrealized:+,.0f} ({unrealized_pct:+.2f}%) | WR: {p['win_rate']:.0f}%")
+            emoji = "✅" if unrealized > 0 else "❌"
+            self.Log(f"{emoji} EXIT | {symbol[-6:]} | {exit_reason} | ₹{unrealized:+,.0f}")
 
     def _market_close(self, nav, time_only):
         """Close all"""
@@ -454,5 +411,4 @@ class OptimizedAdaptiveStrategy(QCAlgorithm):
                 s['in_position'] = False
         
         pnl = nav - 100000
-        total_wr = self.total_wins / max(1, self.total_trades) * 100
-        self.Log(f"🏁 Day {self.day_number} | P&L: ₹{pnl:+,.0f} ({pnl/1000:.3f}%) | Trades: {self.total_trades} | WR: {total_wr:.1f}%")
+        self.Log(f"🏁 Day {self.day_number} Close | P&L: ₹{pnl:+,.0f} | Trades: {self.total_trades}")

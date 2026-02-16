@@ -61,7 +61,9 @@ def get_qdb_conn():
     """Get raw QuestDB connection for backfill writes."""
     host = os.getenv("QUESTDB_HOST", "questdb_tsdb")
     try:
-        return psycopg2.connect(host=host, port=8812, user="admin", password="quest", database="qdb")
+        conn = psycopg2.connect(host=host, port=8812, user="admin", password="quest", database="qdb")
+        conn.autocommit = True
+        return conn
     except Exception as e:
         logger.error(f"Cannot connect to QuestDB: {e}")
         return None
@@ -88,28 +90,41 @@ def find_missing_dates(symbols, start_date, end_date):
         return missing
 
     for sym in symbols:
-        # Query QuestDB for distinct dates with data
+        # Query QuestDB for distinct dates with data using SAMPLE BY for speed
         query = f"""
-        SELECT DISTINCT cast(timestamp AS date) AS day 
-        FROM ohlc 
+        SELECT timestamp FROM ohlc 
         WHERE symbol = '{sym}' 
           AND timestamp >= '{start_date}T00:00:00.000000Z' 
           AND timestamp <= '{end_date}T23:59:59.999999Z'
+        SAMPLE BY 1d
         """
         try:
             encoded = urllib.parse.urlencode({"query": query})
             resp = requests.get(f"{QUESTDB_URL}/exec?{encoded}", timeout=10)
+            
             if resp.status_code == 200:
                 dataset = resp.json().get('dataset', [])
                 existing_days = set()
                 for row in dataset:
                     # QuestDB returns date as string like "2026-01-02T00:00:00.000000Z"
-                    day_str = str(row[0])[:10]
-                    existing_days.add(day_str)
+                    if row[0]:
+                        day_str = str(row[0])[:10]
+                        existing_days.add(day_str)
 
                 sym_missing = [d for d in expected_days if d not in existing_days]
+                
+                # Loose check: If we have >90% of data, assume it's fine (holidays etc)
+                # But typically we want exact matches. 
+                # Let's log if we find *some* data but not all.
+                if len(existing_days) > 0 and len(sym_missing) > 0:
+                     logger.info(f"  ℹ️ {sym}: Found {len(existing_days)} days, Missing {len(sym_missing)} days")
+
                 if sym_missing:
                     missing[sym] = sym_missing
+            else:
+                 logger.warning(f"  ⚠️ QuestDB Query Failed for {sym}: {resp.status_code} - {resp.text}")
+                 missing[sym] = expected_days # Assume missing if query fails
+
         except Exception as e:
             logger.warning(f"  ⚠️ Could not check data for {sym}: {e}")
             missing[sym] = expected_days  # Assume all missing if check fails
@@ -189,7 +204,7 @@ async def backfill_symbol(session, qdb_conn, symbol, missing_dates):
             qdb_conn.commit()
             cur.close()
             total_saved += len(candles)
-            logger.info(f"  ✅ {name}: {len(candles)} candles saved")
+            logger.info(f"  ✅ {name}: {len(candles)} candles saved & committed")
 
         await asyncio.sleep(BACKFILL_DELAY_CHUNKS)
 
@@ -333,6 +348,7 @@ def get_qdb_conn():
             password="quest",
             database="qdb"
         )
+        conn.autocommit = True
         return conn
     except Exception as e:
         logger.error(f"QuestDB Connection Error: {e}")
