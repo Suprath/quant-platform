@@ -121,11 +121,16 @@ print(f"Close: {bar.Close}, Volume: {bar.Volume}, Time: {bar.Time}")
 ## 💼 Portfolio Management
 Access current state via `self.Portfolio`.
 
-- `self.Portfolio[symbol].Invested`: Boolean, true if you have a position.
+- **`self.Portfolio.Cash`**: Available cash (float).
+- **`self.Portfolio.TotalPortfolioValue`**: Total Equity (Cash + Unrealized PnL).
+- **`self.Portfolio.Invested`**: Boolean, true if you have any holdings.
+- **`self.Portfolio.TotalHoldingsValue`**: Value of all open positions.
+
+**Per-Symbol Holdings:**
+Access via `self.Portfolio[symbol]`:
+- `self.Portfolio[symbol].Invested`: Boolean, true if you have a position in this symbol.
 - `self.Portfolio[symbol].Quantity`: Current held quantity (positive or negative).
 - `self.Portfolio[symbol].AveragePrice`: Average entry price.
-- `self.Portfolio['Cash']`: Available cash.
-- `self.Portfolio['TotalPortfolioValue']`: Total Equity (Cash + Unrealized PnL).
 
 ---
 
