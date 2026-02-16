@@ -51,6 +51,7 @@ class AlgorithmEngine:
         self.CurrentSlice = None
         self.UniverseSettings = None # Stores selection function
         self.Leverage = 1.0  # Default: No leverage. User can override via strategy.
+        self.ScannerFrequency = None  # Minutes between scanner runs (None = once per day)
         self._squared_off_today = False  # Track if we already squared off today
         self._last_square_off_date = None
         self._last_prices = {}  # Cache: symbol -> last known price
@@ -324,6 +325,16 @@ class AlgorithmEngine:
         self.Leverage = float(leverage)
         logger.info(f"⚙️ Leverage set to {self.Leverage}x")
 
+    def SetScannerFrequency(self, minutes):
+        """
+        Set how often the scanner should re-evaluate stocks (in minutes).
+        Call this in your strategy's Initialize() method.
+        Example: self.SetScannerFrequency(30) = re-scan every 30 minutes.
+        Default is None = once per day.
+        """
+        self.ScannerFrequency = int(minutes)
+        logger.info(f"⏱️ Scanner frequency set to every {self.ScannerFrequency} minutes")
+
     def SetHoldings(self, symbol, percentage):
         """
         Set holdings for a symbol to a target percentage of portfolio equity.
@@ -342,13 +353,16 @@ class AlgorithmEngine:
             if isinstance(holding, SecurityHolding) and holding.Invested:
                 total_equity += abs(holding.Quantity) * holding.AveragePrice
         
-        # 2. Get Current Price
-        if not self.CurrentSlice or not self.CurrentSlice.ContainsKey(symbol):
-            logger.warning(f"Cannot SetHoldings: No data for {symbol}")
+        # 2. Get Current Price (CurrentSlice first, then cached last price)
+        price = None
+        if self.CurrentSlice and self.CurrentSlice.ContainsKey(symbol):
+            price = self.CurrentSlice[symbol].Price
+        elif symbol in self._last_prices:
+            price = self._last_prices[symbol]
+        
+        if not price or price <= 0:
+            logger.warning(f"Cannot SetHoldings: No price data for {symbol}")
             return
-            
-        price = self.CurrentSlice[symbol].Price
-        if price <= 0: return
 
         # 3. Calculate Target Quantity
         # buying_power = equity * leverage

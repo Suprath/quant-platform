@@ -102,6 +102,21 @@ class QCAlgorithm(ABC):
         if self.Engine:
              self.Engine.Liquidate(symbol)
 
+    def SetLeverage(self, leverage):
+        """Set intraday leverage multiplier. Default is 1x."""
+        if self.Engine:
+            self.Engine.SetLeverage(leverage)
+
+    def SetScannerFrequency(self, minutes):
+        """
+        Set how often the scanner should re-evaluate stocks (in minutes).
+        Call in Initialize(). Example: self.SetScannerFrequency(30)
+        Default = once per day.
+        """
+        if self.Engine:
+            self.Engine.SetScannerFrequency(minutes)
+
+
     def Debug(self, message):
         """Send a debug message to the console/log."""
         self._logger.info(f"DEBUG: {message}")

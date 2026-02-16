@@ -187,7 +187,7 @@ class PaperExchange:
                              insert_query = f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
                              cur.execute(insert_query, (strategy_id, symbol, action, quantity, price))
                     else:
-                        logger.warning(f"❌ Insufficient Cash for {symbol}. Req: {total_outflow}, Bal: {balance}")
+                        logger.info(f"⏭️ Skipping {symbol}: Insufficient cash (need ₹{total_outflow:.2f}, have ₹{balance:.2f})")
                         return False
 
             elif action == 'SELL':
