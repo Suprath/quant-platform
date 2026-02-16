@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 
-export function BacktestRunner({ strategyName, strategyCode }: { strategyName: string, strategyCode: string }) {
+export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { strategyName: string, strategyCode: string, projectFiles?: Record<string, string> }) {
     const [isOpen, setIsOpen] = useState(false);
     const [activeRunId, setActiveRunId] = useState<string | null>(null);
     const [lastRunId, setLastRunId] = useState<string | null>(null);
@@ -95,12 +95,13 @@ export function BacktestRunner({ strategyName, strategyCode }: { strategyName: s
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    strategy_code: strategyCode, // Pass actual code from IDE
+                    strategy_code: strategyCode,
                     symbol: config.symbol,
                     start_date: config.startDate,
                     end_date: config.endDate,
                     initial_cash: config.cash,
-                    strategy_name: strategyName
+                    strategy_name: strategyName,
+                    project_files: projectFiles || undefined
                 })
             });
 

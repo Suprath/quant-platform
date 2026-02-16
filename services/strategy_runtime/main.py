@@ -6,9 +6,12 @@ import threading
 import uvicorn
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
+from typing import Optional, Dict
 from engine import AlgorithmEngine
 from db import get_db_connection
 import glob
+import shutil
+import json
 
 # Config
 BACKTEST_MODE = os.getenv('BACKTEST_MODE', 'false').lower() == 'true'
@@ -28,6 +31,7 @@ class BacktestRequest(BaseModel):
     end_date: str
     initial_cash: float
     strategy_name: str = "CustomStrategy"
+    project_files: Optional[Dict[str, str]] = None  # {filename: code} for multi-file projects
 
 class LiveStartRequest(BaseModel):
     strategy_name: str
@@ -104,28 +108,55 @@ def run_live_thread(engine, strategy_name, capital):
 
 @app.get("/strategies")
 def list_strategies():
-    """List available strategy files in the strategies directory."""
-    files = glob.glob("strategies/*.py")
+    """List available strategy files AND project packages in the strategies directory."""
+    import re
     strategies = []
+    
+    # 1. Scan single files
+    files = glob.glob("strategies/*.py")
     for f in files:
         if "backtest_" in f: continue
         if "__init__" in f: continue
         
-        # Parse classes
         with open(f, 'r') as file:
             content = file.read()
-            # Simple regex search for classes inheriting QCAlgorithm
-            import re
             matches = re.findall(r'class\s+(\w+)\s*\(\s*QCAlgorithm\s*\)', content)
             
-            # Module format: strategies.filename.ClassName
             base_name = os.path.basename(f).replace(".py", "")
             for cls in matches:
                 strategies.append({
                     "name": f"{cls} ({base_name})",
                     "value": f"strategies.{base_name}.{cls}",
-                    "file": f
+                    "file": f,
+                    "type": "file"
                 })
+    
+    # 2. Scan project packages (directories with __init__.py)
+    for d in glob.glob("strategies/*/"):
+        pkg_name = os.path.basename(os.path.normpath(d))
+        if pkg_name.startswith("backtest_"): continue
+        if pkg_name.startswith("__"): continue
+        
+        # Scan ALL .py files in the package for QCAlgorithm subclasses
+        for py_file in glob.glob(os.path.join(d, "*.py")):
+            if "__init__" in py_file: continue
+            try:
+                with open(py_file, 'r') as file:
+                    content = file.read()
+                    matches = re.findall(r'class\s+(\w+)\s*\(\s*QCAlgorithm\s*\)', content)
+                    
+                    module_name = os.path.basename(py_file).replace(".py", "")
+                    for cls in matches:
+                        strategies.append({
+                            "name": f"{cls} ({pkg_name}/{module_name})",
+                            "value": f"strategies.{pkg_name}.{module_name}.{cls}",
+                            "file": py_file,
+                            "type": "project",
+                            "project": pkg_name
+                        })
+            except Exception:
+                pass
+    
     return {"strategies": strategies}
 
 @app.post("/live/start")
@@ -156,23 +187,27 @@ class StrategySaveRequest(BaseModel):
     name: str
     code: str
 
+class ProjectSaveRequest(BaseModel):
+    project_name: str
+    files: Dict[str, str]  # {filename: code}
+
 @app.post("/strategies/save")
 def save_strategy(request: StrategySaveRequest):
     """Save a strategy file to the strategies directory."""
     try:
-        # Sanitize filename
         filename = request.name
         if not filename.endswith(".py"):
             filename += ".py"
         
-        # Security check: Prevent directory traversal
-        if ".." in filename or "/" in filename or "\\" in filename:
+        if ".." in filename or "\\" in filename:
              raise HTTPException(status_code=400, detail="Invalid filename")
 
+        # Support saving into project subdirs (e.g. "my_project/utils.py")
         filepath = os.path.join("strategies", filename)
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        
         with open(filepath, "w") as f:
             code = request.code
-            # Auto-prepend required imports if missing
             if "from quant_sdk.algorithm import QCAlgorithm" not in code and "import QCAlgorithm" not in code:
                 code = "from quant_sdk.algorithm import QCAlgorithm\n\n" + code
             f.write(code)
@@ -181,6 +216,88 @@ def save_strategy(request: StrategySaveRequest):
     except Exception as e:
         logger.error(f"Failed to save strategy: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/strategies/save-project")
+def save_project(request: ProjectSaveRequest):
+    """Save a multi-file strategy project as a Python package."""
+    try:
+        project_name = request.project_name.strip()
+        if ".." in project_name or "/" in project_name or "\\" in project_name:
+            raise HTTPException(status_code=400, detail="Invalid project name")
+        
+        project_dir = os.path.join("strategies", project_name)
+        os.makedirs(project_dir, exist_ok=True)
+        
+        saved_files = []
+        has_init = False
+        main_class = None
+        
+        import re
+        for filename, code in request.files.items():
+            if ".." in filename or "/" in filename or "\\" in filename:
+                continue
+            if not filename.endswith(".py"):
+                filename += ".py"
+            
+            filepath = os.path.join(project_dir, filename)
+            with open(filepath, "w") as f:
+                f.write(code)
+            saved_files.append(filename)
+            
+            if filename == "__init__.py":
+                has_init = True
+            
+            # Find the main strategy class
+            matches = re.findall(r'class\s+(\w+)\s*\(\s*QCAlgorithm\s*\)', code)
+            if matches:
+                module_name = filename.replace(".py", "")
+                main_class = (module_name, matches[0])
+        
+        # Auto-generate __init__.py if not provided
+        if not has_init and main_class:
+            init_path = os.path.join(project_dir, "__init__.py")
+            with open(init_path, "w") as f:
+                f.write(f"from .{main_class[0]} import {main_class[1]}\n")
+            saved_files.append("__init__.py")
+        elif not has_init:
+            # Empty __init__.py
+            init_path = os.path.join(project_dir, "__init__.py")
+            with open(init_path, "w") as f:
+                f.write("")
+            saved_files.append("__init__.py")
+        
+        strategy_path = f"strategies.{project_name}.{main_class[0]}.{main_class[1]}" if main_class else None
+        
+        return {
+            "status": "saved",
+            "project": project_name,
+            "files": saved_files,
+            "strategy_path": strategy_path,
+            "message": f"Project '{project_name}' saved with {len(saved_files)} files."
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to save project: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/strategies/project/{project_name}")
+def get_project(project_name: str):
+    """Get all files in a strategy project."""
+    if ".." in project_name or "/" in project_name:
+        raise HTTPException(status_code=400, detail="Invalid project name")
+    
+    project_dir = os.path.join("strategies", project_name)
+    if not os.path.isdir(project_dir):
+        raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found")
+    
+    files = {}
+    for py_file in sorted(glob.glob(os.path.join(project_dir, "*.py"))):
+        filename = os.path.basename(py_file)
+        with open(py_file, 'r') as f:
+            files[filename] = f.read()
+    
+    return {"project": project_name, "files": files}
 
 @app.get("/live/status")
 def get_live_status():
@@ -195,25 +312,41 @@ def get_live_status():
 def run_backtest_process(run_id: str, request: BacktestRequest, strategy_file_path: str):
     logger.info(f"🛑 Starting Backtest Job: {run_id}")
     
-    # We will invoke backtest_runner.py as a subprocess
-    # We need to construct the module path for the strategy file
-    # file is at strategies/backtest_{run_id}.py
-    # Module name: strategies.backtest_{run_id}
-    # Class name: We need to parse it or assume it. 
-    # Let's simple regex for "class X(QCAlgorithm)"
-    
     import re
-    class_name = "UserStrategy" # Default
-    try:
-        with open(strategy_file_path, 'r') as f:
-            content = f.read()
-            match = re.search(r'class\s+(\w+)\s*\(\s*QCAlgorithm\s*\)', content)
-            if match:
-                class_name = match.group(1)
-    except:
-        pass
+    class_name = "UserStrategy"
+    
+    if os.path.isdir(strategy_file_path):
+        # Multi-file project mode — scan .py files for QCAlgorithm subclass
+        module_name = None
+        for py_file in glob.glob(os.path.join(strategy_file_path, "*.py")):
+            if "__init__" in py_file: continue
+            try:
+                with open(py_file, 'r') as f:
+                    content = f.read()
+                    match = re.search(r'class\s+(\w+)\s*\(\s*QCAlgorithm\s*\)', content)
+                    if match:
+                        class_name = match.group(1)
+                        module_name = os.path.basename(py_file).replace(".py", "")
+                        break
+            except:
+                pass
         
-    strategy_module_name = f"strategies.backtest_{run_id}.{class_name}"
+        pkg_name = os.path.basename(strategy_file_path)
+        if module_name:
+            strategy_module_name = f"strategies.{pkg_name}.{module_name}.{class_name}"
+        else:
+            strategy_module_name = f"strategies.{pkg_name}.{class_name}"
+    else:
+        # Single-file mode
+        try:
+            with open(strategy_file_path, 'r') as f:
+                content = f.read()
+                match = re.search(r'class\s+(\w+)\s*\(\s*QCAlgorithm\s*\)', content)
+                if match:
+                    class_name = match.group(1)
+        except:
+            pass
+        strategy_module_name = f"strategies.backtest_{run_id}.{class_name}"
     
     env = os.environ.copy()
     env['RUN_ID'] = run_id
@@ -261,19 +394,46 @@ def run_backtest_process(run_id: str, request: BacktestRequest, strategy_file_pa
 @app.post("/backtest")
 def start_backtest(request: BacktestRequest, background_tasks: BackgroundTasks):
     run_id = str(uuid.uuid4())
-    
-    # Save Strategy Code
-    # Ensure strategies directory exists
     os.makedirs("strategies", exist_ok=True)
-    strategy_filename = f"backtest_{run_id}.py"
-    strategy_path = os.path.join("strategies", strategy_filename)
     
-    with open(strategy_path, "w") as f:
-        code = request.strategy_code
-        # Auto-prepend required imports if missing
-        if "from quant_sdk.algorithm import QCAlgorithm" not in code and "import QCAlgorithm" not in code:
-            code = "from quant_sdk.algorithm import QCAlgorithm\n\n" + code
-        f.write(code)
+    if request.project_files:
+        # Multi-file project mode
+        project_dir = os.path.join("strategies", f"backtest_{run_id}")
+        os.makedirs(project_dir, exist_ok=True)
+        
+        import re
+        main_class = None
+        
+        for filename, code in request.project_files.items():
+            if not filename.endswith(".py"):
+                filename += ".py"
+            filepath = os.path.join(project_dir, filename)
+            with open(filepath, "w") as f:
+                f.write(code)
+            
+            matches = re.findall(r'class\s+(\w+)\s*\(\s*QCAlgorithm\s*\)', code)
+            if matches:
+                module_name = filename.replace(".py", "")
+                main_class = (module_name, matches[0])
+        
+        # Auto-generate __init__.py
+        if main_class:
+            init_path = os.path.join(project_dir, "__init__.py")
+            if not os.path.exists(init_path):
+                with open(init_path, "w") as f:
+                    f.write(f"from .{main_class[0]} import {main_class[1]}\n")
+        
+        strategy_path = project_dir
+    else:
+        # Single-file mode (legacy)
+        strategy_filename = f"backtest_{run_id}.py"
+        strategy_path = os.path.join("strategies", strategy_filename)
+        
+        with open(strategy_path, "w") as f:
+            code = request.strategy_code
+            if "from quant_sdk.algorithm import QCAlgorithm" not in code and "import QCAlgorithm" not in code:
+                code = "from quant_sdk.algorithm import QCAlgorithm\n\n" + code
+            f.write(code)
 
     # Start Backtest in Background
     background_tasks.add_task(run_backtest_process, run_id, request, strategy_path)

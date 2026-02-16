@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from typing import List, Optional
 import requests
 from pydantic import BaseModel
+from typing import Optional, Dict
 
 load_dotenv()
 
@@ -210,6 +211,39 @@ def save_strategy(request: StrategySaveRequest):
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
 
+class ProjectSaveRequest(BaseModel):
+    project_name: str
+    files: Dict[str, str]
+
+@app.post("/api/v1/strategies/save-project")
+def save_project(request: ProjectSaveRequest):
+    """Save Multi-File Project Proxy"""
+    try:
+        response = requests.post(
+            "http://strategy_runtime:8000/strategies/save-project",
+            json=request.dict(),
+            timeout=10
+        )
+        if response.status_code == 200:
+             return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+
+@app.get("/api/v1/strategies/project/{project_name}")
+def get_project(project_name: str):
+    """Get Project Files Proxy"""
+    try:
+        response = requests.get(
+            f"http://strategy_runtime:8000/strategies/project/{project_name}",
+            timeout=5
+        )
+        if response.status_code == 200:
+             return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+
 class BacktestRequest(BaseModel):
     strategy_code: str
     symbol: str
@@ -217,6 +251,7 @@ class BacktestRequest(BaseModel):
     end_date: str
     initial_cash: float
     strategy_name: str = "CustomStrategy"
+    project_files: Optional[Dict[str, str]] = None
 
 @app.post("/api/v1/backtest/run")
 def run_backtest(request: BacktestRequest):
