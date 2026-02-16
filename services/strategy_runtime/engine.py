@@ -250,7 +250,8 @@ class AlgorithmEngine:
             self.Algorithm.OnData(slice_obj)
 
         except Exception as e:
-            logger.error(f"Error in Event Loop: {e}")
+            import traceback
+            logger.error(f"Error in Event Loop: {e}\n{traceback.format_exc()}")
 
     def CalculatePortfolioValue(self):
         """

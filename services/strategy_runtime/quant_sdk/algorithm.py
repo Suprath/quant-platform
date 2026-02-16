@@ -3,6 +3,7 @@ from datetime import datetime
 from enum import Enum
 import logging
 
+
 class Resolution(Enum):
     Tick = 0
     Second = 1
@@ -15,18 +16,6 @@ class OrderType(Enum):
     Limit = 1
     StopMarket = 2
     StopLimit = 3
-
-class QCAlgorithm(ABC):
-    """
-    Base class for all user algorithms.
-    Mirroring QuantConnect's API structure.
-    """
-    def __init__(self, engine=None):
-        self.Engine = engine
-        self.Portfolio = PortfolioManager() # Replaced raw dict with Manager
-        self.Time = datetime.now()
-        self.IsWarmingUp = False
-        self._logger = logging.getLogger("UserAlgorithm")
 
 class PortfolioManager(dict):
     """
@@ -58,6 +47,18 @@ class PortfolioManager(dict):
     @property
     def MarginRemaining(self):
         return self.Cash # Simplified for now
+
+class QCAlgorithm(ABC):
+    """
+    Base class for all user algorithms.
+    Mirroring QuantConnect's API structure.
+    """
+    def __init__(self, engine=None):
+        self.Engine = engine
+        self.Portfolio = PortfolioManager() # Replaced raw dict with Manager
+        self.Time = datetime.now()
+        self.IsWarmingUp = False
+        self._logger = logging.getLogger("UserAlgorithm")
 
     @abstractmethod
     def Initialize(self):
