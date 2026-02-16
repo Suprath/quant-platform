@@ -120,6 +120,9 @@ class PaperExchange:
             
             # Calculate dynamic position size (or use provided quantity for partial exits)
             quantity = int(signal.get('quantity', self.calculate_position_size(price, balance)))
+            
+            logger.info(f"💰 Balance Before Trade: ₹{balance:.2f} | Action: {action} {quantity} {symbol} @ {price}")
+            
             cost = price * quantity
 
             if action == 'BUY':
@@ -129,43 +132,62 @@ class PaperExchange:
                 
                 if pos and pos[0] < 0:
                     # Closing/Reducing a SHORT (Buying back)
-                    current_qty = int(pos[0])
+                    current_qty = int(pos[0]) # Negative
+                    # quantity is absolute buy amount
                     qty_to_close = min(abs(current_qty), quantity)
                     
+                    # original_margin = qty_to_close * avg_price
+                    # real logic: We unblock the margin locked at open.
+                    # Simplification: Return (Price * Qty) + PnL? 
+                    # No. Return (EntryPrice * Qty) + PnL.
+                    # PnL = (Entry - Exit) * Qty.
+                    # Return = Entry*Qty + (Entry-Exit)*Qty = 2*Entry*Qty - Exit*Qty? No.
+                    
+                    # Let's stick to the "Balance represents Cash on Hand" model.
+                    # If we blocked Cash at Open:
+                    # Open 100 @ 100. Balance -= 10000.
+                    # Close 100 @ 90. PnL = 1000. Balance += 10000 + 1000 = 11000.
+                    # Close 100 @ 110. PnL = -1000. Balance += 10000 - 1000 = 9000.
+                    # Formula: Credit = (EntryPrice * Qty) + PnL - Charges.
+                    
+                    avg_entry = float(pos[1])
                     cost_to_cover = price * qty_to_close
                     charges = self.calculate_transaction_costs(cost_to_cover, 'BUY')
                     
-                    # Cash Impact: We pay cash to buy back
-                    new_balance = balance - cost_to_cover - charges
+                    gross_pnl = (avg_entry - price) * qty_to_close
+                    margin_release = avg_entry * qty_to_close # The cash we locked
+                    
+                    # BUT wait, if price moved significantly, margin release logic depends on "Mark to Market"?
+                    # No, simplified: We locked 'EntryPrice' amount. We return that +/- PnL.
+                    credit = margin_release + gross_pnl - charges
+                    
+                    new_balance = balance + credit
                     cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
                     
-                    new_qty = current_qty + qty_to_close # Adding positive to negative
+                    new_qty = current_qty + qty_to_close
                     if new_qty == 0:
                         cur.execute(f"DELETE FROM {positions_table} WHERE portfolio_id = %s AND symbol = %s", (pid, symbol))
                     else:
                         cur.execute(f"UPDATE {positions_table} SET quantity = %s WHERE portfolio_id = %s AND symbol = %s", (new_qty, pid, symbol))
                     
-                    # PnL Calculation for Record Keeping
-                    avg_sell_price = float(pos[1])
-                    pnl = (avg_sell_price - price) * qty_to_close - charges
-                    
-                    logger.info(f"🔵 COVERED {qty_to_close} {symbol} @ {price} | PnL: {pnl:.2f}")
+                    logger.info(f"🔵 COVERED {qty_to_close} {symbol} @ {price} | PnL: {gross_pnl:.2f}")
                     
                     if self.backtest_mode:
                         trade_time = signal.get('timestamp') 
                         insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price, pnl, timestamp) VALUES (%s, %s, %s, %s, %s, %s, %s)"
-                        cur.execute(insert_query, (self.run_id, symbol, action, quantity, price, pnl, trade_time))
+                        cur.execute(insert_query, (self.run_id, symbol, action, quantity, price, gross_pnl, trade_time))
                     else:
                         insert_query = f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price, pnl) VALUES (%s, %s, %s, %s, %s, %s)"
-                        cur.execute(insert_query, (strategy_id, symbol, action, quantity, price, pnl))
+                        cur.execute(insert_query, (strategy_id, symbol, action, quantity, price, gross_pnl))
+                        
                 else:
-                    # Opening/Increasing a LONG (Buying)
+                    # Opening/Increasing a LONG
+                    # STRICT MARGIN: Deduct full cost
                     cost = price * quantity
                     charges = self.calculate_transaction_costs(cost, 'BUY')
                     total_outflow = cost + charges
                     
-                    if balance >= total_outflow: # Simple Cash Check
-                        # Deduct Cash
+                    if balance >= total_outflow: 
                         new_balance = balance - total_outflow
                         cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
 
@@ -187,7 +209,7 @@ class PaperExchange:
                              insert_query = f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
                              cur.execute(insert_query, (strategy_id, symbol, action, quantity, price))
                     else:
-                        logger.info(f"⏭️ Skipping {symbol}: Insufficient cash (need ₹{total_outflow:.2f}, have ₹{balance:.2f})")
+                        logger.warning(f"⏭️ Skipping BUY {symbol}: Insufficient cash (need ₹{total_outflow:.2f}, have ₹{balance:.2f})")
                         return False
 
             elif action == 'SELL':
@@ -196,28 +218,27 @@ class PaperExchange:
                 pos = cur.fetchone()
                 
                 if pos and pos[0] > 0:
-                    # Closing/Reducing a LONG (Selling)
+                    # Closing/Reducing a LONG
                     current_qty = int(pos[0])
                     qty_to_close = min(current_qty, quantity)
                     
                     proceeds = price * qty_to_close
                     charges = self.calculate_transaction_costs(proceeds, 'SELL')
                     
-                    # Cash Impact: We receive cash minus charges
                     new_balance = balance + proceeds - charges
                     cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
                     
-                    new_qty = current_qty - quantity
+                    new_qty = current_qty - qty_to_close # Reducing positive
                     if new_qty == 0:
                         cur.execute(f"DELETE FROM {positions_table} WHERE portfolio_id = %s AND symbol = %s", (pid, symbol))
                     else:
                         cur.execute(f"UPDATE {positions_table} SET quantity = %s WHERE portfolio_id = %s AND symbol = %s", (new_qty, pid, symbol))
                         
-                    # PnL for Record
                     avg_buy_price = float(pos[1])
                     pnl = (price - avg_buy_price) * qty_to_close - charges
                     
-                    logger.info(f"🔴 SOLD {quantity} {symbol} @ {price} | PnL: {pnl:.2f}")
+                    logger.info(f"🔴 SOLD {qty_to_close} {symbol} @ {price} | PnL: {pnl:.2f}")
+                    
                     if self.backtest_mode:
                         trade_time = signal.get('timestamp')
                         insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price, pnl, timestamp) VALUES (%s, %s, %s, %s, %s, %s, %s)"
@@ -226,35 +247,36 @@ class PaperExchange:
                         insert_query = f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price, pnl) VALUES (%s, %s, %s, %s, %s, %s)"
                         cur.execute(insert_query, (strategy_id, symbol, action, quantity, price, pnl))
                 else:
-                    # Opening/Increasing a SHORT (Short Selling — allowed in Indian intraday/MIS)
-                    # Cash Model: When shorting, we credit proceeds to Cash.
-                    # Position is stored as negative quantity.
-                    # Equity = Cash + (Qty * Price). Since Qty is negative, Equity stays correct.
+                    # Opening/Increasing a SHORT
+                    # STRICT MARGIN: Deduct full cost (Block Margin)
+                    cost = price * quantity
+                    charges = self.calculate_transaction_costs(cost, 'SELL')
+                    total_outflow = cost + charges
                     
-                    proceeds = price * quantity
-                    charges = self.calculate_transaction_costs(proceeds, 'SELL')
-                    net_proceeds = proceeds - charges
-                    
-                    new_balance = balance + net_proceeds
-                    cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
-                    
-                    cur.execute(f"""
-                        INSERT INTO {positions_table} (portfolio_id, symbol, quantity, avg_price)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (portfolio_id, symbol) 
-                        DO UPDATE SET 
-                            avg_price = (({positions_table}.avg_price * ABS({positions_table}.quantity)) + (%s * %s)) / (ABS({positions_table}.quantity) + %s),
-                            quantity = {positions_table}.quantity - %s
-                    """, (pid, symbol, -quantity, price, price, quantity, quantity, quantity))
+                    if balance >= total_outflow:
+                        new_balance = balance - total_outflow
+                        cur.execute(f"UPDATE {portfolios_table} SET balance = %s WHERE id = %s", (new_balance, pid))
                         
-                    logger.info(f"🔻 SHORTED {quantity} {symbol} @ {price}")
-                    if self.backtest_mode:
-                        trade_time = signal.get('timestamp')
-                        insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price, timestamp) VALUES (%s, %s, %s, %s, %s, %s)"
-                        cur.execute(insert_query, (self.run_id, symbol, action, quantity, price, trade_time))
+                        cur.execute(f"""
+                            INSERT INTO {positions_table} (portfolio_id, symbol, quantity, avg_price)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (portfolio_id, symbol) 
+                            DO UPDATE SET 
+                                avg_price = (({positions_table}.avg_price * ABS({positions_table}.quantity)) + (%s * %s)) / (ABS({positions_table}.quantity) + %s),
+                                quantity = {positions_table}.quantity - %s
+                        """, (pid, symbol, -quantity, price, price, quantity, quantity, quantity))
+                            
+                        logger.info(f"🔻 SHORTED {quantity} {symbol} @ {price}")
+                        if self.backtest_mode:
+                            trade_time = signal.get('timestamp')
+                            insert_query = f"INSERT INTO {orders_table} (run_id, symbol, transaction_type, quantity, price, timestamp) VALUES (%s, %s, %s, %s, %s, %s)"
+                            cur.execute(insert_query, (self.run_id, symbol, action, quantity, price, trade_time))
+                        else:
+                            insert_query = f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
+                            cur.execute(insert_query, (strategy_id, symbol, action, quantity, price))
                     else:
-                        insert_query = f"INSERT INTO {orders_table} (strategy_id, symbol, transaction_type, quantity, price) VALUES (%s, %s, %s, %s, %s)"
-                        cur.execute(insert_query, (strategy_id, symbol, action, quantity, price))
+                        logger.warning(f"⏭️ Skipping SHORT {symbol}: Insufficient cash (need ₹{total_outflow:.2f}, have ₹{balance:.2f})")
+                        return False
 
             conn.commit()
             return True

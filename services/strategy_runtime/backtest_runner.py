@@ -407,7 +407,7 @@ def ohlc_to_ticks(timestamp, open_price, high, low, close, volume):
     
     return ticks
 
-def run(symbol, start, end, initial_cash):
+def run(symbol, start, end, initial_cash, speed="fast"):
     if not STRATEGY_NAME:
         logger.error("STRATEGY_NAME env var not set")
         sys.exit(1)
@@ -426,7 +426,7 @@ def run(symbol, start, end, initial_cash):
         logger.warning(f"⚠️ Auto-backfill encountered an error (continuing): {e}")
     
     # ===== STEP 2: Initialize Engine =====
-    engine = AlgorithmEngine(run_id=RUN_ID, backtest_mode=True)
+    engine = AlgorithmEngine(run_id=RUN_ID, backtest_mode=True, speed=speed)
     
     # Load Strategy
     try:
@@ -512,6 +512,9 @@ def run(symbol, start, end, initial_cash):
     
     # Run
     engine.Run()
+
+    # Save Statistics (Sharpe, Drawdown, etc.)
+    engine.SaveStatistics()
     
     logger.info("🏁 Backtest Runner Finished.")
 
@@ -521,6 +524,7 @@ if __name__ == "__main__":
     parser.add_argument("--start", required=True)
     parser.add_argument("--end", required=True)
     parser.add_argument("--cash", type=float, default=100000.0)
+    parser.add_argument("--speed", type=str, default="fast")
     args = parser.parse_args()
     
-    run(args.symbol, args.start, args.end, args.cash)
+    run(args.symbol, args.start, args.end, args.cash, args.speed)

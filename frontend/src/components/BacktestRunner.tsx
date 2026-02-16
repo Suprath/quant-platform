@@ -24,6 +24,7 @@ import {
     TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { useRef, useEffect } from 'react';
 
 export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { strategyName: string, strategyCode: string, projectFiles?: Record<string, string> }) {
     const [isOpen, setIsOpen] = useState(false);
@@ -36,10 +37,11 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
     const [isComplete, setIsComplete] = useState(false);
 
     const [config, setConfig] = useState({
-        symbol: "NSE_EQ|INE002A01018",
+        symbol: "NSE_EQ|INE002A01018", // Default
         startDate: "2024-01-01",
-        endDate: "2024-01-10",
-        cash: 100000
+        endDate: "2024-01-31",
+        cash: 100000,
+        speed: "fast"
     });
 
     // Mock Stats
@@ -101,7 +103,8 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                     end_date: config.endDate,
                     initial_cash: config.cash,
                     strategy_name: strategyName,
-                    project_files: projectFiles || undefined
+                    project_files: projectFiles || undefined,
+                    speed: config.speed
                 })
             });
 
@@ -135,14 +138,16 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                             }
 
                             // Valid JSON logs usually come as stringified JSON in the last line or separate endpoint
-                            // For now, we fetch trades from the API
+                            // Fetch Trades & Stats
                             try {
-                                const tradesRes = await fetch(`${API_URL}/api/v1/backtest/trades/${runId}`);
+                                const [tradesRes, statsRes] = await Promise.all([
+                                    fetch(`${API_URL}/api/v1/backtest/trades/${runId}`),
+                                    fetch(`${API_URL}/api/v1/backtest/stats/${runId}`)
+                                ]);
+
                                 if (tradesRes.ok) {
                                     const tradesData = await tradesRes.json();
-                                    // Removed setTrades as we don't display the list anymore
-
-                                    // Calculate simple stats from trades if possible
+                                    // Calculate simple stats fallback if detailed stats fail
                                     const totalPnL = tradesData.reduce((acc: number, t: Trade) => acc + (t.pnl || 0), 0);
                                     setStats(prev => ({
                                         ...prev,
@@ -151,8 +156,24 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                                         totalReturn: `${((totalPnL / config.cash) * 100).toFixed(2)}%`
                                     }));
                                 }
+
+                                if (statsRes.ok) {
+                                    const statsData = await statsRes.json();
+                                    if (statsData && statsData.sharpe_ratio !== undefined) {
+                                        setStats(prev => ({
+                                            ...prev,
+                                            sharpeRatio: statsData.sharpe_ratio,
+                                            maxDrawdown: `${statsData.max_drawdown}%`,
+                                            winRate: `${statsData.win_rate}%`,
+                                            totalTrades: statsData.total_trades,
+                                            netProfit: statsData.net_profit,
+                                            totalReturn: `${statsData.total_return.toFixed(2)}%`,
+                                            profitFactor: statsData.profit_factor
+                                        }));
+                                    }
+                                }
                             } catch (err) {
-                                console.error("Failed to fetch trades", err);
+                                console.error("Failed to fetch results", err);
                             }
                         }
                     }
@@ -233,18 +254,24 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                                     className="col-span-3"
                                 />
                             </div>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <Label htmlFor="speed" className="text-right">Speed</Label>
+                                <select
+                                    id="speed"
+                                    value={config.speed}
+                                    onChange={(e) => setConfig({ ...config, speed: e.target.value })}
+                                    className="col-span-3 flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    <option value="fast">Fast (No Delay)</option>
+                                    <option value="medium">Medium (Moderate)</option>
+                                    <option value="slow">Slow (Observe)</option>
+                                </select>
+                            </div>
                         </div>
                     </TabsContent>
 
                     <TabsContent value="logs" className="flex-1 h-full flex flex-col min-h-0">
-                        <div className="flex-1 bg-black text-green-400 font-mono text-xs p-4 rounded-md overflow-y-auto border border-zinc-800 max-h-[400px]">
-                            {logs.length === 0 ? (
-                                <span className="text-zinc-500">Waiting to start...</span>
-                            ) : (
-                                logs.map((log, i) => <div key={i}>{log}</div>)
-                            )}
-                            {isLoading && <Loader2 className="h-4 w-4 animate-spin mt-2" />}
-                        </div>
+                        <LogPanel logs={logs} isLoading={isLoading} />
                     </TabsContent>
 
                     <TabsContent value="stats" className="flex-1">
@@ -305,5 +332,25 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                 </SheetFooter>
             </SheetContent>
         </Sheet>
+    );
+}
+
+function LogPanel({ logs, isLoading }: { logs: string[], isLoading: boolean }) {
+    const bottomRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [logs]);
+
+    return (
+        <div className="flex-1 bg-black text-green-400 font-mono text-xs p-4 rounded-md overflow-y-auto border border-zinc-800 max-h-[400px]">
+            {logs.length === 0 ? (
+                <span className="text-zinc-500">Waiting to start...</span>
+            ) : (
+                logs.map((log, i) => <div key={i}>{log}</div>)
+            )}
+            {isLoading && <Loader2 className="h-4 w-4 animate-spin mt-2" />}
+            <div ref={bottomRef} />
+        </div>
     );
 }

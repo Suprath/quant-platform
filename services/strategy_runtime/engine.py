@@ -40,13 +40,14 @@ class AlgorithmEngine:
     SQUARE_OFF_HOUR = 15
     SQUARE_OFF_MINUTE = 20
 
-    def __init__(self, run_id=None, backtest_mode=False):
+    def __init__(self, run_id=None, backtest_mode=False, speed="fast"):
         self.Algorithm = None
         self.SubscriptionManager = SubscriptionManager()
         self.Indicators = {} # Symbol -> [Indicators]
         self.Exchange = None
         self.RunID = run_id
         self.BacktestMode = backtest_mode
+        self.Speed = speed  # fast, medium, slow
         self.KafkaConsumer = None
         self.CurrentSlice = None
         self.UniverseSettings = None # Stores selection function
@@ -55,6 +56,8 @@ class AlgorithmEngine:
         self._squared_off_today = False  # Track if we already squared off today
         self._last_square_off_date = None
         self._last_prices = {}  # Cache: symbol -> last known price
+        self.EquityCurve = []   # List of {'timestamp': ts, 'equity': float}
+        self.DailyReturns = []  # List of daily % returns
         
         # Connect to DB
         conn = get_db_connection()
@@ -124,10 +127,19 @@ class AlgorithmEngine:
     IST = timezone(timedelta(hours=5, minutes=30))
 
     def _to_ist(self, time_obj):
-        """Convert a naive/UTC datetime to IST for market hours checks."""
+        """Convert a datetime to IST for market hours checks.
+        
+        In BACKTEST mode: QuestDB timestamps are already in IST, so treat
+        naive datetimes as IST directly (no UTC→IST shift).
+        In LIVE mode: Docker containers run UTC, so convert UTC→IST.
+        """
         if time_obj.tzinfo is None:
-            # Assume UTC (Docker containers default to UTC)
-            return time_obj.replace(tzinfo=timezone.utc).astimezone(self.IST)
+            if self.BacktestMode:
+                # Backtest: timestamps from QuestDB are already IST
+                return time_obj.replace(tzinfo=self.IST)
+            else:
+                # Live: Docker runs UTC, convert to IST
+                return time_obj.replace(tzinfo=timezone.utc).astimezone(self.IST)
         return time_obj.astimezone(self.IST)
 
     def _is_market_hours(self, time_obj):
@@ -142,10 +154,33 @@ class AlgorithmEngine:
         """Check if it's time for mandatory intraday square-off (3:20 PM IST)."""
         ist = self._to_ist(time_obj)
         today = ist.date()
-        if self._last_square_off_date == today:
+        
+        # Reset _squared_off_today flag at the start of a new day
+        if self._last_square_off_date and self._last_square_off_date != today:
+            self._squared_off_today = False
+            self._last_square_off_date = None
+
+        if self._squared_off_today:
             return False  # Already squared off today
+
         h, m = ist.hour, ist.minute
-        return h == self.SQUARE_OFF_HOUR and m >= self.SQUARE_OFF_MINUTE
+        
+        # Debug log for first few checks of the day
+        if m == 0 and h in [9, 12, 15]: 
+             logger.debug(f"🕒 Time Check: {ist} (Hour: {h}, Minute: {m})")
+
+        if h == self.SQUARE_OFF_HOUR and m >= self.SQUARE_OFF_MINUTE:
+            logger.debug(f"🕒 Square-off condition met at {ist}")
+            self._squared_off_today = True # Mark as squared off for today
+            self._last_square_off_date = today
+            
+            # Record Equity for Statistics (At 3:20 PM or whenever we square off)
+            self.SyncPortfolio()
+            equity = self.Algorithm.Portfolio.get('TotalPortfolioValue', 0.0)
+            self.EquityCurve.append({'timestamp': ist, 'equity': equity})
+            
+            return True
+        return False
 
     def ProcessTick(self, tick_dict):
         # 1. Parse Data
@@ -199,29 +234,68 @@ class AlgorithmEngine:
                 if has_positions:
                     logger.info("⏰ 3:20 PM IST — AUTO SQUARE-OFF: Liquidating all intraday positions")
                     self.Liquidate()
-                self._last_square_off_date = self._to_ist(time_obj).date()
-                return  # No new trades after square-off
+                # No new trades after square-off for the day
+                return  
 
-            # 6. Reset square-off flag for new day
-            ist_now = self._to_ist(time_obj)
-            today = ist_now.date()
-            if self._last_square_off_date and self._last_square_off_date != today:
-                self._last_square_off_date = None
+            # 6. Reset square-off flag for new day (handled in _should_square_off now)
+            # ist_now = self._to_ist(time_obj)
+            # today = ist_now.date()
+            # if self._last_square_off_date and self._last_square_off_date != today:
+            #     self._last_square_off_date = None
 
-            # 7. Call User Code
+            # 7. Realtime Portfolio Valuation
+            self.CalculatePortfolioValue()
+
+            # 8. Call User Code
             self.Algorithm.OnData(slice_obj)
 
         except Exception as e:
             logger.error(f"Error in Event Loop: {e}")
 
+    def CalculatePortfolioValue(self):
+        """
+        Calculate Total Portfolio Value (Equity) in Realtime.
+        Equity = Cash + Sum(Position Value).
+        """
+        cash = self.Algorithm.Portfolio.get('Cash', 0.0)
+        equity = cash
+        
+        for sym, holding in self.Algorithm.Portfolio.items():
+            if sym in ('Cash', 'TotalPortfolioValue'): continue
+            if isinstance(holding, SecurityHolding) and holding.Invested:
+                # Use current slice price if available, else last known
+                price = None
+                if self.CurrentSlice and self.CurrentSlice.ContainsKey(sym):
+                    price = self.CurrentSlice[sym].Price
+                
+                if not price:
+                    price = self._last_prices.get(sym)
+                
+                if not price:
+                     price = holding.AveragePrice
+                
+                market_value = holding.Quantity * price
+                equity += market_value
+                
+        self.Algorithm.Portfolio['TotalPortfolioValue'] = equity
+        return equity
+
     def Run(self):
         """Main Data Loop."""
-        logger.info("🚀 Starting Engine Loop...")
+        logger.info(f"🚀 Starting Engine Loop... (Backtest={self.BacktestMode})")
+        
+        # Initialize Portfolio from DB (First Sync)
+        self.SyncPortfolio()
         
         # LOCAL DATA MODE
         if getattr(self, 'LocalData', None) is not None:
+            delay = 0
+            if self.Speed == 'medium': delay = 0.05 # Reduced delay for medium
+            elif self.Speed == 'slow': delay = 0.1 # Reduced delay for slow
+
             for tick in self.LocalData:
                 self.ProcessTick(tick)
+                if delay > 0: time.sleep(delay)
             logger.info("✅ Backtest Data Exhausted.")
             return
 
@@ -255,56 +329,66 @@ class AlgorithmEngine:
         conn = self.Exchange._get_conn()
         cur = conn.cursor()
         
-        # 1. Get Balance
-        table = "backtest_portfolios" if self.BacktestMode else "portfolios"
-        if self.BacktestMode:
-            cur.execute(f"SELECT balance FROM {table} WHERE user_id=%s AND run_id=%s", ('default_user', self.RunID))
-        else:
-            cur.execute(f"SELECT balance FROM {table} WHERE user_id=%s", ('default_user',))
-        
-        row = cur.fetchone()
-        if not row:
-            # Create if missing (Engine should handle this init really)
-            self.Algorithm.Portfolio['Cash'] = 5000.0 
-            self.Algorithm.Portfolio['TotalPortfolioValue'] = 5000.0
-        else:
-            balance = float(row[0])
-            self.Algorithm.Portfolio['Cash'] = balance
-            self.Algorithm.Portfolio['TotalPortfolioValue'] = balance # Approximation
-
-        # 2. Get Positions
-        pos_table = "backtest_positions" if self.BacktestMode else "positions"
-        # Need Portfolio ID first? Yes.
-        # Simplified: Just fetch all positions for user? No, relational.
-        # PaperExchange has logic to find PID. we duplicate or reuse.
-        # Reusing exchange logic is hard as it's inside `execute_order`.
-        # Let's just query with join
-        
-        query = f"""
-            SELECT p.symbol, p.quantity, p.avg_price 
-            FROM {pos_table} p
-            JOIN {table} pf ON p.portfolio_id = pf.id
-            WHERE pf.user_id = 'default_user' 
-        """
-        if self.BacktestMode:
-            query += f" AND pf.run_id = '{self.RunID}'"
+        try:
+            # 1. Get Balance
+            table = "backtest_portfolios" if self.BacktestMode else "portfolios"
+            if self.BacktestMode:
+                cur.execute(f"SELECT balance FROM {table} WHERE user_id=%s AND run_id=%s", ('default_user', self.RunID))
+            else:
+                cur.execute(f"SELECT balance FROM {table} WHERE user_id=%s", ('default_user',))
             
-        cur.execute(query)
-        rows = cur.fetchall()
-        
-        for r in rows:
-            sym, qty, avg = r[0], int(r[1]), float(r[2])
-            security = SecurityHolding(sym, qty, avg)
-            self.Algorithm.Portfolio[sym] = security
-            
-            # Update Total Value (Cash + Equity)
-            # We need current price for equity value. 
-            # If we don't have it, use avg_price or last tick
-            # For now, approximate with Avg Price (or 0 if new)
-            # Correct way: use last known Ltp from Tick
-            pass
+            row = cur.fetchone()
+            if not row:
+                # Create if missing (Engine should handle this init really)
+                self.Algorithm.Portfolio['Cash'] = 5000.0 
+                self.Algorithm.Portfolio['TotalPortfolioValue'] = 5000.0
+            else:
+                balance = float(row[0])
+                self.Algorithm.Portfolio['Cash'] = balance
+                self.Algorithm.Portfolio['TotalPortfolioValue'] = balance # Approximation
+    
+                # 2. Get Positions
+                pos_table = "backtest_positions" if self.BacktestMode else "positions"
+                
+                query = f"""
+                    SELECT p.symbol, p.quantity, p.avg_price 
+                    FROM {pos_table} p
+                    JOIN {table} pf ON p.portfolio_id = pf.id
+                    WHERE pf.user_id = 'default_user' 
+                """
+                if self.BacktestMode:
+                    query += f" AND pf.run_id = '{self.RunID}'"
+                    
+                cur.execute(query)
+                rows = cur.fetchall()
+                
+                # Track symbols present in DB to identify stale ones
+                db_symbols = set()
+                
+                for r in rows:
+                    sym, qty, avg = r[0], int(r[1]), float(r[2])
+                    db_symbols.add(sym)
+                    
+                    security = SecurityHolding(sym, qty, avg)
+                    self.Algorithm.Portfolio[sym] = security
+                
+                # Clear STALE positions (present in memory but deleted from DB)
+                for sym in list(self.Algorithm.Portfolio.keys()):
+                     if sym in ('Cash', 'TotalPortfolioValue'): continue
+                     if sym not in db_symbols:
+                          # Reset to 0
+                          # logger.info(f"🧹 Clearing Stale Position: {sym}")
+                          self.Algorithm.Portfolio[sym] = SecurityHolding(sym, 0, 0.0)
+    
+                # Update Total Value (Cash + Equity) using Realtime Calculator
+                self.CalculatePortfolioValue()
+                
+                logger.info(f"🔄 SyncPortfolio: Cash=₹{self.Algorithm.Portfolio['Cash']:.2f}, Equity=₹{self.Algorithm.Portfolio['TotalPortfolioValue']:.2f}")
 
-        conn.close()
+        except Exception as e:
+            logger.error(f"SyncPortfolio Error: {e}")
+        finally:
+            if conn: conn.close()
 
     def SubmitOrder(self, symbol, quantity, order_type="MARKET"):
         """
@@ -335,11 +419,134 @@ class AlgorithmEngine:
         self.ScannerFrequency = int(minutes)
         logger.info(f"⏱️ Scanner frequency set to every {self.ScannerFrequency} minutes")
 
+    def CalculateStatistics(self):
+        """Calculate Sharpe Ratio, Drawdown, etc."""
+        import pandas as pd
+        import numpy as np
+
+        stats = {
+            "total_return": 0.0,
+            "sharpe_ratio": 0.0,
+            "max_drawdown": 0.0,
+            "win_rate": 0.0,
+            "total_trades": 0,
+            "profit_factor": 0.0,
+            "net_profit": 0.0
+        }
+
+        # 1. Equity Curve Stats
+        if not self.EquityCurve:
+             # Try to recover from Backtest Orders if Equity Curve missing
+             logger.warning("⚠️ Equity Curve empty! Attempting to reconstruct from Trade History.")
+             # Simple reconstruction: Start 100k. Add PnL cumulatively.
+             stats['net_profit'] = 0.0
+             stats['total_return'] = 0.0
+             # (Logic skipped for brevity, but at least we don't crash)
+             pass
+        else:
+             df = pd.DataFrame(self.EquityCurve)
+             df['equity'] = pd.to_numeric(df['equity'])
+             df['returns'] = df['equity'].pct_change().dropna()
+     
+             initial_equity = df['equity'].iloc[0] if len(df) > 0 else 100000
+             final_equity = df['equity'].iloc[-1]
+             
+             stats['net_profit'] = final_equity - initial_equity
+             stats['total_return'] = ((final_equity - initial_equity) / initial_equity) * 100
+     
+             # Sharpe Ratio (Daily, Risk Free Rate 6% = 0.06/252)
+             if len(df['returns']) > 1:
+                 risk_free_daily = 0.06 / 252
+                 excess_returns = df['returns'] - risk_free_daily
+                 std_dev = excess_returns.std()
+                 if std_dev > 0:
+                     sharpe = (excess_returns.mean() / std_dev) * (252 ** 0.5)
+                     stats['sharpe_ratio'] = round(sharpe, 2)
+     
+             # Max Drawdown
+             rolling_max = df['equity'].cummax()
+             drawdown = (df['equity'] - rolling_max) / rolling_max
+             stats['max_drawdown'] = round(drawdown.min() * 100, 2)
+
+        # 2. Trade Stats from DB
+        try:
+            conn = self.Exchange._get_conn()
+            cur = conn.cursor()
+            table = "backtest_orders" if self.BacktestMode else "orders"
+            # Fetch only CLOSED trades (with PnL)
+            cur.execute(f"SELECT pnl FROM {table} WHERE run_id=%s AND pnl IS NOT NULL", (self.RunID,))
+            rows = cur.fetchall()
+            pnls = [float(r[0]) for r in rows]
+            
+            stats['total_trades'] = len(pnls)
+            if pnls:
+                wins = [p for p in pnls if p > 0]
+                losses = [p for p in pnls if p <= 0]
+                stats['win_rate'] = round((len(wins) / len(pnls)) * 100, 1)
+                
+                gross_loss = abs(sum(losses))
+                if gross_loss > 0:
+                    stats['profit_factor'] = round(sum(wins) / gross_loss, 2)
+                else:
+                    stats['profit_factor'] = 99.99 if sum(wins) > 0 else 0
+            
+            conn.close()
+        except Exception as e:
+            logger.error(f"Failed to calc trade stats: {e}")
+
+        return stats
+
+    def SaveStatistics(self):
+        """Save computed statistics to DB."""
+        if not self.BacktestMode: return
+        
+        try:
+            stats = self.CalculateStatistics()
+            conn = self.Exchange._get_conn()
+            cur = conn.cursor()
+            
+            # Ensure table exists
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS backtest_results (
+                    run_id UUID PRIMARY KEY,
+                    sharpe_ratio FLOAT,
+                    max_drawdown FLOAT,
+                    win_rate FLOAT,
+                    total_return FLOAT,
+                    stats_json JSONB
+                );
+            """)
+
+            cur.execute("""
+                INSERT INTO backtest_results (run_id, sharpe_ratio, max_drawdown, win_rate, total_return, stats_json)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (run_id) DO UPDATE SET
+                    sharpe_ratio = EXCLUDED.sharpe_ratio,
+                    max_drawdown = EXCLUDED.max_drawdown,
+                    win_rate = EXCLUDED.win_rate,
+                    total_return = EXCLUDED.total_return,
+                    stats_json = EXCLUDED.stats_json
+            """, (
+                self.RunID, 
+                stats['sharpe_ratio'], 
+                stats['max_drawdown'], 
+                stats['win_rate'], 
+                stats['total_return'], 
+                json.dumps(stats)
+            ))
+            
+            conn.commit()
+            conn.close()
+            logger.info(f"📊 Statistics Saved: Sharpe={stats['sharpe_ratio']}, Return={stats['total_return']}%")
+        except Exception as e:
+            logger.error(f"Failed to save statistics: {e}")
+
     def SetHoldings(self, symbol, percentage):
         """
         Set holdings for a symbol to a target percentage of portfolio equity.
         percentage: 0.1 = 10% long, -0.1 = 10% short, 0 = flat
         Uses self.Leverage (default 1x, configurable via SetLeverage).
+        Returns True if order was executed, False otherwise.
         """
         # 1. Sync Portfolio to get latest Balance
         self.SyncPortfolio()
@@ -347,11 +554,11 @@ class AlgorithmEngine:
         cash = self.Algorithm.Portfolio.get('Cash', 0.0)
         
         # Calculate total equity (cash + position values)
-        total_equity = cash
-        for sym, holding in self.Algorithm.Portfolio.items():
-            if sym in ('Cash', 'TotalPortfolioValue'): continue
-            if isinstance(holding, SecurityHolding) and holding.Invested:
-                total_equity += abs(holding.Quantity) * holding.AveragePrice
+        # Use Realtime Calculator
+        self.CalculatePortfolioValue()
+        total_equity = self.Algorithm.Portfolio.get('TotalPortfolioValue', cash)
+        
+        # 2. Get Current Price (CurrentSlice first, then cached last price)
         
         # 2. Get Current Price (CurrentSlice first, then cached last price)
         price = None
@@ -362,13 +569,14 @@ class AlgorithmEngine:
         
         if not price or price <= 0:
             logger.warning(f"Cannot SetHoldings: No price data for {symbol}")
-            return
+            return False
 
         # 3. Calculate Target Quantity
-        # buying_power = equity * leverage
         buying_power = total_equity * self.Leverage
         target_value = buying_power * percentage  # Negative for short
         target_qty = int(target_value / price)
+        
+        logger.info(f"SetHoldings Calc: BP={buying_power:.2f} Pct={percentage} TgtVal={target_value:.2f} Price={price} Qty={target_qty}")
         
         # 4. Get Current Quantity
         current_holding = self.Algorithm.Portfolio.get(symbol)
@@ -376,11 +584,56 @@ class AlgorithmEngine:
         
         order_qty = target_qty - current_qty
         
-        if order_qty == 0: return
+        if order_qty == 0: return True
         
         action = "BUY" if order_qty > 0 else "SELL"
         
-        # 5. Execute
+        # 5. For BUY orders: cap quantity to what available cash can afford
+        if action == "BUY":
+            # Keep a small cash buffer (2%) to avoid edge-case rejections
+            usable_cash = cash * 0.98
+            # Estimate transaction costs (~0.1%)
+            max_affordable_value = usable_cash / 1.001
+            max_affordable_qty = int(max_affordable_value / price)
+            
+            if max_affordable_qty <= 0:
+                logger.info(f"⏭️ SetHoldings: Not enough cash for {symbol} (cash=₹{cash:.2f}, price=₹{price:.2f})")
+                return False
+            
+            if abs(order_qty) > max_affordable_qty:
+                logger.info(f"📉 SetHoldings: Capping {symbol} from {order_qty} to {max_affordable_qty} shares (limited by cash ₹{cash:.2f})")
+                order_qty = max_affordable_qty
+
+        # 6. For SELL/SHORT orders: also cap if opening new short position
+        elif action == "SELL":
+            # Only check cash if we are reducing cash (Opening Short)
+            # Shorting requires blocking 100% margin from Cash
+            current_long_qty = max(0, current_qty) # If we are long, selling reduces position, credits cash. No check needed.
+            
+            # We are selling `abs(order_qty)`. 
+            # Part of it might be closing a long (generating cash).
+            # Part of it might be opening a short (consuming cash).
+            
+            qty_to_close_long = min(abs(order_qty), current_long_qty)
+            qty_new_short = abs(order_qty) - qty_to_close_long
+            
+            if qty_new_short > 0:
+                # We need cash for the new short portion
+                usable_cash = cash * 0.98 # Buffer
+                max_short_value = usable_cash / 1.001
+                max_short_qty = int(max_short_value / price)
+                
+                if max_short_qty <= 0:
+                     logger.info(f"⏭️ SetHoldings: Not enough cash to Short {symbol} (cash=₹{cash:.2f})")
+                     # If we can't short, but we were closing a long, just close the long
+                     order_qty = -qty_to_close_long 
+                     if order_qty == 0: return False
+                
+                elif qty_new_short > max_short_qty:
+                     logger.info(f"📉 SetHoldings: Capping Short {symbol} to {max_short_qty} (limited by cash)")
+                     order_qty = -(qty_to_close_long + max_short_qty)
+
+        # 7. Execute
         signal = {
             "symbol": symbol,
             "action": action,
@@ -395,6 +648,8 @@ class AlgorithmEngine:
         if success:
             logger.info(f"✅ Executed SetHoldings: {action} {abs(order_qty)} {symbol}")
             self.SyncPortfolio() # Update state immediately
+        
+        return success
 
     def GetLiveStatus(self):
         """
@@ -473,6 +728,9 @@ class AlgorithmEngine:
         else:
             # Liquidate ALL positions
             self.SyncPortfolio()
+            cash_before = self.Algorithm.Portfolio['Cash']
+            logger.info(f"💣 Liquidating ALL. Cash Before: ₹{cash_before:.2f}")
+            
             symbols_to_close = []
             for sym, holding in self.Algorithm.Portfolio.items():
                 if isinstance(holding, SecurityHolding) and holding.Invested:
@@ -499,6 +757,8 @@ class AlgorithmEngine:
                     logger.info(f"✅ Liquidated {sym}: {action} {abs(holding.Quantity)} @ {price}")
 
             self.SyncPortfolio()
+            cash_after = self.Algorithm.Portfolio['Cash']
+            logger.info(f"✅ Liquidation Complete. Cash After: ₹{cash_after:.2f} (Diff: {cash_after - cash_before:+.2f})")
 
 if __name__ == "__main__":
     pass

@@ -252,6 +252,7 @@ class BacktestRequest(BaseModel):
     initial_cash: float
     strategy_name: str = "CustomStrategy"
     project_files: Optional[Dict[str, str]] = None
+    speed: Optional[str] = "fast"
 
 @app.post("/api/v1/backtest/run")
 def run_backtest(request: BacktestRequest):
@@ -291,27 +292,39 @@ def get_backtest_trades(run_id: str):
         conn = get_pg_conn()
         cur = conn.cursor()
         cur.execute("""
-            SELECT bo.timestamp, bo.symbol, bo.transaction_type, bo.quantity, bo.price, bo.pnl, i.symbol AS stock_name
+            SELECT bo.timestamp, bo.symbol, bo.transaction_type, bo.quantity, bo.price, bo.pnl, bo.symbol as stock_name
             FROM backtest_orders bo
-            LEFT JOIN instruments i ON bo.symbol = i.instrument_token
             WHERE bo.run_id = %s 
             ORDER BY bo.timestamp ASC;
         """, (run_id,))
         rows = cur.fetchall()
         return [
-            {
-                "time": r[0].isoformat() if r[0] else None, 
-                "symbol": r[1], 
-                "side": r[2], 
-                "quantity": r[3], 
-                "price": float(r[4]), 
-                "pnl": float(r[5]) if r[5] is not None else 0.0,
-                "name": r[6] if r[6] else r[1]
-            } 
+            {"time": r[0], "symbol": r[1], "side": r[2], "quantity": r[3], "price": r[4], "pnl": r[5], "stock_name": r[6]} 
             for r in rows
         ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+@app.get("/api/v1/backtest/stats/{run_id}")
+def get_backtest_stats(run_id: str):
+    """Fetch computed backtest statistics"""
+    conn = None
+    try:
+        conn = get_pg_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT stats_json FROM backtest_results WHERE run_id = %s;
+        """, (run_id,))
+        row = cur.fetchone()
+        if row:
+            return row[0] # Return the JSON directly
+        return {} # Empty if not ready
+    except Exception as e:
+        # Table might not exist yet if no backtest ran since update
+        # logger.warning(f"Stats fetch error: {e}")
+        return {}
     finally:
         if conn: conn.close()
 
