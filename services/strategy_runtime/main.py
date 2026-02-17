@@ -182,8 +182,6 @@ def stop_live():
         return {"status": "stopped", "message": "Stopping signal sent."}
     return {"status": "not_running", "message": "No live strategy running."}
 
-    return {"status": "not_running", "message": "No live strategy running."}
-
 class StrategySaveRequest(BaseModel):
     name: str
     code: str
@@ -309,6 +307,51 @@ def get_live_status():
             **ACTIVE_ENGINE.GetLiveStatus()
         }
     return {"status": "stopped"}
+
+@app.get("/live/trades")
+def get_live_trades():
+    """Get today's executed trades for the live session."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, timestamp, symbol, transaction_type, quantity, price, pnl, status
+            FROM executed_orders 
+            WHERE timestamp::date = CURRENT_DATE
+            ORDER BY timestamp DESC
+            LIMIT 100
+        """)
+        rows = cur.fetchall()
+        trades = []
+        for r in rows:
+            trades.append({
+                "id": r[0],
+                "timestamp": str(r[1]),
+                "symbol": r[2],
+                "side": r[3],
+                "quantity": r[4],
+                "price": float(r[5]),
+                "pnl": float(r[6]) if r[6] else 0,
+                "status": r[7]
+            })
+        conn.close()
+        return {"trades": trades, "count": len(trades)}
+    except Exception as e:
+        logger.error(f"Failed to fetch live trades: {e}")
+        return {"trades": [], "count": 0, "error": str(e)}
+
+@app.get("/live/statistics")
+def get_live_statistics():
+    """Get calculated strategy statistics for the live session."""
+    global ACTIVE_ENGINE
+    if ACTIVE_ENGINE and ACTIVE_ENGINE.IsRunning:
+        try:
+            stats = ACTIVE_ENGINE.CalculateStatistics()
+            return {"statistics": stats}
+        except Exception as e:
+            logger.error(f"Failed to calculate live stats: {e}")
+            return {"statistics": {}, "error": str(e)}
+    return {"statistics": {}, "message": "No live strategy running."}
 
 def run_backtest_process(run_id: str, request: BacktestRequest, strategy_file_path: str):
     logger.info(f"🛑 Starting Backtest Job: {run_id}")

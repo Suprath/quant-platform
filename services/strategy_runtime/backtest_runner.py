@@ -273,6 +273,22 @@ async def auto_backfill(symbols, start_date, end_date):
         logger.info(f"   {name:15s} → {status}")
     logger.info("=" * 60)
 
+    # POST-BACKFILL VERIFICATION: Confirm data actually persisted
+    if total > 0:
+        try:
+            for sym in list(missing.keys())[:3]:  # Verify first 3 symbols
+                name = KNOWN_STOCKS.get(sym, sym)
+                verify_query = f"SELECT count() FROM ohlc WHERE symbol = '{sym}'"
+                encoded = urllib.parse.urlencode({"query": verify_query})
+                resp = requests.get(f"{QUESTDB_URL}/exec?{encoded}", timeout=10)
+                if resp.status_code == 200:
+                    count = resp.json().get('dataset', [[0]])[0][0]
+                    logger.info(f"  🔍 VERIFY {name}: {count} total rows in QuestDB")
+                else:
+                    logger.warning(f"  ⚠️ Verification query failed for {name}")
+        except Exception as e:
+            logger.warning(f"  ⚠️ Post-backfill verification error: {e}")
+
 
 def scan_market(date_str, top_n=5):
     """
@@ -336,23 +352,6 @@ def scan_market(date_str, top_n=5):
     except Exception as e:
         logger.error(f"Scanner Logic Failed: {e}")
         return []
-
-def get_qdb_conn():
-    """Connect to QuestDB"""
-    # Assuming we are in the same docker network
-    try:
-        conn = psycopg2.connect(
-            host=os.getenv("QUESTDB_HOST", "questdb_tsdb"),
-            port=8812,
-            user="admin",
-            password="quest",
-            database="qdb"
-        )
-        conn.autocommit = True
-        return conn
-    except Exception as e:
-        logger.error(f"QuestDB Connection Error: {e}")
-        return None
 
 def fetch_historical_data(symbol, start_date, end_date, timeframe='1m'):
     """Fetch OHLC candles from QuestDB"""

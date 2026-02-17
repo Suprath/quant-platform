@@ -253,33 +253,6 @@ class AlgorithmEngine:
             import traceback
             logger.error(f"Error in Event Loop: {e}\n{traceback.format_exc()}")
 
-    def CalculatePortfolioValue(self):
-        """
-        Calculate Total Portfolio Value (Equity) in Realtime.
-        Equity = Cash + Sum(Position Value).
-        """
-        # 1. Update Position Values based on latest price
-        positions_value = 0.0
-        
-        for sym, holding in self.Algorithm.Portfolio.items():
-            if sym in ('Cash', 'TotalPortfolioValue'): continue
-            if isinstance(holding, SecurityHolding) and holding.Invested:
-                # Use current slice price if available, else last known
-                price = None
-                if self.CurrentSlice and self.CurrentSlice.ContainsKey(sym):
-                    price = self.CurrentSlice[sym].Price
-                
-                if not price:
-                    price = self._last_prices.get(sym)
-                
-                if not price:
-                     price = holding.AveragePrice
-                
-                positions_value += holding.Quantity * price
-        
-        # 2. Update Portfolio State
-        self.Algorithm.Portfolio['TotalPortfolioValue'] = self.Algorithm.Portfolio.Cash + positions_value
-        return self.Algorithm.Portfolio.TotalPortfolioValue
 
     def CalculatePortfolioValue(self):
         """
@@ -533,8 +506,7 @@ class AlgorithmEngine:
         return stats
 
     def SaveStatistics(self):
-        """Save computed statistics to DB."""
-        if not self.BacktestMode: return
+        """Save computed statistics to DB (works for both backtest and live)."""
         
         try:
             stats = self.CalculateStatistics()
@@ -689,20 +661,23 @@ class AlgorithmEngine:
 
     def GetLiveStatus(self):
         """
-        Return current live statistics.
+        Return current live statistics with Indian market context.
+        Includes: portfolio state, holdings, daily P&L, trade count.
         """
         portfolio = self.Algorithm.Portfolio
         cash = portfolio.get('Cash', 0.0)
+        initial_capital = getattr(self, 'InitialCapital', 100000.0)
         
         # Calculate Equity
         equity = cash
         holdings = []
+        total_unrealized = 0.0
         
         for symbol, holding in portfolio.items():
-            if symbol == 'Cash' or symbol == 'TotalPortfolioValue': continue # specific keys
+            if symbol == 'Cash' or symbol == 'TotalPortfolioValue': continue
             if isinstance(holding, SecurityHolding) and holding.Invested:
                 # Get current price
-                price = holding.AveragePrice # Default
+                price = self._last_prices.get(symbol, holding.AveragePrice)
                 if self.CurrentSlice and self.CurrentSlice.ContainsKey(symbol):
                      price = self.CurrentSlice[symbol].Price
                 
@@ -710,21 +685,44 @@ class AlgorithmEngine:
                 unrealized_pnl = (price - holding.AveragePrice) * holding.Quantity
                 
                 equity += market_value
+                total_unrealized += unrealized_pnl
                 
                 holdings.append({
                     "symbol": symbol,
                     "quantity": holding.Quantity,
-                    "avg_price": holding.AveragePrice,
-                    "current_price": price,
-                    "market_value": market_value,
-                    "unrealized_pnl": unrealized_pnl
+                    "avg_price": round(holding.AveragePrice, 2),
+                    "current_price": round(price, 2),
+                    "market_value": round(market_value, 2),
+                    "unrealized_pnl": round(unrealized_pnl, 2)
                 })
+        
+        # Daily P&L and trade count from DB
+        total_trades = 0
+        realized_pnl = 0.0
+        try:
+            conn = self.Exchange._get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM executed_orders WHERE pnl IS NOT NULL AND timestamp::date = CURRENT_DATE")
+            row = cur.fetchone()
+            if row:
+                total_trades = row[0]
+                realized_pnl = float(row[1])
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Could not fetch trade stats: {e}")
+
+        total_pnl = equity - initial_capital
                 
         return {
             "status": "running" if self.IsRunning else "stopped",
-            "cash": cash,
-            "equity": equity,
-            "initial_capital": getattr(self, 'InitialCapital', 100000.0),
+            "cash": round(cash, 2),
+            "equity": round(equity, 2),
+            "initial_capital": initial_capital,
+            "total_pnl": round(total_pnl, 2),
+            "total_pnl_pct": round((total_pnl / initial_capital) * 100, 2) if initial_capital > 0 else 0,
+            "realized_pnl_today": round(realized_pnl, 2),
+            "unrealized_pnl": round(total_unrealized, 2),
+            "trades_today": total_trades,
             "holdings": holdings
         }
 

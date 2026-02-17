@@ -72,7 +72,8 @@ def get_qdb_conn():
                 password="quest",
                 database="qdb"
             )
-            print("✅ Connected to QuestDB")
+            conn.autocommit = True
+            print("✅ Connected to QuestDB (autocommit=True)")
             return conn
         except Exception as e:
             print(f"QuestDB not ready. Retrying in 2s... ({e})")
