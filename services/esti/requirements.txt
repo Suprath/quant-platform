@@ -1,0 +1,18 @@
+# Core ML
+torch>=2.1.0
+numpy>=1.24.0
+pandas>=2.0.0
+
+# API
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Data fetching (via API gateway, no direct DB)
+requests>=2.31.0
+
+# Optimization
+scipy>=1.11.0
+
+# Utilities
+tqdm>=4.65.0
+python-dotenv>=1.0.0

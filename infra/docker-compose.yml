@@ -209,10 +209,31 @@ services:
       - api_gateway
     restart: always
 
+  esti:
+    build: ../services/esti
+    container_name: esti_hedge_fund
+    depends_on:
+      - api_gateway
+      - questdb
+    environment:
+      - PYTHONUNBUFFERED=1
+      - API_GATEWAY_URL=http://api_gateway:8000
+      - ESTI_LOG_LEVEL=DEBUG
+      - ESTI_CHECKPOINT_DIR=/app/checkpoints
+      - ESTI_ARCHIVE_DB=/app/checkpoints/knowledge_archive.db
+    volumes:
+      - ../services/esti:/app
+      - esti_checkpoints:/app/checkpoints
+    ports:
+      - "8002:8002"
+    profiles: [ "esti" ]
+    restart: always
+
 volumes:
   questdb_data:
   postgres_data:
   minio_data:
   kafka_data:
+  esti_checkpoints:
 
 

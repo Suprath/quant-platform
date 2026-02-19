@@ -92,6 +92,52 @@ def get_greeks(symbol: str):
     finally:
         if conn: conn.close()
 
+@app.get("/api/v1/market/ohlc")
+def get_ohlc(
+    symbol: str = Query(..., description="Instrument key e.g. NSE_EQ|INE002A01018"),
+    start_date: str = Query(..., description="Start date YYYY-MM-DD"),
+    end_date: str = Query(..., description="End date YYYY-MM-DD"),
+    timeframe: str = Query("1m", description="Timeframe e.g. 1m, 5m, 1h, 1d"),
+    limit: int = Query(10000, le=10000, description="Max rows (capped at 10000)")
+):
+    """Fetch historical OHLC candles from QuestDB for a given symbol and date range."""
+    conn = None
+    try:
+        conn = get_qdb_conn()
+        cur = conn.cursor()
+        # QuestDB PG wire requires ISO timestamps for comparison
+        ts_start = f"{start_date}T00:00:00.000000Z"
+        ts_end = f"{end_date}T23:59:59.999999Z"
+        query = """
+            SELECT timestamp, symbol, open, high, low, close, volume 
+            FROM ohlc 
+            WHERE symbol = %s 
+              AND timeframe = %s
+              AND timestamp >= %s 
+              AND timestamp <= %s 
+            ORDER BY timestamp ASC
+            LIMIT %s;
+        """
+        cur.execute(query, (symbol, timeframe, ts_start, ts_end, limit))
+        rows = cur.fetchall()
+        candles = [
+            {
+                "timestamp": str(r[0]),
+                "symbol": r[1],
+                "open": float(r[2]),
+                "high": float(r[3]),
+                "low": float(r[4]),
+                "close": float(r[5]),
+                "volume": int(r[6]) if r[6] else 0
+            }
+            for r in rows
+        ]
+        return {"symbol": symbol, "timeframe": timeframe, "count": len(candles), "candles": candles}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn: conn.close()
+
 @app.get("/api/v1/trades")
 def get_trades(limit: int = 50):
     """Fetch recent trade history from Postgres"""
