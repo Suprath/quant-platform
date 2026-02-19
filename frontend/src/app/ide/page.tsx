@@ -413,9 +413,9 @@ export default function IdePage() {
     // ============================================================
 
     return (
-        <div className="flex flex-col h-screen bg-[#0a0a0f] text-zinc-100 overflow-hidden">
+        <div className="flex flex-col h-screen bg-[#0a0a0b] text-zinc-100 overflow-hidden">
             {/* ===== Top Bar ===== */}
-            <header className="flex items-center justify-between border-b border-zinc-800/60 px-4 py-2 bg-[#0d0d14]">
+            <header className="flex items-center justify-between border-b border-zinc-800/60 px-4 py-2 bg-[#111113]">
                 <div className="flex items-center gap-3">
                     <Link href="/">
                         <Button variant="ghost" size="icon" className="h-8 w-8 text-zinc-400 hover:text-white hover:bg-zinc-800">
@@ -459,7 +459,7 @@ export default function IdePage() {
             {/* ===== Main Content ===== */}
             <div className="flex flex-1 overflow-hidden">
                 {/* ===== File Explorer Sidebar ===== */}
-                <aside className="w-56 border-r border-zinc-800/60 bg-[#0d0d14] flex flex-col flex-shrink-0">
+                <aside className="w-56 border-r border-zinc-800/60 bg-[#111113] flex flex-col flex-shrink-0">
                     <div className="px-3 py-2.5 border-b border-zinc-800/40 flex items-center justify-between">
                         <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-[0.15em]">Explorer</span>
                         <div className="flex items-center gap-0.5">
@@ -584,7 +584,7 @@ export default function IdePage() {
                 {/* ===== Editor Area ===== */}
                 <div className="flex-1 flex flex-col min-w-0">
                     {/* Tab Bar */}
-                    <div className="flex items-center bg-[#0d0d14] border-b border-zinc-800/40 overflow-x-auto scrollbar-none">
+                    <div className="flex items-center bg-[#111113] border-b border-zinc-800/40 overflow-x-auto scrollbar-none">
                         {openTabs.map(tab => {
                             const tabFile = getFileForTab(tab.projectId, tab.fileId);
                             const tabProject = projects.find(p => p.id === tab.projectId);
@@ -593,7 +593,7 @@ export default function IdePage() {
                                 <div
                                     key={`${tab.projectId}-${tab.fileId}`}
                                     className={`group flex items-center gap-1.5 px-3 py-2 cursor-pointer text-xs border-r border-zinc-800/30 transition-colors min-w-0 flex-shrink-0 ${isActive
-                                        ? 'bg-[#0a0a0f] text-zinc-200 border-t-2 border-t-blue-500'
+                                        ? 'bg-[#0a0a0b] text-zinc-200 border-t-2 border-t-blue-500'
                                         : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/30 border-t-2 border-t-transparent'
                                         }`}
                                     onClick={() => {
@@ -669,7 +669,7 @@ export default function IdePage() {
             </div>
 
             {/* ===== Bottom Panels ===== */}
-            <div className="border-t border-zinc-800/60 bg-[#0a0a0f]">
+            <div className="border-t border-zinc-800/60 bg-[#0a0a0b]">
                 <div className="px-4 py-3 grid grid-cols-1 lg:grid-cols-2 gap-3 max-h-[300px] overflow-y-auto">
                     <DataBackfill />
                     <BacktestHistory />

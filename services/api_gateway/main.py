@@ -242,7 +242,7 @@ def get_top_performers(limit: int = Query(10, le=50, description="Number of top 
                 pct_change = ((close_p - open_p) / open_p) * 100 if open_p > 0 else 0
                 
                 # Try fetching symbol name
-                pg_cur.execute("SELECT name FROM instruments WHERE instrument_token = %s", (symbol_key,))
+                pg_cur.execute("SELECT symbol FROM instruments WHERE instrument_token = %s", (symbol_key,))
                 name_row = pg_cur.fetchone()
                 stock_name = name_row[0] if name_row else symbol_key.split("|")[-1]
                 

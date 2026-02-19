@@ -1,30 +1,33 @@
-
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import Link from 'next/link';
 import {
-    Sheet,
-    SheetContent,
-    SheetDescription,
-    SheetHeader,
-    SheetTitle,
-    SheetTrigger,
-    SheetFooter,
-} from "@/components/ui/sheet";
-import { Play, Loader2, TrendingUp } from 'lucide-react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-    Table,
-    TableBody,
-    TableCell,
-    TableRow,
-} from "@/components/ui/table";
+    Dialog,
+    DialogContent,
+    DialogTrigger,
+} from "@/components/ui/dialog";
+import { Play, Loader2, TrendingUp, Terminal as TerminalIcon, BarChart3, Clock, DollarSign, Activity, Settings2, Target, Percent } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { useRef, useEffect } from 'react';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+
+interface Trade {
+    time: string;
+    symbol: string;
+    side: string;
+    quantity: number;
+    price: number;
+    pnl: number;
+}
+
+interface LogEntry {
+    time: string;
+    message: string;
+    type: string;
+}
 
 export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { strategyName: string, strategyCode: string, projectFiles?: Record<string, string> }) {
     const [isOpen, setIsOpen] = useState(false);
@@ -33,51 +36,49 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
     const pollIntervalRef = React.useRef<NodeJS.Timeout | null>(null);
 
     const [isLoading, setIsLoading] = useState(false);
-    const [logs, setLogs] = useState<string[]>([]);
+    const [logs, setLogs] = useState<LogEntry[]>([]);
     const [isComplete, setIsComplete] = useState(false);
 
+    const [equityHistory, setEquityHistory] = useState<{ time: string, equity: number }[]>([]);
+    const [trades, setTrades] = useState<Trade[]>([]);
+
     const [config, setConfig] = useState({
-        symbol: "NSE_EQ|INE002A01018", // Default
+        symbol: "NSE_EQ|INE002A01018",
         startDate: "2024-01-01",
         endDate: "2024-01-31",
         cash: 100000,
         speed: "fast"
     });
 
-    // Mock Stats
     const [stats, setStats] = useState({
-        totalReturn: "+2.0%",
-        netProfit: 500.0,
-        sharpeRatio: 1.85,
-        maxDrawdown: "-0.5%",
-        winRate: "66.7%",
-        totalTrades: 3,
-        profitFactor: 1.5
+        totalReturn: "0.0%",
+        netProfit: 0.0,
+        sharpeRatio: 0.0,
+        maxDrawdown: "0.0%",
+        winRate: "0.0%",
+        totalTrades: 0,
+        profitFactor: 0.0
     });
 
-    interface Trade {
-        time: string;
-        symbol: string;
-        side: string;
-        quantity: number;
-        price: number;
-        pnl: number;
-    }
+    const addLog = (message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info', time?: string) => {
+        const t = time || new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        setLogs(prev => [...prev, { time: t, message, type }]);
+    };
 
     const stopBacktest = async () => {
         if (!activeRunId) return;
         try {
             const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
             await fetch(`${API_URL}/api/v1/backtest/stop/${activeRunId}`, { method: 'POST' });
-            setLogs(prev => [...prev, "🛑 Backtest stopped by user."]);
+            addLog("HALT SIGNAL SENT: Backtest stopped by user.", 'error');
 
             if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
             setIsLoading(false);
-            setIsComplete(true); // Treat as complete so we can see partial logs/trades
+            setIsComplete(true);
             setActiveRunId(null);
         } catch (e) {
             console.error("Failed to stop backtest", e);
-            setLogs(prev => [...prev, "❌ Failed to stop backtest."]);
+            addLog("Failed to stop backtest engine connection.", 'error');
         }
     };
 
@@ -87,7 +88,15 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
         setIsLoading(true);
         setIsComplete(false);
         setActiveRunId(null);
-        setLogs(["🚀 Starting backtest...", `Strategy: ${strategyName}`, `Symbol: ${config.symbol}`]);
+        setLogs([]);
+        setEquityHistory([]);
+        setTrades([]);
+        setStats({
+            totalReturn: "0.0%", netProfit: 0.0, sharpeRatio: 0.0,
+            maxDrawdown: "0.0%", winRate: "0.0%", totalTrades: 0, profitFactor: 0.0
+        });
+
+        addLog(`Initiating engine dispatch for strategy: ${strategyName}`, 'warning');
 
         try {
             const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
@@ -108,13 +117,14 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                 })
             });
 
-            if (!response.ok) throw new Error("Failed to start backtest");
+            if (!response.ok) throw new Error("Engine rejected the strategy deployment request.");
 
             const data = await response.json();
             const runId = data.run_id;
             setActiveRunId(runId);
             setLastRunId(runId);
-            setLogs(prev => [...prev, `✅ Job Started: ${runId}`, "⏳ Waiting for logs..."]);
+            addLog(`Container provisioned. Run ID: ${runId}`, 'success');
+            addLog("Awaiting data stream from runtime engine...", 'info');
 
             // 2. Poll Logs
             pollIntervalRef.current = setInterval(async () => {
@@ -122,10 +132,17 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                     const logRes = await fetch(`${API_URL}/api/v1/backtest/logs/${runId}`);
                     if (logRes.ok) {
                         const logData = await logRes.json();
-                        setLogs(logData.logs); // Replace logs with full history
+
+                        // Parse log array into formatted entries
+                        const parsedLogs: LogEntry[] = logData.logs.map((l: string) => {
+                            const match = l.match(/^([\d-:\s]+) - (INFO|ERROR|WARNING) - (.*)$/);
+                            if (match) return { time: match[1], type: match[2].toLowerCase(), message: match[3] };
+                            return { time: '', type: 'info', message: l };
+                        });
+                        setLogs(parsedLogs);
 
                         // Check for completion
-                        const isFinished = logData.logs.some((l: string) => l.includes("Backtest Runner Finished") || l.includes("Backtest Stopped by User"));
+                        const isFinished = parsedLogs.some((l) => l.message.includes("Backtest Runner Finished") || l.message.includes("Backtest Stopped"));
 
                         if (isFinished) {
                             if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
@@ -133,28 +150,34 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                             setIsComplete(true);
                             setActiveRunId(null);
 
-                            if (!logs.includes("🏁 Execution Finished.")) {
-                                setLogs(prev => [...prev, "🏁 Execution Finished."]);
-                            }
+                            addLog("Execution terminated. Fetching telemetry and insights...", 'success');
 
-                            // Valid JSON logs usually come as stringified JSON in the last line or separate endpoint
-                            // Fetch Trades & Stats
                             try {
                                 const [tradesRes, statsRes] = await Promise.all([
                                     fetch(`${API_URL}/api/v1/backtest/trades/${runId}`),
                                     fetch(`${API_URL}/api/v1/backtest/stats/${runId}`)
                                 ]);
 
+                                let finalTrades: Trade[] = [];
                                 if (tradesRes.ok) {
                                     const tradesData = await tradesRes.json();
-                                    // Calculate simple stats fallback if detailed stats fail
-                                    const totalPnL = tradesData.reduce((acc: number, t: Trade) => acc + (t.pnl || 0), 0);
-                                    setStats(prev => ({
-                                        ...prev,
-                                        totalTrades: tradesData.length,
-                                        netProfit: totalPnL,
-                                        totalReturn: `${((totalPnL / config.cash) * 100).toFixed(2)}%`
-                                    }));
+                                    finalTrades = tradesData;
+                                    setTrades(tradesData);
+
+                                    // Construct Equity Curve
+                                    let currentEquity = config.cash;
+                                    const hist = [{ time: config.startDate, equity: currentEquity }];
+                                    tradesData.forEach((t: Trade) => {
+                                        currentEquity += (t.pnl || 0);
+                                        // Take a point every trade
+                                        hist.push({
+                                            time: new Date(t.time).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+                                            equity: currentEquity
+                                        });
+                                    });
+                                    // Add final point
+                                    hist.push({ time: config.endDate, equity: currentEquity });
+                                    setEquityHistory(hist);
                                 }
 
                                 if (statsRes.ok) {
@@ -171,186 +194,296 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                                             profitFactor: statsData.profit_factor
                                         }));
                                     }
+                                } else if (finalTrades.length > 0) {
+                                    // Fallback calc
+                                    const totalPnL = finalTrades.reduce((acc, t) => acc + (t.pnl || 0), 0);
+                                    setStats(prev => ({
+                                        ...prev,
+                                        totalTrades: finalTrades.length,
+                                        netProfit: totalPnL,
+                                        totalReturn: `${((totalPnL / config.cash) * 100).toFixed(2)}%`
+                                    }));
                                 }
                             } catch (err) {
                                 console.error("Failed to fetch results", err);
+                                addLog("Error fetching insights telemetry.", 'error');
                             }
                         }
                     }
                 } catch (e) {
                     console.error("Polling error", e);
                 }
-            }, 2000);
+            }, 1500);
 
         } catch (error) {
-            setLogs(prev => [...prev, `❌ Error: ${error}`]);
+            addLog(`Error: ${error}`, 'error');
             setIsLoading(false);
             setActiveRunId(null);
         }
     };
 
     return (
-        <Sheet open={isOpen} onOpenChange={setIsOpen}>
-            <SheetTrigger asChild>
+        <Dialog open={isOpen} onOpenChange={setIsOpen}>
+            <DialogTrigger asChild>
                 <div className="flex gap-2">
-                    <Button size="sm">
-                        <Play className="mr-2 h-4 w-4" /> Run Backtest
+                    <Button size="sm" className="bg-blue-600 hover:bg-blue-500 text-white shadow-[0_0_15px_rgba(37,99,235,0.4)] transition-all">
+                        <Play className="mr-2 h-4 w-4 fill-current" /> Run Backtest
                     </Button>
-                    {isComplete && lastRunId && (
-                        <Link href={`/dashboard/backtest/${lastRunId}`} target="_blank">
-                            <Button size="sm" variant="outline">
-                                <TrendingUp className="mr-2 h-4 w-4" /> View Dashboard
-                            </Button>
-                        </Link>
-                    )}
                 </div>
-            </SheetTrigger>
-            <SheetContent className="w-[500px] sm:w-[600px] flex flex-col">
-                <SheetHeader>
-                    <SheetTitle>Backtest Manager</SheetTitle>
-                    <SheetDescription>
-                        {strategyName}
-                    </SheetDescription>
-                </SheetHeader>
-
-                <Tabs defaultValue="config" className="flex-1 flex flex-col mt-4">
-                    <TabsList className="grid w-full grid-cols-3">
-                        <TabsTrigger value="config">Config</TabsTrigger>
-                        <TabsTrigger value="logs">Logs</TabsTrigger>
-                        <TabsTrigger value="stats" disabled={!isComplete}>Result</TabsTrigger>
-                    </TabsList>
-
-                    <TabsContent value="config" className="flex-1 py-4">
-                        <div className="grid gap-4">
-                            {/* Symbol Input Removed as per user request (Strategy defines Universe) */}
-                            {/* 
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label htmlFor="symbol" className="text-right">Symbol</Label>
-                                <Input
-                                    id="symbol"
-                                    value={config.symbol}
-                                    onChange={(e) => setConfig({ ...config, symbol: e.target.value })}
-                                    className="col-span-3"
-                                />
-                            </div> 
-                            */}
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label htmlFor="start" className="text-right">Start</Label>
-                                <Input
-                                    id="start"
-                                    type="date"
-                                    value={config.startDate}
-                                    onChange={(e) => setConfig({ ...config, startDate: e.target.value })}
-                                    className="col-span-3"
-                                />
-                            </div>
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label htmlFor="end" className="text-right">End</Label>
-                                <Input
-                                    id="end"
-                                    type="date"
-                                    value={config.endDate}
-                                    onChange={(e) => setConfig({ ...config, endDate: e.target.value })}
-                                    className="col-span-3"
-                                />
-                            </div>
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label htmlFor="speed" className="text-right">Speed</Label>
-                                <select
-                                    id="speed"
-                                    value={config.speed}
-                                    onChange={(e) => setConfig({ ...config, speed: e.target.value })}
-                                    className="col-span-3 flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                    <option value="fast">Fast (No Delay)</option>
-                                    <option value="medium">Medium (Moderate)</option>
-                                    <option value="slow">Slow (Observe)</option>
-                                </select>
+            </DialogTrigger>
+            <DialogContent className="max-w-[95vw] h-[95vh] bg-[#0a0a0b] border-slate-800 p-0 flex flex-col overflow-hidden text-slate-300 shadow-2xl">
+                {/* Header Control Bar */}
+                <div className="flex items-center justify-between border-b border-slate-800 bg-[#111113] p-4 shadow-md z-10 box-border h-20 shrink-0 min-h-[5rem]">
+                    <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-3 border-r border-slate-700 pr-5">
+                            <Activity className="h-6 w-6 text-purple-500" />
+                            <div>
+                                <h1 className="text-xl font-bold tracking-tight text-white">{strategyName}</h1>
+                                <p className="text-xs text-slate-500 font-mono">BACKTEST ENGINE PRE-FLIGHT</p>
                             </div>
                         </div>
-                    </TabsContent>
 
-                    <TabsContent value="logs" className="flex-1 h-full flex flex-col min-h-0">
-                        <LogPanel logs={logs} isLoading={isLoading} />
-                    </TabsContent>
+                        {/* Config Controls inline */}
+                        <div className="flex items-center gap-3 pl-2">
+                            <div className="flex items-center gap-2 bg-[#0a0a0b] px-3 py-1.5 rounded-md border border-slate-800">
+                                <Clock className="h-4 w-4 text-slate-500" />
+                                <Input type="date" value={config.startDate} onChange={e => setConfig({ ...config, startDate: e.target.value })} className="h-7 w-[125px] bg-transparent border-none focus-visible:ring-0 px-0 text-sm font-mono text-white" />
+                                <span className="text-slate-600">→</span>
+                                <Input type="date" value={config.endDate} onChange={e => setConfig({ ...config, endDate: e.target.value })} className="h-7 w-[125px] bg-transparent border-none focus-visible:ring-0 px-0 text-sm font-mono text-white" />
+                            </div>
 
-                    <TabsContent value="stats" className="flex-1">
-                        <div className="border rounded-md p-4 space-y-4">
-                            <div className="flex items-center justify-between">
-                                <h3 className="font-semibold text-lg">Performance Summary</h3>
-                                <Badge variant={stats.netProfit > 0 ? "default" : "destructive"} className="text-md px-3 py-1">
-                                    {stats.totalReturn}
+                            <div className="flex items-center gap-2 bg-[#0a0a0b] px-3 py-1.5 rounded-md border border-slate-800">
+                                <DollarSign className="h-4 w-4 text-slate-500" />
+                                <Input type="number" value={config.cash} onChange={e => setConfig({ ...config, cash: parseInt(e.target.value) })} className="h-7 w-[100px] bg-transparent border-none focus-visible:ring-0 px-0 text-sm font-mono text-white hide-arrows" />
+                            </div>
+
+                            <div className="flex items-center gap-2 bg-[#0a0a0b] px-3 py-1.5 rounded-md border border-slate-800">
+                                <Settings2 className="h-4 w-4 text-slate-500" />
+                                <Select value={config.speed} onValueChange={v => setConfig({ ...config, speed: v })}>
+                                    <SelectTrigger className="h-7 w-[100px] bg-transparent border-none focus:ring-0 text-white font-mono text-sm px-0">
+                                        <SelectValue placeholder="Speed" />
+                                    </SelectTrigger>
+                                    <SelectContent className="bg-[#1a1a1e] border-slate-700 text-white">
+                                        <SelectItem value="fast">Fast</SelectItem>
+                                        <SelectItem value="medium">Medium</SelectItem>
+                                        <SelectItem value="slow">Slow</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                        {isLoading ? (
+                            <Button onClick={stopBacktest} variant="destructive" className="h-10 px-6 font-semibold shadow-[0_0_15px_rgba(239,68,68,0.4)]">
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> HALT EXECUTION
+                            </Button>
+                        ) : (
+                            <Button onClick={runBacktest} className="h-10 px-8 bg-blue-600 hover:bg-blue-500 text-white shadow-[0_0_15px_rgba(37,99,235,0.4)] transition-all font-semibold uppercase tracking-wider">
+                                <Play className="mr-2 h-4 w-4 fill-current" /> Initialize Run
+                            </Button>
+                        )}
+                        {isComplete && lastRunId && (
+                            <Link href={`/dashboard/backtest/${lastRunId}`} target="_blank">
+                                <Button variant="outline" className="h-10 border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800">
+                                    <TrendingUp className="mr-2 h-4 w-4" /> Full Dashboard
+                                </Button>
+                            </Link>
+                        )}
+                    </div>
+                </div>
+
+                {/* Main Content Body */}
+                <div className="flex flex-1 overflow-hidden">
+                    {/* Left Panel: Chart & Data */}
+                    <div className="flex-1 flex flex-col border-r border-slate-800 min-w-0 p-4 gap-4 overflow-y-auto custom-scrollbar">
+
+                        {/* Equity Curve Chart */}
+                        <div className="h-[45%] min-h-[300px] border border-slate-800 bg-[#111113] rounded-xl p-4 flex flex-col relative overflow-hidden shrink-0">
+                            <div className="flex items-center justify-between mb-4 z-10">
+                                <h3 className="text-sm font-semibold text-white tracking-wide uppercase flex items-center gap-2">
+                                    <BarChart3 className="h-4 w-4 text-blue-500" />
+                                    Equity Curve Analysis
+                                </h3>
+                                {isComplete && (
+                                    <Badge className={stats.netProfit >= 0 ? "bg-green-500/20 text-green-400 border-green-500/50" : "bg-red-500/20 text-red-400 border-red-500/50"}>
+                                        {stats.totalReturn} ROI
+                                    </Badge>
+                                )}
+                            </div>
+
+                            <div className="flex-1 min-h-0 relative">
+                                {!isComplete && equityHistory.length === 0 ? (
+                                    <div className="absolute inset-0 flex items-center justify-center text-slate-600 font-mono text-sm border-2 border-dashed border-slate-800 rounded-lg">
+                                        {isLoading ? "Awaiting Data Stream..." : "Chart will render upon completion."}
+                                    </div>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <AreaChart data={equityHistory} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                                            <defs>
+                                                <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
+                                                    <stop offset="5%" stopColor={stats.netProfit >= 0 ? "#3b82f6" : "#ef4444"} stopOpacity={0.3} />
+                                                    <stop offset="95%" stopColor={stats.netProfit >= 0 ? "#3b82f6" : "#ef4444"} stopOpacity={0} />
+                                                </linearGradient>
+                                            </defs>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                                            <XAxis
+                                                dataKey="time"
+                                                stroke="#475569"
+                                                fontSize={11}
+                                                tickMargin={10}
+                                                tickFormatter={(v) => v.split(',')[0]} // Just show date if long string
+                                            />
+                                            <YAxis
+                                                stroke="#475569"
+                                                fontSize={11}
+                                                tickFormatter={(v) => `₹${(v / 1000).toFixed(0)}k`}
+                                                domain={['auto', 'auto']}
+                                            />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', color: '#f8fafc', borderRadius: '8px' }}
+                                                itemStyle={{ color: '#3b82f6' }}
+                                                formatter={(value: unknown) => [`₹${Number(value).toFixed(2)}`, 'Equity']}
+                                                labelStyle={{ color: '#94a3b8', marginBottom: '4px' }}
+                                            />
+                                            <Area
+                                                type="monotone"
+                                                dataKey="equity"
+                                                stroke={stats.netProfit >= 0 ? "#3b82f6" : "#ef4444"}
+                                                strokeWidth={2}
+                                                fillOpacity={1}
+                                                fill="url(#colorEquity)"
+                                                isAnimationActive={true}
+                                            />
+                                        </AreaChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Top Insights Layer */}
+                        <div className="grid grid-cols-4 gap-4 shrink-0">
+                            {[
+                                { label: "Net Profit", val: `₹${stats.netProfit.toFixed(1)}`, icon: DollarSign, color: stats.netProfit >= 0 ? 'text-green-400' : 'text-red-400' },
+                                { label: "Win Rate", val: stats.winRate, icon: Target, color: 'text-blue-400' },
+                                { label: "Max Drawdown", val: stats.maxDrawdown, icon: Percent, color: 'text-red-400' },
+                                { label: "Sharpe Ratio", val: stats.sharpeRatio.toFixed(2), icon: Activity, color: 'text-purple-400' },
+                            ].map((s, i) => (
+                                <div key={i} className="bg-[#111113] border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <span className="text-xs font-semibold text-slate-500 uppercase">{s.label}</span>
+                                        <s.icon className={`h-4 w-4 opacity-50 ${s.color}`} />
+                                    </div>
+                                    <span className={`text-2xl font-bold tracking-tight font-mono ${s.color}`}>
+                                        {isComplete ? s.val : "---"}
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* Trades Table */}
+                        <div className="flex-1 min-h-[250px] border border-slate-800 bg-[#111113] rounded-xl p-4 overflow-hidden flex flex-col shrink-0 mb-4">
+                            <div className="flex items-center justify-between mb-4">
+                                <h3 className="text-sm font-semibold text-white tracking-wide uppercase">Execution History</h3>
+                                <Badge variant="outline" className="border-slate-700 text-slate-400 font-mono">
+                                    {isComplete ? `${trades.length} TRADES` : "WAITING"}
                                 </Badge>
                             </div>
-
-                            <Table>
-                                <TableBody>
-                                    <TableRow>
-                                        <TableCell className="font-medium">Net Profit</TableCell>
-                                        <TableCell className={stats.netProfit >= 0 ? "text-green-500" : "text-red-500"}>
-                                            ₹{stats.netProfit.toFixed(2)}
-                                        </TableCell>
-                                    </TableRow>
-                                    <TableRow>
-                                        <TableCell className="font-medium">Sharpe Ratio</TableCell>
-                                        <TableCell>{stats.sharpeRatio}</TableCell>
-                                    </TableRow>
-                                    <TableRow>
-                                        <TableCell className="font-medium">Max Drawdown</TableCell>
-                                        <TableCell className="text-red-500">{stats.maxDrawdown}</TableCell>
-                                    </TableRow>
-                                    <TableRow>
-                                        <TableCell className="font-medium">Win Rate</TableCell>
-                                        <TableCell>{stats.winRate}</TableCell>
-                                    </TableRow>
-                                    <TableRow>
-                                        <TableCell className="font-medium">Total Trades</TableCell>
-                                        <TableCell>{stats.totalTrades}</TableCell>
-                                    </TableRow>
-                                    <TableRow>
-                                        <TableCell className="font-medium">Profit Factor</TableCell>
-                                        <TableCell>{stats.profitFactor}</TableCell>
-                                    </TableRow>
-                                </TableBody>
-                            </Table>
+                            <div className="flex-1 overflow-y-auto custom-scrollbar border border-slate-800/50 rounded-lg">
+                                <table className="w-full text-sm text-left font-mono">
+                                    <thead className="text-xs uppercase bg-[#1a1a1e] text-slate-500 sticky top-0 z-10 shadow-sm">
+                                        <tr>
+                                            <th className="px-4 py-3 font-medium">Time</th>
+                                            <th className="px-4 py-3 font-medium">Symbol</th>
+                                            <th className="px-4 py-3 font-medium">Side</th>
+                                            <th className="px-4 py-3 font-medium text-right">Qty</th>
+                                            <th className="px-4 py-3 font-medium text-right">Price</th>
+                                            <th className="px-4 py-3 font-medium text-right">PnL</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-800">
+                                        {trades.length === 0 ? (
+                                            <tr>
+                                                <td colSpan={6} className="px-4 py-8 text-center text-slate-600">
+                                                    No executions recorded yet.
+                                                </td>
+                                            </tr>
+                                        ) : (
+                                            trades.map((t, idx) => (
+                                                <tr key={idx} className="hover:bg-[#151518] transition-colors">
+                                                    <td className="px-4 py-2 text-slate-400">{new Date(t.time).toLocaleString('en-US', { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                                                    <td className="px-4 py-2 font-medium text-slate-300">{t.symbol.split('|').pop()}</td>
+                                                    <td className="px-4 py-2">
+                                                        <span className={t.side === 'BUY' ? 'text-blue-400' : 'text-purple-400'}>{t.side}</span>
+                                                    </td>
+                                                    <td className="px-4 py-2 text-right text-slate-300">{t.quantity}</td>
+                                                    <td className="px-4 py-2 text-right text-slate-300">₹{t.price.toFixed(2)}</td>
+                                                    <td className={`px-4 py-2 text-right font-medium ${(t.pnl || 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                                        {t.pnl ? (t.pnl > 0 ? `+₹${t.pnl.toFixed(2)}` : `-₹${Math.abs(t.pnl).toFixed(2)}`) : "—"}
+                                                    </td>
+                                                </tr>
+                                            ))
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
-                    </TabsContent>
+                    </div>
 
-                </Tabs>
-
-
-                <SheetFooter className="mt-4">
-                    {isLoading ? (
-                        <Button onClick={stopBacktest} variant="destructive" className="w-full">
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Stop Backtest
-                        </Button>
-                    ) : (
-                        <Button onClick={runBacktest} className="w-full">
-                            <Play className="mr-2 h-4 w-4" /> Run Backtest
-                        </Button>
-                    )}
-                </SheetFooter>
-            </SheetContent>
-        </Sheet>
+                    {/* Right Panel: Terminal logs */}
+                    <div className="w-[450px] bg-[#0a0a0b] flex flex-col p-4 shrink-0 z-0">
+                        <div className="flex items-center gap-2 mb-3">
+                            <TerminalIcon className="h-4 w-4 text-slate-500" />
+                            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Runtime Telemetry</h3>
+                        </div>
+                        <LogPanel logs={logs} isLoading={isLoading} />
+                    </div>
+                </div>
+            </DialogContent>
+        </Dialog>
     );
 }
 
-function LogPanel({ logs, isLoading }: { logs: string[], isLoading: boolean }) {
+function LogPanel({ logs, isLoading }: { logs: LogEntry[], isLoading: boolean }) {
     const bottomRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
-        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+        if (bottomRef.current) {
+            bottomRef.current.scrollTop = bottomRef.current.scrollHeight;
+        }
     }, [logs]);
 
     return (
-        <div className="flex-1 bg-black text-green-400 font-mono text-xs p-4 rounded-md overflow-y-auto border border-zinc-800 max-h-[400px]">
-            {logs.length === 0 ? (
-                <span className="text-zinc-500">Waiting to start...</span>
-            ) : (
-                logs.map((log, i) => <div key={i}>{log}</div>)
-            )}
-            {isLoading && <Loader2 className="h-4 w-4 animate-spin mt-2" />}
-            <div ref={bottomRef} />
+        <div
+            ref={bottomRef}
+            className="flex-1 bg-[#050505] border border-slate-800/80 rounded-xl p-4 overflow-y-auto font-mono text-xs shadow-inner custom-scrollbar relative"
+        >
+            <div className="space-y-1.5 pb-8">
+                {logs.length === 0 ? (
+                    <div className="text-slate-600 flex items-center justify-center h-full">System standby. Awaiting deployment.</div>
+                ) : (
+                    logs.map((log, i) => (
+                        <div key={i} className="flex gap-3 leading-relaxed hover:bg-white/5 px-1 -mx-1 rounded transition-colors break-words">
+                            <span className="text-slate-600 shrink-0 select-none">[{log.time || '--:--:--'}]</span>
+                            <span className={`
+                                ${log.type === 'error' ? 'text-red-400 font-semibold' : ''}
+                                ${log.type === 'success' ? 'text-green-400' : ''}
+                                ${log.type === 'warning' ? 'text-amber-400' : ''}
+                                ${log.type === 'info' ? 'text-slate-300' : 'text-slate-300'}
+                                flex-1
+                            `}>
+                                {log.message}
+                            </span>
+                        </div>
+                    ))
+                )}
+                {isLoading && (
+                    <div className="flex items-center gap-2 text-blue-500 mt-4 animate-pulse">
+                        <Loader2 className="h-3 w-3 animate-spin inline" />
+                        <span>Receiving telemetry stream...</span>
+                    </div>
+                )}
+            </div>
         </div>
     );
 }
