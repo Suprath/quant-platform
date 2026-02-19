@@ -1,10 +1,8 @@
-
 import { ServiceHealth } from "@/components/ServiceHealth";
-import { TradingDashboard } from "@/components/TradingDashboard";
+import { TopPerformersTable } from "@/components/dashboard/TopPerformersTable";
 import Link from 'next/link';
-import { LiveTradingControl } from '@/components/LiveTradingControl';
 import { Button } from "@/components/ui/button";
-import { Code, Terminal, Book, BrainCircuit } from 'lucide-react';
+import { Code, Terminal, Book, BrainCircuit, Settings } from 'lucide-react';
 
 export default function DashboardPage() {
   return (
@@ -30,30 +28,26 @@ export default function DashboardPage() {
               <Book className="mr-2 h-4 w-4" /> API Docs
             </Button>
           </Link>
+          <Link href="/settings">
+            <Button variant="ghost" size="icon" className="ml-2">
+              <Settings className="h-5 w-5" />
+            </Button>
+          </Link>
           <div className="text-sm text-muted-foreground ml-4">
-            v1.0.0
+            v1.1.0
           </div>
         </div>
       </header>
 
-      <main className="flex-1 space-y-6">
+      <main className="flex-1 space-y-6 mt-4">
         {/* Row 1: Health */}
         <section>
           <ServiceHealth />
         </section>
 
-        {/* Row 2: Trading Dashboard */}
+        {/* Row 2: Top Performers Dashboard */}
         <section>
-          <h2 className="text-xl font-semibold mb-4">Live Trading Monitor</h2>
-          <TradingDashboard />
-        </section>
-
-        {/* Row 3: Live Trading Control */}
-        <section>
-          <h2 className="text-xl font-semibold mb-4">Live Trading Control</h2>
-          <div className="grid gap-6">
-            <LiveTradingControl />
-          </div>
+          <TopPerformersTable />
         </section>
       </main>
     </div>

@@ -52,6 +52,59 @@ def get_qdb_conn():
 def health_check():
     return {"status": "online", "modules": ["Equity", "Greeks", "Instruments", "Execution"]}
 
+@app.get("/api/v1/config/env")
+def get_env_config():
+    """Fetch current environment variables from the mounted .env file"""
+    env_vars = {}
+    try:
+        with open(".env", "r") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    if "=" in line:
+                        key, val = line.split("=", 1)
+                        env_vars[key.strip()] = val.strip()
+        return {"env": env_vars}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class EnvUpdateRequest(BaseModel):
+    env: Dict[str, str]
+
+@app.post("/api/v1/config/env")
+def update_env_config(request: EnvUpdateRequest):
+    """Update variables in the mounted .env file. Preserves comments and spacing."""
+    try:
+        updated_keys = set(request.env.keys())
+        lines = []
+        
+        # Read existing file to preserve structure
+        if os.path.exists(".env"):
+            with open(".env", "r") as f:
+                for line in f:
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith("#") and "=" in stripped:
+                        key, _ = line.split("=", 1)
+                        key = key.strip()
+                        if key in updated_keys:
+                            lines.append(f"{key}={request.env[key]}\n")
+                            updated_keys.remove(key)
+                        else:
+                            lines.append(line)
+                    else:
+                        lines.append(line)
+        
+        # Append any *new* keys that didn't already exist at the bottom
+        for remaining_key in updated_keys:
+            lines.append(f"{remaining_key}={request.env[remaining_key]}\n")
+            
+        with open(".env", "w") as f:
+            f.writelines(lines)
+            
+        return {"status": "success", "message": "Environment variables updated successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/v1/market/quote/{symbol}")
 def get_quote(symbol: str):
     """Fetch latest price and volume from QuestDB"""
@@ -133,6 +186,99 @@ def get_ohlc(
             for r in rows
         ]
         return {"symbol": symbol, "timeframe": timeframe, "count": len(candles), "candles": candles}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+@app.get("/api/v1/market/top-performers")
+def get_top_performers(limit: int = Query(10, le=50, description="Number of top stocks to return")):
+    """Fetch yesterday's top performing stocks by % change from QuestDB"""
+    conn = None
+    try:
+        conn = get_qdb_conn()
+        cur = conn.cursor()
+        
+        # 1. First find the most recent trading date in the DB
+        cur.execute("SELECT max(timestamp) FROM ohlc WHERE timeframe = '1m';")
+        max_date_row = cur.fetchone()
+        
+        if not max_date_row or not max_date_row[0]:
+            return []
+            
+        latest_date = max_date_row[0].date()
+        latest_ts = f"{latest_date}T00:00:00.000000Z"
+        
+        # 2. Get OHLC for that date, join with postgres for stock names, compute % change
+        cur.execute(f"""
+            SELECT symbol, 
+                   first(open) as daily_open, 
+                   last(close) as daily_close, 
+                   sum(volume) as daily_volume 
+            FROM ohlc 
+            WHERE timeframe = '1m'
+              AND timestamp >= '{latest_ts}'
+            SAMPLE BY 1d ALIGN TO CALENDAR
+            ORDER BY ((last(close) - first(open)) / first(open)) DESC
+            LIMIT {limit};
+        """)
+        qdb_rows = cur.fetchall()
+        
+        if not qdb_rows:
+            return []
+            
+        # 3. Enhance with Postgres instrument metadata for human-readable names
+        top_stocks = []
+        try:
+            pg_conn = get_pg_conn()
+            pg_cur = pg_conn.cursor()
+            
+            for r in qdb_rows:
+                symbol_key = r[0]
+                open_p = float(r[1])
+                close_p = float(r[2])
+                volume = int(r[3])
+                
+                pct_change = ((close_p - open_p) / open_p) * 100 if open_p > 0 else 0
+                
+                # Try fetching symbol name
+                pg_cur.execute("SELECT name FROM instruments WHERE instrument_token = %s", (symbol_key,))
+                name_row = pg_cur.fetchone()
+                stock_name = name_row[0] if name_row else symbol_key.split("|")[-1]
+                
+                top_stocks.append({
+                    "symbol": symbol_key,
+                    "name": stock_name,
+                    "open": open_p,
+                    "close": close_p,
+                    "change_pct": round(pct_change, 2),
+                    "volume": volume,
+                    "date": str(latest_date)
+                })
+        except Exception as pg_err:
+             print(f"Postgres name fetch failed: {pg_err}")
+             # Return just symbols if Postgres fails
+             for r in qdb_rows:
+                 open_p = float(r[1])
+                 close_p = float(r[2])
+                 pct_change = ((close_p - open_p) / open_p) * 100 if open_p > 0 else 0
+                 top_stocks.append({
+                     "symbol": r[0],
+                     "name": r[0],
+                     "open": open_p,
+                     "close": close_p,
+                     "change_pct": round(pct_change, 2),
+                     "volume": int(r[3]),
+                     "date": str(latest_date)
+                 })
+        finally:
+            if 'pg_conn' in locals() and pg_conn:
+                pg_conn.close()
+
+        # Re-sort just in case
+        top_stocks.sort(key=lambda x: x['change_pct'], reverse=True)
+        return top_stocks
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
