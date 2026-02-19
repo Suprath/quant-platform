@@ -27,3 +27,5 @@ docker-compose.override.yml
 **/strategies/backtest_*.py
 **/strategies/__pycache__/
 
+# Context files
+context/

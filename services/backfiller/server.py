@@ -188,6 +188,31 @@ async def run_backfill(stocks, start_str, end_str, unit, interval):
                 to_s = current_to.strftime('%Y-%m-%d')
                 from_s = current_from.strftime('%Y-%m-%d')
 
+                # Check if we already have data for this chunk in QuestDB
+                check_from = f"{from_s}T00:00:00.000000Z"
+                # For `to_s`, we add one day to make the upper bound inclusive for the entire `to_s` date
+                check_to = f"{(current_to + timedelta(days=1)).strftime('%Y-%m-%d')}T00:00:00.000000Z"
+                
+                try:
+                    query = f"""
+                        SELECT count(*) FROM ohlc 
+                        WHERE symbol = '{symbol}' 
+                          AND timestamp >= '{check_from}' 
+                          AND timestamp < '{check_to}'
+                    """
+                    cur.execute(query)
+                    existing_count = cur.fetchone()[0]
+                except Exception as e:
+                    add_log(f"   ⚠️ DB count check failed: {e}")
+                    existing_count = 0
+
+                if existing_count > 0:
+                    add_log(f"   ⏭️ Skipping {from_s} → {to_s} (Found {existing_count} candles in DB)")
+                    chunk_idx += 1
+                    backfill_state["current_stock_progress"] = min(100, int(chunk_idx / total_chunks * 100))
+                    current_to = current_from - timedelta(days=1)
+                    continue
+
                 candles = await fetch_candle_chunk(session, symbol, unit, interval, to_s, from_s)
 
                 if candles is None:
