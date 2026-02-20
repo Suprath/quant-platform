@@ -9,7 +9,7 @@ import {
     DialogContent,
     DialogTrigger,
 } from "@/components/ui/dialog";
-import { Play, Loader2, TrendingUp, Terminal as TerminalIcon, BarChart3, Clock, DollarSign, Activity, Settings2, Target, Percent } from 'lucide-react';
+import { Play, Loader2, TrendingUp, Terminal as TerminalIcon, BarChart3, Clock, DollarSign, Activity, Settings2, Target, Percent, IndianRupee } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
@@ -57,7 +57,8 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
         maxDrawdown: "0.0%",
         winRate: "0.0%",
         totalTrades: 0,
-        profitFactor: 0.0
+        profitFactor: 0.0,
+        brokeragePaid: 0.0
     });
 
     const addLog = (message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info', time?: string) => {
@@ -93,7 +94,7 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
         setTrades([]);
         setStats({
             totalReturn: "0.0%", netProfit: 0.0, sharpeRatio: 0.0,
-            maxDrawdown: "0.0%", winRate: "0.0%", totalTrades: 0, profitFactor: 0.0
+            maxDrawdown: "0.0%", winRate: "0.0%", totalTrades: 0, profitFactor: 0.0, brokeragePaid: 0.0
         });
 
         addLog(`Initiating engine dispatch for strategy: ${strategyName}`, 'warning');
@@ -155,25 +156,37 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
 
                                 if (tradesData.length > 0) {
                                     let currentEquity = config.cash;
+                                    let estBrokerage = 0;
                                     const hist = [{ time: config.startDate, equity: currentEquity }];
+
                                     tradesData.forEach((t: Trade) => {
                                         currentEquity += (t.pnl || 0);
+
+                                        // Estimate Brokerage
+                                        const turnover = t.price * Math.abs(t.quantity || 1);
+                                        const flat = Math.min(20, turnover * 0.0003);
+                                        const stt = t.side === 'SELL' ? turnover * 0.00025 : 0;
+                                        const gst = flat * 0.18;
+                                        estBrokerage += flat + stt + gst;
+
                                         hist.push({
                                             time: new Date(t.time).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
                                             equity: currentEquity
                                         });
                                     });
+
                                     if (isFinished) {
                                         hist.push({ time: config.endDate, equity: currentEquity });
                                     }
                                     setEquityHistory(hist);
 
                                     const totalPnL = tradesData.reduce((acc: number, t: Trade) => acc + (t.pnl || 0), 0);
-                                    setStats(prev => ({
+                                    setStats((prev) => ({
                                         ...prev,
                                         totalTrades: tradesData.length,
                                         netProfit: totalPnL,
-                                        totalReturn: `${((totalPnL / config.cash) * 100).toFixed(2)}%`
+                                        totalReturn: `${((totalPnL / config.cash) * 100).toFixed(2)}%`,
+                                        brokeragePaid: estBrokerage
                                     }));
                                 }
                             }
@@ -364,19 +377,20 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                         </div>
 
                         {/* Top Insights Layer */}
-                        <div className="grid grid-cols-4 gap-4 shrink-0">
+                        <div className="grid grid-cols-5 gap-4 shrink-0">
                             {[
-                                { label: "Net Profit", val: `₹${stats.netProfit.toFixed(1)}`, icon: DollarSign, color: stats.netProfit >= 0 ? 'text-green-400' : 'text-red-400' },
+                                { label: "Net Profit", val: `₹${stats.netProfit.toFixed(1)}`, icon: IndianRupee, color: stats.netProfit >= 0 ? 'text-green-400' : 'text-red-400' },
                                 { label: "Win Rate", val: stats.winRate, icon: Target, color: 'text-blue-400' },
                                 { label: "Max Drawdown", val: stats.maxDrawdown, icon: Percent, color: 'text-red-400' },
                                 { label: "Sharpe Ratio", val: stats.sharpeRatio.toFixed(2), icon: Activity, color: 'text-purple-400' },
+                                { label: "Est. Brokerage", val: `₹${(stats.brokeragePaid || 0).toFixed(2)}`, icon: IndianRupee, color: 'text-yellow-500' },
                             ].map((s, i) => (
                                 <div key={i} className="bg-[#111113] border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
                                     <div className="flex items-center justify-between mb-2">
                                         <span className="text-xs font-semibold text-slate-500 uppercase">{s.label}</span>
                                         <s.icon className={`h-4 w-4 opacity-50 ${s.color}`} />
                                     </div>
-                                    <span className={`text-2xl font-bold tracking-tight font-mono ${s.color}`}>
+                                    <span className={`text-xl font-bold tracking-tight font-mono ${s.color}`}>
                                         {isComplete ? s.val : "---"}
                                     </span>
                                 </div>

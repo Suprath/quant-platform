@@ -440,14 +440,25 @@ class AlgorithmEngine:
         }
 
         # 1. Equity Curve Stats
-        if not self.EquityCurve:
-             # Try to recover from Backtest Orders if Equity Curve missing
-             logger.warning("⚠️ Equity Curve empty! Attempting to reconstruct from Trade History.")
-             # Simple reconstruction: Start 100k. Add PnL cumulatively.
-             stats['net_profit'] = 0.0
-             stats['total_return'] = 0.0
-             # (Logic skipped for brevity, but at least we don't crash)
-             pass
+        if len(self.EquityCurve) <= 1:
+             logger.warning("⚠️ Equity Curve insufficient! Attempting to reconstruct from Trade History.")
+             try:
+                 conn = self.Exchange._get_conn()
+                 cur = conn.cursor()
+                 table = "backtest_orders" if self.BacktestMode else "orders"
+                 cur.execute(f"SELECT pnl FROM {table} WHERE run_id=%s AND pnl IS NOT NULL", (self.RunID,))
+                 rows = cur.fetchall()
+                 pnls = [float(r[0]) for r in rows]
+                 total_pnl = sum(pnls) if pnls else 0.0
+                 initial_cash = self.Algorithm.Portfolio.get('Cash', 100000.0) - total_pnl
+                 if initial_cash <= 0: initial_cash = 100000.0
+                 
+                 stats['net_profit'] = float(total_pnl)
+                 stats['total_return'] = float((total_pnl / initial_cash) * 100) if initial_cash else 0.0
+             except Exception as e:
+                 logger.error(f"Failed reconstruction: {e}")
+                 stats['net_profit'] = 0.0
+                 stats['total_return'] = 0.0
         else:
              df = pd.DataFrame(self.EquityCurve)
              df['equity'] = pd.to_numeric(df['equity'])

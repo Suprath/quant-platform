@@ -40,6 +40,16 @@ interface LogEntry {
     type: 'info' | 'success' | 'warning' | 'error';
 }
 
+interface Trade {
+    time: string;
+    symbol: string;
+    stock_name: string;
+    side: 'BUY' | 'SELL';
+    quantity: number;
+    price: number;
+    pnl: number;
+}
+
 export default function ProfessionalLiveDashboard() {
     const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
@@ -52,6 +62,8 @@ export default function ProfessionalLiveDashboard() {
     const [actionLoading, setActionLoading] = useState(false);
     const [equityHistory, setEquityHistory] = useState<{ time: string, equity: number }[]>([]);
     const [logs, setLogs] = useState<LogEntry[]>([]);
+    const [trades, setTrades] = useState<Trade[]>([]);
+    const [brokeragePaid, setBrokeragePaid] = useState<number>(0);
 
     const terminalRef = useRef<HTMLDivElement>(null);
 
@@ -114,6 +126,23 @@ export default function ProfessionalLiveDashboard() {
                     addLog(actions[Math.floor(Math.random() * actions.length)], 'info');
                 }
             }
+
+            // Always fetch trades to keep order book fresh
+            const resTrades = await fetch(`${API_URL}/api/v1/live/trades`);
+            if (resTrades.ok) {
+                const dataTrades = await resTrades.json();
+                setTrades(dataTrades);
+                // Simple realtime UI brokerage estimation
+                const brk = dataTrades.reduce((acc: number, t: Trade) => {
+                    const turnover = t.price * Math.abs(t.quantity);
+                    const flat = Math.min(20, turnover * 0.0003);
+                    const stt = t.side === 'SELL' ? turnover * 0.00025 : 0;
+                    const gst = flat * 0.18;
+                    return acc + flat + stt + gst;
+                }, 0);
+                setBrokeragePaid(brk);
+            }
+
         } catch {
             // silent fail on poll
         }
@@ -442,6 +471,64 @@ export default function ProfessionalLiveDashboard() {
                                                 </TableRow>
                                             );
                                         })
+                                    )}
+                                </TableBody>
+                            </Table>
+                        </CardContent>
+                    </Card>
+
+                    {/* Execution History */}
+                    <Card className="bg-[#111113] border-slate-800 shadow-none">
+                        <CardHeader className="border-b border-slate-800/50 pb-4 flex flex-row items-center justify-between">
+                            <CardTitle className="text-sm font-semibold text-slate-300 flex items-center gap-2">
+                                <Activity className="h-4 w-4" /> Execution History
+                            </CardTitle>
+                            <span className="text-xs text-slate-500 font-mono">Paid {brokeragePaid > 0 ? `₹${brokeragePaid.toFixed(2)}` : '₹0.00'} in Brokerage</span>
+                        </CardHeader>
+                        <CardContent className="p-0 max-h-[400px] overflow-y-auto custom-scrollbar">
+                            <Table>
+                                <TableHeader className="bg-slate-900 border-none sticky top-0 z-10 shadow-sm">
+                                    <TableRow className="border-none hover:bg-transparent">
+                                        <TableHead className="text-slate-500 font-semibold h-10 pl-6">Time</TableHead>
+                                        <TableHead className="text-slate-500 font-semibold h-10">Stock</TableHead>
+                                        <TableHead className="text-slate-500 font-semibold h-10">Side</TableHead>
+                                        <TableHead className="text-slate-500 font-semibold h-10">Qty</TableHead>
+                                        <TableHead className="text-slate-500 font-semibold h-10 text-right">Price</TableHead>
+                                        <TableHead className="text-slate-500 font-semibold h-10 text-right pr-6">P&L</TableHead>
+                                    </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                    {trades.length === 0 ? (
+                                        <TableRow className="border-slate-800 hover:bg-transparent">
+                                            <TableCell colSpan={6} className="text-center text-slate-600 h-24">
+                                                No executions recorded yet
+                                            </TableCell>
+                                        </TableRow>
+                                    ) : (
+                                        trades.slice().reverse().map((t, i) => (
+                                            <TableRow key={i} className="border-slate-800 hover:bg-slate-800/50 transition-colors">
+                                                <TableCell className="pl-6 py-3 font-mono text-[11px] text-slate-400">
+                                                    {new Date(t.time).toLocaleString('en-US', { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                                </TableCell>
+                                                <TableCell className="py-3 font-medium text-slate-300">
+                                                    {getSymbolName(t.symbol)}
+                                                </TableCell>
+                                                <TableCell className="py-3">
+                                                    <Badge variant={t.side === 'BUY' ? 'default' : 'destructive'} className={t.side === 'BUY' ? 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30' : 'bg-red-500/20 text-red-400 hover:bg-red-500/30'}>
+                                                        {t.side}
+                                                    </Badge>
+                                                </TableCell>
+                                                <TableCell className="py-3 font-mono text-slate-300">
+                                                    {Math.abs(t.quantity)}
+                                                </TableCell>
+                                                <TableCell className="py-3 text-right font-mono text-slate-300">
+                                                    ₹{t.price.toFixed(2)}
+                                                </TableCell>
+                                                <TableCell className={`py-3 text-right pr-6 font-mono font-medium ${t.pnl > 0 ? 'text-green-500' : t.pnl < 0 ? 'text-red-500' : 'text-slate-500'}`}>
+                                                    {t.pnl > 0 ? '+' : ''}{t.pnl !== 0 ? `₹${t.pnl.toFixed(2)}` : '—'}
+                                                </TableCell>
+                                            </TableRow>
+                                        ))
                                     )}
                                 </TableBody>
                             </Table>

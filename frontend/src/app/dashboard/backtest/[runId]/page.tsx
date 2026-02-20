@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Loader2, TrendingUp, Activity, DollarSign } from 'lucide-react';
+import { ArrowLeft, Loader2, TrendingUp, Activity, IndianRupee } from 'lucide-react';
 import Link from 'next/link';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { ScannerResults } from "@/components/ScannerResults";
@@ -28,6 +28,7 @@ interface Stats {
     winRate: number; // percentage
     totalTrades: number;
     sharpeRatio: number;
+    brokeragePaid: number;
 }
 
 interface EquityCurvePoint {
@@ -51,16 +52,21 @@ export default function BacktestResultPage() {
             try {
                 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
-                // Fetch Trades
-                const tradesRes = await fetch(`${API_URL}/api/v1/backtest/trades/${runId}`);
+                // Fetch Trades & Stats
+                const [tradesRes, statsRes] = await Promise.all([
+                    fetch(`${API_URL}/api/v1/backtest/trades/${runId}`),
+                    fetch(`${API_URL}/api/v1/backtest/stats/${runId}`)
+                ]);
+
                 if (!tradesRes.ok) throw new Error("Failed to fetch trades");
                 const tradesData = await tradesRes.json();
 
-                // Fetch Logs (Optional, for debugging or advanced view)
-                // const logsRes = await fetch(`${API_URL}/api/v1/backtest/logs/${runId}`);
-                // const logsData = logsRes.ok ? await logsRes.json() : { logs: [] };
+                let statsData = null;
+                if (statsRes.ok) {
+                    statsData = await statsRes.json();
+                }
 
-                processBacktestData(tradesData);
+                processBacktestData(tradesData, statsData);
             } catch (err) {
                 console.error(err);
             } finally {
@@ -71,35 +77,26 @@ export default function BacktestResultPage() {
         fetchData();
     }, [runId]);
 
-    const processBacktestData = (tradesData: Trade[]) => {
+    const processBacktestData = (tradesData: Trade[], statsData: Record<string, number> | null) => {
         setTrades(tradesData);
-        // setLogs(logsData);
 
-        // 1. Calculate Stats
-        const initialCash = 100000; // TODO: Fetch from config if possible, or parse from logs
+        const initialCash = 100000; // Default if not provided
         let currentEquity = initialCash;
-        let runningMaxEquity = initialCash;
-        let maxDrawdown = 0;
-        let wins = 0;
+        let estBrokerage = 0;
 
         // Equity Curve Generation
-        // Start point
         const curve = [{ time: 'Start', equity: initialCash }];
 
         tradesData.forEach(t => {
+            // Estimate Brokerage
+            const turnover = t.price * Math.abs(t.quantity);
+            const flat = Math.min(20, turnover * 0.0003);
+            const stt = t.side === 'SELL' ? turnover * 0.00025 : 0;
+            const gst = flat * 0.18;
+            estBrokerage += flat + stt + gst;
+
             if (t.pnl !== 0) {
                 currentEquity += t.pnl;
-
-                // Drawdown Check
-                if (currentEquity > runningMaxEquity) {
-                    runningMaxEquity = currentEquity;
-                } else {
-                    const dd = (runningMaxEquity - currentEquity) / runningMaxEquity;
-                    if (dd > maxDrawdown) maxDrawdown = dd;
-                }
-
-                if (t.pnl > 0) wins++;
-
                 curve.push({
                     time: new Date(t.time).toLocaleTimeString(),
                     equity: currentEquity
@@ -107,20 +104,35 @@ export default function BacktestResultPage() {
             }
         });
 
-        const netProfit = currentEquity - initialCash;
-        const totalReturn = (netProfit / initialCash) * 100;
-        const winRate = tradesData.filter(t => t.pnl !== 0).length > 0
-            ? (wins / tradesData.filter(t => t.pnl !== 0).length) * 100
-            : 0;
+        if (statsData && statsData.sharpe_ratio !== undefined) {
+            setStats({
+                netProfit: statsData.net_profit,
+                totalReturn: statsData.total_return,
+                maxDrawdown: statsData.max_drawdown,
+                winRate: statsData.win_rate,
+                totalTrades: statsData.total_trades,
+                sharpeRatio: statsData.sharpe_ratio,
+                brokeragePaid: estBrokerage
+            });
+        } else {
+            // Fallback purely on frontend calculation if stats missing
+            const netProfit = currentEquity - initialCash;
+            const totalReturn = (netProfit / initialCash) * 100;
+            const wins = tradesData.filter(t => t.pnl > 0).length;
+            const winRate = tradesData.filter(t => t.pnl !== 0).length > 0
+                ? (wins / tradesData.filter(t => t.pnl !== 0).length) * 100
+                : 0;
 
-        setStats({
-            netProfit,
-            totalReturn,
-            maxDrawdown: maxDrawdown * 100,
-            winRate,
-            totalTrades: tradesData.length,
-            sharpeRatio: 0 // Need more data points for accurate Sharpe, simplified for now
-        });
+            setStats({
+                netProfit,
+                totalReturn,
+                maxDrawdown: 0,
+                winRate,
+                totalTrades: tradesData.length,
+                sharpeRatio: 0,
+                brokeragePaid: estBrokerage
+            });
+        }
 
         setEquityCurve(curve);
     };
@@ -160,11 +172,11 @@ export default function BacktestResultPage() {
                     <Card>
                         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                             <CardTitle className="text-sm font-medium">Net Profit</CardTitle>
-                            <DollarSign className="h-4 w-4 text-muted-foreground" />
+                            <IndianRupee className="h-4 w-4 text-muted-foreground" />
                         </CardHeader>
                         <CardContent>
                             <div className={`text-2xl font-bold ${stats.netProfit >= 0 ? "text-green-500" : "text-red-500"}`}>
-                                ₹{stats.netProfit.toFixed(2)}
+                                {stats.netProfit >= 0 ? "+" : "-"}₹{Math.abs(stats.netProfit).toFixed(2)}
                             </div>
                             <p className="text-xs text-muted-foreground">
                                 {stats.totalReturn > 0 ? "+" : ""}{stats.totalReturn.toFixed(2)}% Return
@@ -174,7 +186,7 @@ export default function BacktestResultPage() {
                     <Card>
                         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                             <CardTitle className="text-sm font-medium">Current Capital</CardTitle>
-                            <DollarSign className="h-4 w-4 text-muted-foreground" />
+                            <IndianRupee className="h-4 w-4 text-muted-foreground" />
                         </CardHeader>
                         <CardContent>
                             <div className="text-2xl font-bold">₹{(100000 + stats.netProfit).toFixed(2)}</div>
@@ -185,32 +197,33 @@ export default function BacktestResultPage() {
                     </Card>
                     <Card>
                         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                            <CardTitle className="text-sm font-medium">Win Rate</CardTitle>
-                            <TrendingUp className="h-4 w-4 text-muted-foreground" />
-                        </CardHeader>
-                        <CardContent>
-                            <div className="text-2xl font-bold">{stats.winRate.toFixed(1)}%</div>
-                            <p className="text-xs text-muted-foreground">
-                                {stats.totalTrades} Total Trades
-                            </p>
-                        </CardContent>
-                    </Card>
-                    <Card>
-                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                             <CardTitle className="text-sm font-medium">Max Drawdown</CardTitle>
                             <Activity className="h-4 w-4 text-muted-foreground" />
                         </CardHeader>
                         <CardContent>
-                            <div className="text-2xl font-bold text-red-500">{stats.maxDrawdown.toFixed(2)}%</div>
+                            <div className="text-2xl font-bold text-red-500">
+                                {stats.maxDrawdown > 0 ? `-${stats.maxDrawdown.toFixed(2)}%` : '0.00%'}
+                            </div>
                         </CardContent>
                     </Card>
                     <Card>
                         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                             <CardTitle className="text-sm font-medium">Sharpe Ratio</CardTitle>
-                            <Activity className="h-4 w-4 text-muted-foreground" />
+                            <TrendingUp className="h-4 w-4 text-muted-foreground" />
                         </CardHeader>
                         <CardContent>
                             <div className="text-2xl font-bold">{stats.sharpeRatio.toFixed(2)}</div>
+                        </CardContent>
+                    </Card>
+                    <Card>
+                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                            <CardTitle className="text-sm font-medium">Estimated Brokerage</CardTitle>
+                            <IndianRupee className="h-4 w-4 text-muted-foreground" />
+                        </CardHeader>
+                        <CardContent>
+                            <div className="text-2xl font-bold text-yellow-500">
+                                ₹{stats.brokeragePaid.toFixed(2)}
+                            </div>
                         </CardContent>
                     </Card>
                 </div>

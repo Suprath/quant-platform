@@ -388,6 +388,28 @@ def get_live_status():
     except requests.exceptions.RequestException as e:
         return {"status": "stopped", "message": f"Runtime Unavailable: {e}"}
 
+@app.get("/api/v1/live/trades")
+def get_live_trades(limit: int = 250):
+    """Fetch recent execution history for the live trading dashboard"""
+    conn = None
+    try:
+        conn = get_pg_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT timestamp, symbol, transaction_type, quantity, price, coalesce(pnl, 0), symbol as stock_name
+            FROM executed_orders 
+            ORDER BY timestamp ASC LIMIT %s;
+        """, (limit,))
+        rows = cur.fetchall()
+        return [
+            {"time": r[0], "symbol": r[1], "side": r[2], "quantity": r[3], "price": r[4], "pnl": r[5], "stock_name": r[6]} 
+            for r in rows
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn: conn.close()
+
 @app.post("/api/v1/strategies/save")
 def save_strategy(request: StrategySaveRequest):
     """Save Strategy Proxy"""

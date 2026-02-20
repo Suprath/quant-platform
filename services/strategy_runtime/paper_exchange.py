@@ -1,3 +1,4 @@
+import os
 import logging
 import psycopg2
 
@@ -42,8 +43,11 @@ class PaperExchange:
         side: 'BUY' or 'SELL'
         Returns total charges as a positive number.
         """
-        # 1. Brokerage: min(₹20, 0.03% of turnover)
-        brokerage = min(self.BROKERAGE_FLAT, turnover * self.BROKERAGE_PCT)
+        brokerage_flat = float(os.getenv('BROKERAGE_FLAT', self.BROKERAGE_FLAT))
+        brokerage_pct = float(os.getenv('BROKERAGE_PCT', self.BROKERAGE_PCT))
+        
+        # 1. Brokerage: min(FLAT, % of turnover)
+        brokerage = min(brokerage_flat, turnover * brokerage_pct)
 
         # 2. STT: 0.025% on SELL side only
         stt = turnover * self.STT_PCT if side == 'SELL' else 0.0
