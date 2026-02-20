@@ -7,3 +7,5 @@ fastapi
 uvicorn
 requests
 aiohttp
+torch
+torchvision

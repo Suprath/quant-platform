@@ -446,47 +446,58 @@ class AlgorithmEngine:
                  conn = self.Exchange._get_conn()
                  cur = conn.cursor()
                  table = "backtest_orders" if self.BacktestMode else "orders"
-                 cur.execute(f"SELECT pnl FROM {table} WHERE run_id=%s AND pnl IS NOT NULL", (self.RunID,))
+                 cur.execute(f"SELECT timestamp, pnl FROM {table} WHERE run_id=%s AND pnl IS NOT NULL ORDER BY timestamp ASC", (self.RunID,))
                  rows = cur.fetchall()
-                 pnls = [float(r[0]) for r in rows]
-                 total_pnl = sum(pnls) if pnls else 0.0
+                 
+                 total_pnl = sum(float(r[1]) for r in rows) if rows else 0.0
                  initial_cash = self.Algorithm.Portfolio.get('Cash', 100000.0) - total_pnl
                  if initial_cash <= 0: initial_cash = 100000.0
                  
-                 stats['net_profit'] = float(total_pnl)
-                 stats['total_return'] = float((total_pnl / initial_cash) * 100) if initial_cash else 0.0
+                 reconstructed_curve = []
+                 current_equity = initial_cash
+                 
+                 from datetime import timedelta, datetime
+                 if rows:
+                     reconstructed_curve.append({'timestamp': rows[0][0] - timedelta(minutes=1), 'equity': current_equity})
+                     for r in rows:
+                         current_equity += float(r[1])
+                         reconstructed_curve.append({'timestamp': r[0], 'equity': current_equity})
+                 else:
+                     reconstructed_curve.append({'timestamp': datetime.now(), 'equity': current_equity})
+                 
+                 df = pd.DataFrame(reconstructed_curve)
              except Exception as e:
                  logger.error(f"Failed reconstruction: {e}")
-                 stats['net_profit'] = 0.0
-                 stats['total_return'] = 0.0
+                 df = pd.DataFrame([{'timestamp': datetime.now(), 'equity': 100000.0}])
         else:
              df = pd.DataFrame(self.EquityCurve)
-             df['equity'] = pd.to_numeric(df['equity'])
-             df['returns'] = df['equity'].pct_change().dropna()
-     
-             initial_equity = df['equity'].iloc[0] if len(df) > 0 else 100000
-             final_equity = df['equity'].iloc[-1]
-             
-             stats['net_profit'] = float(final_equity - initial_equity)
-             stats['total_return'] = float(((final_equity - initial_equity) / initial_equity) * 100)
-     
-             # Sharpe Ratio (Daily, Risk Free Rate 6% = 0.06/252)
-             if len(df['returns']) > 1:
-                 risk_free_daily = 0.06 / 252
-                 excess_returns = df['returns'] - risk_free_daily
-                 std_dev = excess_returns.std()
-                 if std_dev > 0:
-                     sharpe = (excess_returns.mean() / std_dev) * (252 ** 0.5)
-                     stats['sharpe_ratio'] = float(round(sharpe, 2))
-                 else:
-                     logger.warning("⚠️ StdDev is 0 (Flat Returns?), Sharpe = 0")
-             else:
-                 logger.warning(f"⚠️ Not enough data for Sharpe ({len(df['returns'])} returns)")
-     
-             # Max Drawdown
-             rolling_max = df['equity'].cummax()
-             drawdown = (df['equity'] - rolling_max) / rolling_max
-             stats['max_drawdown'] = float(round(drawdown.min() * 100, 2))
+
+        df['equity'] = pd.to_numeric(df['equity'])
+        df['returns'] = df['equity'].pct_change().dropna()
+
+        initial_equity = df['equity'].iloc[0] if len(df) > 0 else 100000
+        final_equity = df['equity'].iloc[-1]
+        
+        stats['net_profit'] = float(final_equity - initial_equity)
+        stats['total_return'] = float(((final_equity - initial_equity) / initial_equity) * 100)
+
+        # Sharpe Ratio (Daily, Risk Free Rate 6% = 0.06/252)
+        if len(df['returns']) > 0:
+            risk_free_daily = 0.06 / 252
+            excess_returns = df['returns'] - risk_free_daily
+            std_dev = excess_returns.std()
+            if std_dev > 0:
+                sharpe = (excess_returns.mean() / std_dev) * (252 ** 0.5)
+                stats['sharpe_ratio'] = float(round(sharpe, 2))
+            else:
+                logger.warning("⚠️ StdDev is 0 (Flat Returns?), Sharpe = 0")
+        else:
+            logger.warning(f"⚠️ Not enough data for Sharpe ({len(df['returns'])} returns)")
+
+        # Max Drawdown
+        rolling_max = df['equity'].cummax()
+        drawdown = (df['equity'] - rolling_max) / rolling_max
+        stats['max_drawdown'] = float(round(drawdown.min() * 100, 2))
 
         # 2. Trade Stats from DB
         try:

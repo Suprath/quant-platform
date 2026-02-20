@@ -68,68 +68,94 @@ export function ESTIAgentTable() {
     });
 
     return (
-        <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle>Population Analysis</CardTitle>
-                <div className="text-sm text-muted-foreground">
-                    Total: {agents.length} | Dead: {agents.filter(a => !a.alive).length}
+        <Card className="bg-black/40 backdrop-blur-md border-white/10 shadow-2xl">
+            <CardHeader className="flex flex-row items-center justify-between pb-4 border-b border-white/10">
+                <CardTitle className="text-slate-200 font-semibold tracking-wide flex items-center gap-2">
+                    <Brain className="w-5 h-5 text-indigo-400" />
+                    Population Analysis
+                </CardTitle>
+                <div className="text-sm font-medium text-slate-400 bg-white/5 px-3 py-1.5 rounded-full border border-white/10">
+                    Active: <span className="text-emerald-400">{agents.filter(a => a.alive).length}</span>
+                    <span className="mx-2 text-slate-600">|</span>
+                    Extinct: <span className="text-red-400/80">{agents.filter(a => !a.alive).length}</span>
                 </div>
             </CardHeader>
-            <CardContent>
-                <div className="rounded-md border max-h-[500px] overflow-y-auto">
+            <CardContent className="p-0">
+                <div className="max-h-[500px] overflow-y-auto custom-scrollbar">
                     <Table>
-                        <TableHeader>
-                            <TableRow>
-                                <TableHead onClick={() => handleSort('agent_id')} className="cursor-pointer hover:bg-muted/50">
-                                    Agent ID <ArrowUpDown className="ml-2 h-4 w-4 inline" />
+                        <TableHeader className="bg-black/20 sticky top-0 z-10 backdrop-blur-sm">
+                            <TableRow className="border-white/10 hover:bg-transparent">
+                                <TableHead onClick={() => handleSort('agent_id')} className="cursor-pointer hover:text-white transition-colors text-slate-400">
+                                    Agent ID <ArrowUpDown className="ml-1 h-3 w-3 inline" />
                                 </TableHead>
-                                <TableHead className="w-[100px]">Status</TableHead>
-                                <TableHead onClick={() => handleSort('sharpe')} className="cursor-pointer hover:bg-muted/50 text-right">
-                                    Sharpe <ArrowUpDown className="ml-2 h-4 w-4 inline" />
+                                <TableHead className="w-[100px] text-slate-400">Status</TableHead>
+                                <TableHead onClick={() => handleSort('sharpe')} className="cursor-pointer hover:text-white transition-colors text-right text-slate-400">
+                                    Sharpe <ArrowUpDown className="ml-1 h-3 w-3 inline" />
                                 </TableHead>
-                                <TableHead onClick={() => handleSort('capital')} className="cursor-pointer hover:bg-muted/50 text-right">
-                                    Capital (₹) <ArrowUpDown className="ml-2 h-4 w-4 inline" />
+                                <TableHead onClick={() => handleSort('capital')} className="cursor-pointer hover:text-white transition-colors text-right text-slate-400">
+                                    Capital (₹) <ArrowUpDown className="ml-1 h-3 w-3 inline" />
                                 </TableHead>
-                                <TableHead className="w-[150px]">Health</TableHead>
-                                <TableHead onClick={() => handleSort('growth')} className="cursor-pointer hover:bg-muted/50 text-right">
-                                    Growth (20d) <ArrowUpDown className="ml-2 h-4 w-4 inline" />
+                                <TableHead className="w-[180px] text-slate-400">Network Health</TableHead>
+                                <TableHead onClick={() => handleSort('growth')} className="cursor-pointer hover:text-white transition-colors text-slate-400 w-[150px]">
+                                    Growth (20d) <ArrowUpDown className="ml-1 h-3 w-3 inline" />
                                 </TableHead>
-                                <TableHead className="text-right">Actions</TableHead>
+                                <TableHead className="text-right text-slate-400">Actions</TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
                             {sortedAgents.map((agent) => (
-                                <TableRow key={agent.agent_id} className={!agent.alive ? "opacity-50 bg-muted/20" : ""}>
-                                    <TableCell className="font-medium">
-                                        Agent-{agent.agent_id.toString().padStart(3, '0')}
+                                <TableRow
+                                    key={agent.agent_id}
+                                    className={`border-white/5 transition-colors ${!agent.alive ? "opacity-40 bg-red-950/10 hover:bg-red-950/20" : "hover:bg-white/5"
+                                        }`}
+                                >
+                                    <TableCell className="font-mono text-sm text-slate-300">
+                                        ID-{agent.agent_id.toString().padStart(3, '0')}
                                     </TableCell>
                                     <TableCell>
                                         {agent.alive ? (
-                                            <Badge variant="outline" className="bg-green-500/10 text-green-500 border-green-500/20">Alive</Badge>
+                                            <Badge variant="outline" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 animate-pulse-slow">
+                                                Active
+                                            </Badge>
                                         ) : (
-                                            <Badge variant="secondary">Dead</Badge>
+                                            <Badge variant="outline" className="bg-red-500/10 text-red-400/80 border-red-500/20">
+                                                Extinct
+                                            </Badge>
                                         )}
                                     </TableCell>
-                                    <TableCell className="text-right font-mono">
+                                    <TableCell className="text-right font-mono text-slate-200 font-medium">
                                         {agent.sharpe.toFixed(2)}
                                     </TableCell>
-                                    <TableCell className="text-right font-mono">
+                                    <TableCell className="text-right font-mono text-slate-300">
                                         ₹{agent.capital.toLocaleString()}
                                     </TableCell>
                                     <TableCell>
-                                        <div className="flex items-center gap-2">
-                                            <Progress value={agent.health * 100} className="h-2"
-                                                indicatorClassName={agent.health < 0.3 ? "bg-red-500" : agent.health < 0.7 ? "bg-yellow-500" : "bg-green-500"}
+                                        <div className="flex items-center gap-3">
+                                            <Progress
+                                                value={agent.health * 100}
+                                                className="h-1.5 bg-slate-800"
+                                                indicatorClassName={agent.health < 0.3 ? "bg-red-500" : agent.health < 0.7 ? "bg-yellow-500" : "bg-emerald-500"}
                                             />
-                                            <span className="text-xs text-muted-foreground">{(agent.health * 100).toFixed(0)}%</span>
+                                            <span className="text-xs text-slate-400 font-mono w-8">
+                                                {(agent.health * 100).toFixed(0)}%
+                                            </span>
                                         </div>
                                     </TableCell>
-                                    <TableCell className="text-right font-mono text-xs">
-                                        {(agent.growth * 100).toFixed(2)}%
+                                    <TableCell>
+                                        <div className="flex items-center gap-3">
+                                            <Progress
+                                                value={Math.min(Math.max(agent.growth * 100, 0), 100)}
+                                                className="h-1.5 bg-slate-800"
+                                                indicatorClassName={agent.growth < 0 ? "bg-red-500" : "bg-blue-500"}
+                                            />
+                                            <span className={`text-xs font-mono w-12 ${agent.growth < 0 ? "text-red-400" : "text-blue-400"}`}>
+                                                {(agent.growth * 100).toFixed(1)}%
+                                            </span>
+                                        </div>
                                     </TableCell>
                                     <TableCell className="text-right">
-                                        <Button variant="ghost" size="sm">
-                                            <Brain className="h-3 w-3" />
+                                        <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-slate-400 hover:text-white hover:bg-white/10">
+                                            <Brain className="h-4 w-4" />
                                         </Button>
                                     </TableCell>
                                 </TableRow>

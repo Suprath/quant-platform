@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 const API_URL = "http://localhost:8002";
 
@@ -48,46 +48,83 @@ export function ESTICharts() {
 
     return (
         <Tabs defaultValue="performance" className="w-full">
-            <div className="flex items-center justify-between mb-4">
-                <TabsList>
-                    <TabsTrigger value="performance">Walk-Forward Performance</TabsTrigger>
-                    <TabsTrigger value="population">Population Health</TabsTrigger>
+            <div className="flex items-center justify-between mb-6">
+                <TabsList className="bg-black/40 border border-white/10">
+                    <TabsTrigger value="performance" className="data-[state=active]:bg-white/10 data-[state=active]:text-white">Walk-Forward Performance</TabsTrigger>
+                    <TabsTrigger value="population" className="data-[state=active]:bg-white/10 data-[state=active]:text-white">Population Health</TabsTrigger>
                 </TabsList>
             </div>
 
             <TabsContent value="performance">
-                <Card>
+                <Card className="bg-black/40 backdrop-blur-md border-white/10 shadow-2xl">
                     <CardHeader>
-                        <CardTitle>Train vs Backtest Sharpe Ratio</CardTitle>
+                        <CardTitle className="text-slate-200 font-semibold tracking-wide flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                            Live Sharpe Ratio Tracking
+                        </CardTitle>
                     </CardHeader>
-                    <CardContent className="h-[400px]">
+                    <CardContent className="h-[450px]">
                         <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={performanceData}>
-                                <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-                                <XAxis dataKey="cycle" label={{ value: 'Cycle', position: 'insideBottomRight', offset: -5 }} />
-                                <YAxis />
-                                <Tooltip
-                                    contentStyle={{ backgroundColor: '#1f2937', border: 'none' }}
-                                    itemStyle={{ color: '#fff' }}
+                            <AreaChart data={performanceData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                                <defs>
+                                    <linearGradient id="colorTrain" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
+                                        <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                                    </linearGradient>
+                                    <linearGradient id="colorTest" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3} />
+                                        <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+                                    </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff15" vertical={false} />
+                                <XAxis
+                                    dataKey="cycle"
+                                    stroke="#cbd5e1"
+                                    tick={{ fill: '#94a3b8' }}
+                                    tickLine={false}
+                                    axisLine={false}
+                                    dy={10}
                                 />
-                                <Legend />
-                                <Line
+                                <YAxis
+                                    stroke="#cbd5e1"
+                                    tick={{ fill: '#94a3b8' }}
+                                    tickLine={false}
+                                    axisLine={false}
+                                    dx={-10}
+                                />
+                                <Tooltip
+                                    contentStyle={{
+                                        backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                                        border: '1px solid rgba(255,255,255,0.1)',
+                                        borderRadius: '8px',
+                                        backdropFilter: 'blur(8px)',
+                                        boxShadow: '0 4px 20px rgba(0,0,0,0.5)'
+                                    }}
+                                    itemStyle={{ color: '#f8fafc', fontWeight: 500 }}
+                                    labelStyle={{ color: '#94a3b8', marginBottom: '4px' }}
+                                />
+                                <Legend wrapperStyle={{ paddingTop: '20px' }} />
+                                <Area
                                     type="monotone"
                                     dataKey="trainSharpe"
                                     stroke="#10b981"
                                     strokeWidth={2}
+                                    fillOpacity={1}
+                                    fill="url(#colorTrain)"
                                     name="Train Sharpe (In-Sample)"
-                                    dot={false}
+                                    activeDot={{ r: 6, fill: "#10b981", stroke: "#fff" }}
                                 />
-                                <Line
+                                <Area
                                     type="monotone"
                                     dataKey="testSharpe"
-                                    stroke="#3b82f6"
+                                    stroke="#8b5cf6"
                                     strokeWidth={2}
+                                    fillOpacity={1}
+                                    fill="url(#colorTest)"
                                     name="Backtest Sharpe (Out-of-Sample)"
-                                    dot={true}
+                                    activeDot={{ r: 6, fill: "#8b5cf6", stroke: "#fff" }}
                                 />
-                            </LineChart>
+                            </AreaChart>
                         </ResponsiveContainer>
                     </CardContent>
                 </Card>

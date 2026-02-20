@@ -55,66 +55,72 @@ export function ESTIControls() {
     };
 
     return (
-        <Card>
-            <CardHeader>
-                <CardTitle>Training Controls</CardTitle>
+        <Card className="bg-black/40 backdrop-blur-md border-white/10 shadow-2xl">
+            <CardHeader className="pb-4 border-b border-white/10">
+                <CardTitle className="text-slate-200 font-semibold tracking-wide">
+                    Training Controls
+                </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-6 pt-6">
                 <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                        <Label>Start Date</Label>
+                        <Label className="text-slate-400 text-xs uppercase tracking-wider">Start Date</Label>
                         <Input
                             type="date"
                             value={config.startDate}
                             onChange={(e) => setConfig({ ...config, startDate: e.target.value })}
+                            className="bg-black/50 border-white/10 text-slate-200 focus-visible:ring-indigo-500 focus-visible:border-indigo-500"
                         />
                     </div>
                     <div className="space-y-2">
-                        <Label>End Date</Label>
+                        <Label className="text-slate-400 text-xs uppercase tracking-wider">End Date</Label>
                         <Input
                             type="date"
                             value={config.endDate}
                             onChange={(e) => setConfig({ ...config, endDate: e.target.value })}
+                            className="bg-black/50 border-white/10 text-slate-200 focus-visible:ring-indigo-500 focus-visible:border-indigo-500"
                         />
                     </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                        <Label>Train Window (Days)</Label>
+                        <Label className="text-slate-400 text-xs uppercase tracking-wider">Train (Days)</Label>
                         <Input
                             type="number"
                             value={config.trainWindow}
                             onChange={(e) => setConfig({ ...config, trainWindow: Number(e.target.value) })}
+                            className="bg-black/50 border-white/10 text-slate-200 focus-visible:ring-indigo-500 focus-visible:border-indigo-500"
                         />
                     </div>
                     <div className="space-y-2">
-                        <Label>Test Window (Days)</Label>
+                        <Label className="text-slate-400 text-xs uppercase tracking-wider">Test (Days)</Label>
                         <Input
                             type="number"
                             value={config.testWindow}
                             onChange={(e) => setConfig({ ...config, testWindow: Number(e.target.value) })}
+                            className="bg-black/50 border-white/10 text-slate-200 focus-visible:ring-indigo-500 focus-visible:border-indigo-500"
                         />
                     </div>
                 </div>
 
-                <div className="pt-2">
+                <div className="pt-4 border-t border-white/10">
                     {!isRunning ? (
                         <Button
-                            className="w-full bg-green-600 hover:bg-green-700"
+                            className="w-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 hover:text-emerald-300 transition-all font-semibold tracking-wide shadow-[0_0_15px_rgba(16,185,129,0.15)] hover:shadow-[0_0_20px_rgba(16,185,129,0.3)]"
                             onClick={handleStart}
                             disabled={loading}
                         >
-                            {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+                            {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4 fill-current" />}
                             Start Infinite Walk-Forward
                         </Button>
                     ) : (
                         <Button
-                            className="w-full bg-red-600 hover:bg-red-700"
+                            className="w-full bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 hover:text-red-300 transition-all font-semibold tracking-wide shadow-[0_0_15px_rgba(239,68,68,0.15)] hover:shadow-[0_0_20px_rgba(239,68,68,0.3)]"
                             onClick={handleStop}
                             disabled={loading}
                         >
-                            {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Square className="mr-2 h-4 w-4" />}
+                            {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Square className="mr-2 h-4 w-4 fill-current" />}
                             Stop Training
                         </Button>
                     )}

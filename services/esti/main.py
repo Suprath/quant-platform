@@ -18,7 +18,10 @@ from typing import Optional, List
 
 from training.trainer import Trainer
 from utils.persistence import list_checkpoints, get_latest_checkpoint
+from utils.exporter import export_best_agent_weights
+from utils.templates import STRATEGY_TEMPLATE
 from config import setup_logger, DEFAULT_SYMBOLS, SYMBOL_NAMES
+from datetime import datetime, timedelta
 
 logger = setup_logger("esti.main")
 
@@ -157,6 +160,73 @@ def best_agent():
         raise HTTPException(status_code=404, detail="No agents available")
     return best
 
+# ──────────────────────────────────────────────────
+#  Autonomous Strategy Generation
+# ──────────────────────────────────────────────────
+
+class GenerateStrategyRequest(BaseModel):
+    backtest_start_date: str = "2024-02-01"
+    symbols: Optional[List[str]] = None
+    population_size: int = 15
+    epochs: int = 15
+
+@app.post("/api/v1/esti/generate-strategy")
+def generate_strategy(request: GenerateStrategyRequest):
+    """
+    1. Triggers GodAgent training for a T-15 day window BEFORE the requested backtest start.
+    2. Extracts winning weights into Base64.
+    3. Wraps weights into a runnable Python Agent Strategy Template.
+    """
+    if trainer.is_running():
+        raise HTTPException(status_code=409, detail="Trainer is already running a job.")
+    
+    symbols_to_train = request.symbols or ["NSE_EQ|INE002A01018"] # Reliance Default
+    
+    # Calculate exactly 15 days *before* the intended backtest date
+    t_zero = datetime.strptime(request.backtest_start_date, "%Y-%m-%d")
+    t_minus_15 = (t_zero - timedelta(days=15)).strftime("%Y-%m-%d")
+    t_minus_1 = (t_zero - timedelta(days=1)).strftime("%Y-%m-%d")
+    
+    logger.info(f"🤖 Autonomous Pipeline Initiated | Target: {request.backtest_start_date}")
+    logger.info(f"⏳ Learning Phase: {t_minus_15} to {t_minus_1}")
+
+    # Synchronous extraction (WARNING: Blocks FastAPI thread for 15 epochs)
+    # Using the local instantiated god agent directly for immediate loop execution
+    from agents.god_agent import GodAgent
+    temp_agent = GodAgent(
+        population_size=request.population_size, 
+        initial_capital=100000.0, 
+        symbols=symbols_to_train
+    )
+    
+    try:
+        temp_agent.train(
+            epochs=request.epochs, 
+            steps_per_epoch=252, # Placeholder
+            start_date=t_minus_15, 
+            end_date=t_minus_1, 
+            timeframe="1d"
+        )
+        
+        # Training complete, serialize best weights
+        b64_weights = export_best_agent_weights(temp_agent)
+        
+        symbols_formatted = str(symbols_to_train)
+        python_code = STRATEGY_TEMPLATE.format(
+            b64_weights=b64_weights,
+            symbols_list=symbols_formatted
+        )
+        
+        return {
+            "status": "success",
+            "message": "Strategy trained and serialized",
+            "learning_window": f"{t_minus_15} to {t_minus_1}",
+            "strategy_code": python_code
+        }
+        
+    except Exception as e:
+        logger.error(f"GenerateStrategy failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ──────────────────────────────────────────────────
 #  Knowledge Archive
