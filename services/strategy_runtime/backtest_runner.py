@@ -92,7 +92,7 @@ def find_missing_dates(symbols, start_date, end_date):
     for sym in symbols:
         # Query QuestDB for distinct dates with data using SAMPLE BY for speed
         query = f"""
-        SELECT timestamp FROM ohlc 
+        SELECT first(timestamp) FROM ohlc 
         WHERE symbol = '{sym}' 
           AND timestamp >= '{start_date}T00:00:00.000000Z' 
           AND timestamp <= '{end_date}T23:59:59.999999Z'

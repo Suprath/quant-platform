@@ -144,6 +144,43 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                         // Check for completion
                         const isFinished = parsedLogs.some((l) => l.message.includes("Backtest Runner Finished") || l.message.includes("Backtest Stopped"));
 
+                        // -----------------------------------------------------------------
+                        // LIVE TRADES & EQUITY UPDATE (Fetch during every poll)
+                        // -----------------------------------------------------------------
+                        try {
+                            const tradesRes = await fetch(`${API_URL}/api/v1/backtest/trades/${runId}`);
+                            if (tradesRes.ok) {
+                                const tradesData = await tradesRes.json();
+                                setTrades(tradesData);
+
+                                if (tradesData.length > 0) {
+                                    let currentEquity = config.cash;
+                                    const hist = [{ time: config.startDate, equity: currentEquity }];
+                                    tradesData.forEach((t: Trade) => {
+                                        currentEquity += (t.pnl || 0);
+                                        hist.push({
+                                            time: new Date(t.time).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+                                            equity: currentEquity
+                                        });
+                                    });
+                                    if (isFinished) {
+                                        hist.push({ time: config.endDate, equity: currentEquity });
+                                    }
+                                    setEquityHistory(hist);
+
+                                    const totalPnL = tradesData.reduce((acc: number, t: Trade) => acc + (t.pnl || 0), 0);
+                                    setStats(prev => ({
+                                        ...prev,
+                                        totalTrades: tradesData.length,
+                                        netProfit: totalPnL,
+                                        totalReturn: `${((totalPnL / config.cash) * 100).toFixed(2)}%`
+                                    }));
+                                }
+                            }
+                        } catch (err) {
+                            console.error("Live trades fetch error", err);
+                        }
+
                         if (isFinished) {
                             if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
                             setIsLoading(false);
@@ -153,33 +190,7 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                             addLog("Execution terminated. Fetching telemetry and insights...", 'success');
 
                             try {
-                                const [tradesRes, statsRes] = await Promise.all([
-                                    fetch(`${API_URL}/api/v1/backtest/trades/${runId}`),
-                                    fetch(`${API_URL}/api/v1/backtest/stats/${runId}`)
-                                ]);
-
-                                let finalTrades: Trade[] = [];
-                                if (tradesRes.ok) {
-                                    const tradesData = await tradesRes.json();
-                                    finalTrades = tradesData;
-                                    setTrades(tradesData);
-
-                                    // Construct Equity Curve
-                                    let currentEquity = config.cash;
-                                    const hist = [{ time: config.startDate, equity: currentEquity }];
-                                    tradesData.forEach((t: Trade) => {
-                                        currentEquity += (t.pnl || 0);
-                                        // Take a point every trade
-                                        hist.push({
-                                            time: new Date(t.time).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
-                                            equity: currentEquity
-                                        });
-                                    });
-                                    // Add final point
-                                    hist.push({ time: config.endDate, equity: currentEquity });
-                                    setEquityHistory(hist);
-                                }
-
+                                const statsRes = await fetch(`${API_URL}/api/v1/backtest/stats/${runId}`);
                                 if (statsRes.ok) {
                                     const statsData = await statsRes.json();
                                     if (statsData && statsData.sharpe_ratio !== undefined) {
@@ -194,15 +205,6 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                                             profitFactor: statsData.profit_factor
                                         }));
                                     }
-                                } else if (finalTrades.length > 0) {
-                                    // Fallback calc
-                                    const totalPnL = finalTrades.reduce((acc, t) => acc + (t.pnl || 0), 0);
-                                    setStats(prev => ({
-                                        ...prev,
-                                        totalTrades: finalTrades.length,
-                                        netProfit: totalPnL,
-                                        totalReturn: `${((totalPnL / config.cash) * 100).toFixed(2)}%`
-                                    }));
                                 }
                             } catch (err) {
                                 console.error("Failed to fetch results", err);
