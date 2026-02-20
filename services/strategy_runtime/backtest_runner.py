@@ -440,7 +440,25 @@ def run(symbol, start, end, initial_cash, speed="fast"):
     except Exception as e:
         logger.warning(f"⚠️ Auto-backfill encountered an error (continuing): {e}")
     
-    # ===== STEP 2: Initialize Engine =====
+    # ===== STEP 2: Initialize DB & Engine =====
+    try:
+        pg_conn = get_db_connection()
+        pg_cur = pg_conn.cursor()
+        
+        # 1. Ensure Portfolio exists with correct initial cash
+        pg_cur.execute(f"DELETE FROM backtest_portfolios WHERE run_id = %s", (RUN_ID,))
+        pg_cur.execute(f"INSERT INTO backtest_portfolios (user_id, run_id, balance, equity) VALUES (%s, %s, %s, %s)", ('default_user', RUN_ID, initial_cash, initial_cash))
+        
+        # 2. Clear stale positions for this run
+        pg_cur.execute("DELETE FROM backtest_positions WHERE portfolio_id IN (SELECT id FROM backtest_portfolios WHERE run_id = %s)", (RUN_ID,))
+        
+        pg_conn.commit()
+        pg_cur.close()
+        pg_conn.close()
+        logger.info(f"💰 Initialized Backtest Portfolio: ₹{initial_cash}")
+    except Exception as e:
+        logger.error(f"Failed to initialize backtest DB: {e}")
+
     engine = AlgorithmEngine(run_id=RUN_ID, backtest_mode=True, speed=speed)
     
     # Load Strategy
@@ -454,7 +472,8 @@ def run(symbol, start, end, initial_cash, speed="fast"):
     # Initialize
     engine.Initialize()
     
-    # Override Cash
+    # Override Cash & Set Stats Baseline
+    engine.SetInitialCapital(initial_cash)
     engine.Algorithm.Portfolio['Cash'] = initial_cash
     engine.Algorithm.Portfolio['TotalPortfolioValue'] = initial_cash
     

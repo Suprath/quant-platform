@@ -56,31 +56,48 @@ def analyze_backtest(run_id):
     total_pnl = sum([o[5] for o in orders if o[2] == 'SELL'])
     win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
     
-    # Extract realized P&L series for Sharpe calculation
-    pnl_series = [o[5] for o in orders if o[2] == 'SELL']
+    # Calculate daily P&L
+    from collections import defaultdict
+    daily_pnl_map = defaultdict(float)
+    for o in orders:
+        if o[2] == 'SELL' and o[5] is not None:
+            # Assuming o[0] is a datetime object or can be parsed
+            try:
+                day = o[0].date() if hasattr(o[0], 'date') else datetime.fromisoformat(str(o[0])).date()
+                daily_pnl_map[day] += float(o[5])
+            except:
+                pass
+    
+    # Calculate Equity Curve (Daily)
+    sorted_days = sorted(daily_pnl_map.keys())
+    current_equity = initial_cash
+    equity_curve = [initial_cash]
+    for d in sorted_days:
+        current_equity += daily_pnl_map[d]
+        equity_curve.append(current_equity)
+        
+    df_equity = np.array(equity_curve)
+    # returns = [ (E_day1/E_start)-1, (E_day2/E_day1)-1, ... ]
+    returns = np.diff(df_equity) / df_equity[:-1]
     
     sharpe_ratio = 0
-    if len(pnl_series) > 1:
-        returns = np.array(pnl_series)
-        sharpe_ratio = (returns.mean() / returns.std()) * np.sqrt(252) if returns.std() > 0 else 0
+    if len(returns) > 1:
+        # Standard Daily Annualization
+        std_dev = returns.std()
+        if std_dev > 0.00001:
+            # Sharpe = (Mean Return / Std Dev) * sqrt(252)
+            # Subtracting a daily risk-free rate (~0.0002 for 6% annual)
+            rf_daily = 0.06 / 252
+            sharpe_ratio = ((returns.mean() - rf_daily) / std_dev) * np.sqrt(252)
+            # Cap at 10 for display sanity on short backtests
+            sharpe_ratio = max(-10.0, min(10.0, sharpe_ratio))
     
-    # Calculate max drawdown
-    cumulative_pnl = []
-    running_total = 0
-    for o in orders:
-        if o[2] == 'SELL':
-            running_total += o[5]
-            cumulative_pnl.append(running_total)
-    
-    max_drawdown = 0
-    if cumulative_pnl:
-        peak = cumulative_pnl[0]
-        for val in cumulative_pnl:
-            if val > peak:
-                peak = val
-            drawdown = peak - val
-            if drawdown > max_drawdown:
-                max_drawdown = drawdown
+    # Calculate max drawdown %
+    max_drawdown_pct = 0
+    if len(df_equity) > 0:
+        peaks = np.maximum.accumulate(df_equity)
+        drawdowns = (df_equity - peaks) / peaks
+        max_drawdown_pct = abs(drawdowns.min() * 100)
     
     # Build report
     report = {
@@ -91,8 +108,10 @@ def analyze_backtest(run_id):
         "losing_trades": losing_trades,
         "win_rate": round(win_rate, 2),
         "total_pnl": round(total_pnl, 2),
-        "sharpe_ratio": round(sharpe_ratio, 3),
-        "max_drawdown": round(max_drawdown, 2),
+        "total_return": round((total_pnl / initial_cash) * 100, 2),
+        "sharpe_ratio": round(sharpe_ratio, 2),
+        "max_drawdown": round(total_pnl - (df_equity.min() - initial_cash), 2),
+        "max_drawdown_pct": round(max_drawdown_pct, 2),
         "generated_at": datetime.now().isoformat()
     }
     
@@ -108,7 +127,8 @@ def generate_markdown_report(report):
 - **Total Orders**: {report['total_orders']}
 - **Total Completed Trades**: {report['total_trades']}
 - **Win Rate**: {report['win_rate']}%
-- **Total P&L**: ₹{report['total_pnl']}
+- **Total Net P&L**: ₹{report['total_pnl']}
+- **Total Return**: {report['total_return']}%
 
 ## Performance Metrics
 | Metric | Value |
@@ -116,7 +136,8 @@ def generate_markdown_report(report):
 | Winning Trades | {report['winning_trades']} |
 | Losing Trades | {report['losing_trades']} |
 | **Sharpe Ratio** | {report['sharpe_ratio']} |
-| **Max Drawdown** | ₹{report['max_drawdown']} |
+| **Max Drawdown (₹)** | ₹{report['max_drawdown']} |
+| **Max Drawdown (%)** | {report['max_drawdown_pct']}% |
 
 ## Interpretation
 ### Win Rate: {report['win_rate']}%
@@ -125,8 +146,8 @@ def generate_markdown_report(report):
 ### Sharpe Ratio: {report['sharpe_ratio']}
 {'✅ **Excellent**: > 1.0 (Good risk-adjusted returns)' if report['sharpe_ratio'] > 1.0 else '⚠️ **Poor**: < 1.0 (High risk for the returns)'}
 
-### Max Drawdown: ₹{report['max_drawdown']}
-Peak-to-trough decline during the backtest period.
+### Max Drawdown: {report['max_drawdown_pct']}%
+Peak-to-trough decline as a percentage of your highest capital point.
 
 ---
 *Generated: {report['generated_at']}*

@@ -290,7 +290,12 @@ class AlgorithmEngine:
         self.SyncPortfolio()
         
         # Inject Initial Equity Point (t=0) for Statistics
-        self.EquityCurve.append({'timestamp': datetime.now(), 'equity': self.Algorithm.Portfolio.TotalPortfolioValue})
+        start_ts = datetime.now()
+        if self.BacktestMode and getattr(self, 'LocalData', None) and len(self.LocalData) > 0:
+            # Use timestamp of first tick minus 1 sec
+            start_ts = datetime.fromtimestamp(self.LocalData[0]['timestamp'] / 1000.0) - timedelta(seconds=1)
+            
+        self.EquityCurve.append({'timestamp': start_ts, 'equity': self.Algorithm.Portfolio.TotalPortfolioValue})
         
         # LOCAL DATA MODE
         if getattr(self, 'LocalData', None) is not None:
@@ -440,6 +445,9 @@ class AlgorithmEngine:
         }
 
         # 1. Equity Curve Stats
+        # Baseline capital for stats
+        initial_cap = getattr(self, 'InitialCapital', 100000.0)
+
         if len(self.EquityCurve) <= 1:
              logger.warning("⚠️ Equity Curve insufficient! Attempting to reconstruct from Trade History.")
              try:
@@ -449,55 +457,68 @@ class AlgorithmEngine:
                  cur.execute(f"SELECT timestamp, pnl FROM {table} WHERE run_id=%s AND pnl IS NOT NULL ORDER BY timestamp ASC", (self.RunID,))
                  rows = cur.fetchall()
                  
-                 total_pnl = sum(float(r[1]) for r in rows) if rows else 0.0
-                 initial_cash = self.Algorithm.Portfolio.get('Cash', 100000.0) - total_pnl
-                 if initial_cash <= 0: initial_cash = 100000.0
-                 
                  reconstructed_curve = []
-                 current_equity = initial_cash
+                 current_equity = initial_cap
                  
                  from datetime import timedelta, datetime
                  if rows:
-                     reconstructed_curve.append({'timestamp': rows[0][0] - timedelta(minutes=1), 'equity': current_equity})
+                     # Start point
+                     reconstructed_curve.append({'timestamp': rows[0][0] - timedelta(minutes=1), 'equity': initial_cap})
                      for r in rows:
                          current_equity += float(r[1])
                          reconstructed_curve.append({'timestamp': r[0], 'equity': current_equity})
                  else:
-                     reconstructed_curve.append({'timestamp': datetime.now(), 'equity': current_equity})
+                     reconstructed_curve.append({'timestamp': datetime.now(), 'equity': initial_cap})
                  
                  df = pd.DataFrame(reconstructed_curve)
              except Exception as e:
                  logger.error(f"Failed reconstruction: {e}")
-                 df = pd.DataFrame([{'timestamp': datetime.now(), 'equity': 100000.0}])
+                 df = pd.DataFrame([{'timestamp': datetime.now(), 'equity': initial_cap}])
         else:
              df = pd.DataFrame(self.EquityCurve)
 
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df.set_index('timestamp', inplace=True)
         df['equity'] = pd.to_numeric(df['equity'])
-        df['returns'] = df['equity'].pct_change().dropna()
-
-        initial_equity = df['equity'].iloc[0] if len(df) > 0 else 100000
-        final_equity = df['equity'].iloc[-1]
         
-        stats['net_profit'] = float(final_equity - initial_equity)
-        stats['total_return'] = float(((final_equity - initial_equity) / initial_equity) * 100)
+        # Resample to Daily
+        daily_df = df.resample('D').last().ffill()
+        
+        # TRICK: To include the very first day's return, we prepend the starting capital
+        # as if it were the "closing" value of the day before the backtest started.
+        start_date = daily_df.index.min()
+        day_before = start_date - pd.Timedelta(days=1)
+        
+        baseline_df = pd.DataFrame({'equity': [initial_cap]}, index=[day_before])
+        full_df = pd.concat([baseline_df, daily_df])
+        
+        full_df['returns'] = full_df['equity'].pct_change().dropna()
+        
+        final_equity = full_df['equity'].iloc[-1]
+        
+        stats['net_profit'] = float(final_equity - initial_cap)
+        stats['total_return'] = float(((final_equity - initial_cap) / initial_cap) * 100) if initial_cap > 0 else 0
 
-        # Sharpe Ratio (Daily, Risk Free Rate 6% = 0.06/252)
-        if len(df['returns']) > 0:
+        # Sharpe Ratio (Daily)
+        # We need more than just one or two days for a safe std dev
+        if len(full_df['returns']) > 2:
             risk_free_daily = 0.06 / 252
-            excess_returns = df['returns'] - risk_free_daily
+            excess_returns = full_df['returns'] - risk_free_daily
             std_dev = excess_returns.std()
-            if std_dev > 0:
+            if std_dev > 0.00001: # Avoid division by near-zero std dev
                 sharpe = (excess_returns.mean() / std_dev) * (252 ** 0.5)
-                stats['sharpe_ratio'] = float(round(sharpe, 2))
+                # Cap Sharpe at a reasonable range to avoid display anomalies on small samples
+                stats['sharpe_ratio'] = float(round(max(-10, min(10, sharpe)), 2))
             else:
-                logger.warning("⚠️ StdDev is 0 (Flat Returns?), Sharpe = 0")
+                stats['sharpe_ratio'] = 0.0
         else:
-            logger.warning(f"⚠️ Not enough data for Sharpe ({len(df['returns'])} returns)")
+            stats['sharpe_ratio'] = 0.0
 
         # Max Drawdown
-        rolling_max = df['equity'].cummax()
-        drawdown = (df['equity'] - rolling_max) / rolling_max
-        stats['max_drawdown'] = float(round(drawdown.min() * 100, 2))
+        if not full_df.empty:
+            rolling_max = full_df['equity'].cummax()
+            drawdown = (full_df['equity'] - rolling_max) / rolling_max
+            stats['max_drawdown'] = float(round(drawdown.min() * 100, 2)) if not drawdown.empty else 0.0
 
         # 2. Trade Stats from DB
         try:
