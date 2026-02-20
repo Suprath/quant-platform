@@ -17,42 +17,42 @@ flowchart TB
     end
 
     subgraph Streaming["Event Streaming Layer"]
-        Kafka(("Apache Kafka<br/>(Message Bus)"))
+        Kafka(("Apache Kafka<br/>Message Bus"))
     end
 
     subgraph DataLayer["Data & Persistence Layer"]
-        QDB[("QuestDB<br/>(Time-Series Data)")]
-        PG[("PostgreSQL<br/>(Metadata, Orders)")]
-        RS[("Redis<br/>(State & Caching)")]
-        S3[("Minio S3<br/>(Models & Assets)")]
+        QDB[("QuestDB<br/>Time-Series Data")]
+        PG[("PostgreSQL<br/>Metadata, Orders")]
+        RS[("Redis<br/>State & Caching")]
+        S3[("Minio S3<br/>Models & Assets")]
     end
 
     subgraph DataIngestion["Ingestion & Processing"]
-        Ingestor["Sensor (Ingestor)"]
-        Scanner["Scout (Scanner)"]
-        FeatureEngine["Brain (Feature Engine)"]
+        Ingestor["Sensor - Ingestor"]
+        Scanner["Scout - Scanner"]
+        FeatureEngine["Brain - Feature Engine"]
         Backfiller["Data Backfiller"]
         Persistor["Market Persistor"]
     end
 
     subgraph AI["Strategy & Execution"]
-        ESTI["ESTI Hedge Fund<br/>(PyTorch RL/Online Learning)"]
-        Runtime["Hands (Strategy Runtime)<br/>(Live & Backtest Engine)"]
+        ESTI["ESTI Hedge Fund<br/>PyTorch RL / Online Learning"]
+        Runtime["Hands - Strategy Runtime<br/>Live & Backtest Engine"]
     end
 
     subgraph Interface["User Interface"]
-        API["Window (API Gateway)<br/>(FastAPI)"]
-        Frontend["Quant Frontend<br/>(Next.js)"]
+        API["Window - API Gateway<br/>FastAPI"]
+        Frontend["Quant Frontend<br/>Next.js"]
     end
 
     %% Connections
-    Upstox <-->|WebSockets / REST| Ingestor
+    Upstox <-->|WebSockets and REST| Ingestor
     Upstox -->|REST| Scanner
     Runtime -->|Execute Orders| Upstox
 
     Ingestor -->|Raw Market Data| Kafka
     Scanner -->|Momentum Candidates| Kafka
-    FeatureEngine -->|Enriched Data (VWAP, OBI)| Kafka
+    FeatureEngine -->|Enriched Data VWAP and OBI| Kafka
     Kafka -.->|Stream| FeatureEngine
     Kafka -.->|Stream| Persistor
     Kafka -.->|Market Events| Runtime
@@ -63,20 +63,15 @@ flowchart TB
     ESTI -->|Trained Models| S3
     ESTI -->|Strategy Definitions| PG
     Runtime -->|Load Models| S3
-    Runtime -->|Portfolios & Trades| PG
+    Runtime -->|Portfolios and Trades| PG
     Runtime -->|Historical Data| QDB
     
-    API <-->|Manage Strategies / Triggers| Runtime
-    API -->|Read/Write| PG
+    API <-->|Manage Strategies and Triggers| Runtime
+    API -->|Read and Write| PG
     API -->|Read| QDB
     API -->|Cache| RS
     
     Frontend <-->|REST API| API
-
-    classDef db fill:#f9f9f9,stroke:#333,stroke-width:2px;
-    class QDB,PG,RS,S3 db;
-    classDef stream fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
-    class Kafka stream;
 ```
 
 | Layer | Component | Technology | Purpose |
