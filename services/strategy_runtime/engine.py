@@ -445,8 +445,9 @@ class AlgorithmEngine:
         }
 
         # 1. Equity Curve Stats
-        # Baseline capital for stats
-        initial_cap = getattr(self, 'InitialCapital', 100000.0)
+        # Baseline capital for stats: Try Algorithm first (SetCash), then SetInitialCapital, then default
+        initial_cap = self.Algorithm.Portfolio.get('Cash', getattr(self, 'InitialCapital', 100000.0))
+        if initial_cap <= 0: initial_cap = 100000.0
 
         if len(self.EquityCurve) <= 1:
              logger.warning("⚠️ Equity Curve insufficient! Attempting to reconstruct from Trade History.")

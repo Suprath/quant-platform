@@ -56,6 +56,12 @@ def analyze_backtest(run_id):
     total_pnl = sum([o[5] for o in orders if o[2] == 'SELL'])
     win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
     
+    # Fetch initial cash
+    cur.execute("SELECT balance, equity FROM backtest_portfolios WHERE run_id = %s", (run_id,))
+    row = cur.fetchone()
+    # Use equity as the initial point for stats if balance was modified
+    initial_cash = float(row[1]) if row and row[1] else 100000.0
+    
     # Calculate daily P&L
     from collections import defaultdict
     daily_pnl_map = defaultdict(float)
