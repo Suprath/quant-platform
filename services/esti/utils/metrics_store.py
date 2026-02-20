@@ -78,14 +78,16 @@ class MetricsStore:
             self._subscribers.append(queue)
 
         try:
-            # Send initial history burst (optional)
-            # await queue.put({"type": "history", "data": self.get_history(50)})
-
+            # We must yield a heartbeat to keep the HTTP connection alive
             while True:
-                event = await queue.get()
-                if isinstance(event, dict) and event.get("type") == "shutdown":
-                    break
-                yield f"data: {json.dumps(event)}\n\n"
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    if isinstance(event, dict) and event.get("type") == "shutdown":
+                        break
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    # Send a heartbeat comment to keep the SSE connection from dropping
+                    yield ": heartbeat\n\n"
         except asyncio.CancelledError:
             pass
         finally:
@@ -95,14 +97,19 @@ class MetricsStore:
 
     def _notify_subscribers(self, event: Dict[str, Any]):
         """Push event to all active SSE queues."""
-        # Using a copy of the list to perform safe removal during iteration if needed
-        # (though removal happens in the streaming task separately)
-        subscribers = list(self._subscribers)
-        for q in subscribers:
+        with self._lock:
+            subscribers = list(self._subscribers)
+            
+        for queue in subscribers:
             try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                pass  # Drop events if client is too slow
+                # Use threadsafe put since log() is called from synchronous threads
+                queue.put_nowait(event)
+            except Exception as e:
+                logger.error(f"Failed to notify subscriber: {e}")
+
+    def add_event(self, category: str, data: Dict[str, Any]):
+        """Direct method to add a custom event (like errors)."""
+        self.log(category, data)
 
     def clear(self):
         """Reset all metrics."""

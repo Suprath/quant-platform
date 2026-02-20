@@ -70,6 +70,8 @@ export function ESTIEvents() {
                 return `📊 OOS Backtest complete: Sharpe ${d.sharpe?.toFixed(2) || "0.00"} | Return ${((d.total_return || 0) * 100).toFixed(2)}%`;
             case 'pressure':
                 return `🔥 Pressure level ${d.level} (${d.status}) | Mut: ${d.mutation_multiplier}x | Inj: ${d.injection_rate}`;
+            case 'error':
+                return `🚫 ERROR: ${d.message}`;
             default:
                 return JSON.stringify(d);
         }
@@ -81,6 +83,7 @@ export function ESTIEvents() {
             case 'backtest': return 'text-green-400';
             case 'pressure': return 'text-orange-400';
             case 'epoch': return 'text-zinc-400';
+            case 'error': return 'text-red-500';
             default: return 'text-zinc-500';
         }
     };

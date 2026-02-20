@@ -447,7 +447,9 @@ class GodAgent:
         from training.walk_forward import WalkForwardEngine
         from utils.metrics_store import MetricsStore
 
-        self.metrics_store = MetricsStore()
+        if not hasattr(self, 'metrics_store'):
+            self.metrics_store = MetricsStore()
+            
         self.wf_engine = WalkForwardEngine(
             god_agent=self,
             metrics_store=self.metrics_store,

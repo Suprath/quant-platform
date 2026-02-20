@@ -290,24 +290,24 @@ def start_walk_forward(request: WalkForwardRequest):
 @app.get("/metrics/history")
 def get_metrics_history(limit: int = 1000):
     """Get historical metrics for charting."""
-    if trainer.god_agent and hasattr(trainer.god_agent, 'metrics_store'):
+    if trainer.metrics_store:
         return {
-            "history": trainer.god_agent.metrics_store.get_history(limit),
-            "cycles": trainer.god_agent.metrics_store.get_cycles()
+            "history": trainer.metrics_store.get_history(limit),
+            "cycles": trainer.metrics_store.get_cycles()
         }
     return {"history": [], "cycles": []}
 
 @app.get("/metrics/stream")
 async def stream_metrics():
     """SSE endpoint for live metrics."""
-    if not trainer.god_agent or not hasattr(trainer.god_agent, 'metrics_store'):
+    if not trainer.metrics_store:
         # Return empty stream if not ready
         async def empty():
              yield ": ping\n\n"
         return StreamingResponse(empty(), media_type="text/event-stream")
 
     return StreamingResponse(
-        trainer.god_agent.metrics_store.stream(),
+        trainer.metrics_store.stream(),
         media_type="text/event-stream"
     )
 
@@ -315,12 +315,15 @@ async def stream_metrics():
 def shutdown_event():
     logger.info("🛑 Received shutdown signal. Cleaning up...")
     trainer.stop()
-    if trainer.god_agent and hasattr(trainer.god_agent, 'metrics_store'):
+    if trainer.metrics_store:
         # Push a sentinel/cancel to all subscribers to break the SSE generator
-        store = trainer.god_agent.metrics_store
+        store = trainer.metrics_store
         with store._lock:
             for q in store._subscribers:
-                q.put_nowait({"type": "shutdown"})
+                try:
+                    q.put_nowait({"type": "shutdown"})
+                except Exception:
+                    pass
 
 # ──────────────────────────────────────────────────
 #  Entry Point

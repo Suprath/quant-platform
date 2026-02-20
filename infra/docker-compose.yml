@@ -227,7 +227,6 @@ services:
       - esti_checkpoints:/app/checkpoints
     ports:
       - "8002:8002"
-    profiles: [ "esti" ]
     restart: always
 
 volumes:

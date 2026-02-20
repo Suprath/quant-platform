@@ -1,14 +1,8 @@
-"""
-Trainer — Training Loop Wrapper
-
-Provides a clean interface for starting/stopping training from the API.
-Runs the GodAgent training in a background thread.
-"""
-
 import threading
 import time
 from typing import Optional
 from agents.god_agent import GodAgent
+from utils.metrics_store import MetricsStore
 from config import setup_logger
 
 logger = setup_logger("esti.training.trainer")
@@ -21,6 +15,7 @@ class Trainer:
 
     def __init__(self):
         self.god_agent: Optional[GodAgent] = None
+        self.metrics_store: MetricsStore = MetricsStore() # Survive across training runs
         self._thread: Optional[threading.Thread] = None
         self._error: Optional[str] = None
 
@@ -33,6 +28,8 @@ class Trainer:
                 population_size=population_size,
                 initial_capital=initial_capital,
             )
+            # Link metrics store
+            self.god_agent.metrics_store = self.metrics_store
         return self.god_agent
 
     def start(

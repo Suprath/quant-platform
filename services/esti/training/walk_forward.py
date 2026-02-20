@@ -79,9 +79,14 @@ class WalkForwardEngine:
         total_available_duration = dt_end_limit - dt_start
         
         if min_required_duration > total_available_duration:
-            logger.error(
-                f"❌ Configuration Error: Train({self.train_window.days}d) + Test({self.test_window.days}d) "
-                f"requires {min_required_duration.days} days, but only {total_available_duration.days} days available."
+            error_msg = (f"Train({self.train_window.days}d) + Test({self.test_window.days}d) "
+                         f"requires {min_required_duration.days} days, but only {total_available_duration.days} days available.")
+            logger.error(f"❌ Configuration Error: {error_msg}")
+            
+            # Broadcast error to front-end via SSE
+            self.metrics.add_event(
+                category="error",
+                data={"message": error_msg}
             )
             self.is_running = False
             return
@@ -164,6 +169,7 @@ class WalkForwardEngine:
 
         except Exception as e:
             logger.error(f"❌ Walk-Forward Failed: {e}", exc_info=True)
+            self.metrics.add_event(category="error", data={"message": str(e)})
             self.is_running = False
             raise
 
