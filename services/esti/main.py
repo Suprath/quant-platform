@@ -182,13 +182,13 @@ def generate_strategy(request: GenerateStrategyRequest):
     
     symbols_to_train = request.symbols or ["NSE_EQ|INE002A01018"] # Reliance Default
     
-    # Calculate exactly 15 days *before* the intended backtest date
+    # Calculate exactly 10 days *before* the intended backtest date
     t_zero = datetime.strptime(request.backtest_start_date, "%Y-%m-%d")
-    t_minus_15 = (t_zero - timedelta(days=15)).strftime("%Y-%m-%d")
+    t_minus_10 = (t_zero - timedelta(days=10)).strftime("%Y-%m-%d")
     t_minus_1 = (t_zero - timedelta(days=1)).strftime("%Y-%m-%d")
     
     logger.info(f"🤖 Autonomous Pipeline Initiated | Target: {request.backtest_start_date}")
-    logger.info(f"⏳ Learning Phase: {t_minus_15} to {t_minus_1}")
+    logger.info(f"⏳ Learning Phase: {t_minus_10} to {t_minus_1}")
 
     # Synchronous extraction (WARNING: Blocks FastAPI thread for 15 epochs)
     # Using the local instantiated god agent directly for immediate loop execution
@@ -203,7 +203,7 @@ def generate_strategy(request: GenerateStrategyRequest):
         temp_agent.train(
             epochs=request.epochs, 
             steps_per_epoch=252, # Placeholder
-            start_date=t_minus_15, 
+            start_date=t_minus_10, 
             end_date=t_minus_1, 
             timeframe="1d"
         )
@@ -220,7 +220,7 @@ def generate_strategy(request: GenerateStrategyRequest):
         return {
             "status": "success",
             "message": "Strategy trained and serialized",
-            "learning_window": f"{t_minus_15} to {t_minus_1}",
+            "learning_window": f"{t_minus_10} to {t_minus_1}",
             "strategy_code": python_code
         }
         
@@ -286,6 +286,16 @@ def start_walk_forward(request: WalkForwardRequest):
         train_window_days=request.train_window_days,
         test_window_days=request.test_window_days
     )
+
+@app.post("/train/reset")
+def reset_training():
+    """Force stop and wipe all training state."""
+    logger.info("🧹 Resetting all ESTI training state...")
+    trainer.stop()
+    trainer.god_agent = None  # Force re-instantiation on next start
+    if trainer.metrics_store:
+        trainer.metrics_store.clear()
+    return {"status": "success", "message": "All training state wiped"}
 
 @app.get("/metrics/history")
 def get_metrics_history(limit: int = 1000):

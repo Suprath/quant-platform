@@ -34,8 +34,8 @@ class ESTIPolicy(nn.Module):
 
 class AutonomousESTI(BaseStrategy):
     \"\"\"
-    Autonomous ETSI-Generated Strategy.
-    Regime Adapted: 15-Day Lookback.
+    Autonomous ESTI Agent with Online Learning Adaptation.
+    Refined on 10-Day Pre-training + Real-time Gradient Descent.
     \"\"\"
 
     def Initialize(self):
@@ -50,34 +50,33 @@ class AutonomousESTI(BaseStrategy):
         for s in self.symbols:
             self.AddEquity(s)
 
-        # 1. Decode Weights
+        # 1. Decode & Load Model
         buffer = io.BytesIO(base64.b64decode(self.B64_WEIGHTS))
         checkpoint = torch.load(buffer, weights_only=False, map_location='cpu')
         
-        # 2. Re-instantiate Policy
         self.policy = ESTIPolicy(state_dim=50, hidden_dim=64)
         self.policy.load_state_dict(checkpoint['policy_state_dict'])
-        self.policy.eval() # Freeze weights
-
-        self.Log(f"🤖 Autonomous ESTI Agent Loaded | ID: {{checkpoint['agent_id']}} | Sharpe: {{checkpoint['sharpe']:.2f}}")
         
-        # Local Feature Cache (Requires 50 state_dim)
-        self.history_cache = {{}}
+        # 2. Setup Online Learning
+        self.policy.train() # Enable gradients
+        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=5e-5)
+        self.last_action_log_prob = None
+        self.last_price = {{}}
+        self.last_action = None
+        
+        self.Log(f"🧠 Online Learning Enabled | ID: {{checkpoint['agent_id']}} | Sharpe: {{checkpoint['sharpe']:.2f}}")
+        
         self.state_dim = 50
 
     def calculate_features(self, symbol):
-        # A lightweight version of ESTI FeatureEngineering for realtime inference
-        history = self.History(symbol, 200) # Fetch last 200 ticks
+        history = self.History(symbol, 100)
         if not history or len(history) < 50: return None
         
         df = pd.DataFrame([{{'close': t.Price, 'volume': t.Volume}} for t in history])
-        # Add basic momentum triggers
         df['returns'] = df['close'].pct_change()
         df['sma_20'] = df['close'].rolling(20).mean()
-        df['sma_50'] = df['close'].rolling(50).mean()
         
         df.fillna(0, inplace=True)
-        # Flatten last row into 50-dim float array (Mock approximation)
         vals = df.iloc[-1].values
         state = np.pad(vals, (0, max(0, 50 - len(vals))), 'constant')[:50]
         return torch.FloatTensor(state).unsqueeze(0)
@@ -85,22 +84,43 @@ class AutonomousESTI(BaseStrategy):
     def OnData(self, data):
         for symbol in self.symbols:
             if not data.ContainsKey(symbol): continue
+            current_price = data[symbol].Price
             
-            # Predict
+            # --- 1. Online Adaptation (Reinforce Step) ---
+            if self.last_action_log_prob is not None and symbol in self.last_price:
+                # Calculate Reward: simple price change delta
+                price_change = (current_price - self.last_price[symbol]) / self.last_price[symbol]
+                # Reward is positive if price went up and we bought, or down and we sold/held
+                # 0 = Buy/Long, 1 = Neutral/Exit
+                reward = price_change if self.last_action == 0 else -price_change
+                
+                # REINFORCE loss: -log_prob * reward
+                self.optimizer.zero_grad()
+                loss = -self.last_action_log_prob * reward
+                loss.backward()
+                self.optimizer.step()
+                
+                if self.Time.minute % 30 == 0: # Log every 30 mins
+                    self.Log(f"🧬 Online Learning Step | Syncing weights... | Reward: {{reward:.5f}}")
+
+            # --- 2. Inference ---
             state_tensor = self.calculate_features(symbol)
             if state_tensor is None: continue
             
-            with torch.no_grad():
-                action_probs = self.policy(state_tensor)
-                buy_prob = action_probs[0][0].item()
-                sell_prob = action_probs[0][1].item()
+            # We track gradients for the next update step
+            action_probs = self.policy(state_tensor)
             
-            # Action (Aggressive Thresholds for execution)
-            if buy_prob > 0.65:
-                # 30% sizing
-                self.SetHoldings(symbol, 0.3)
-                self.Log(f"📈 AI Entry Signal: {{symbol}} (Confidence: {{buy_prob:.2f}})")
-            elif sell_prob > 0.65:
+            # Categorical sampling for exploration/adaptation
+            m = torch.distributions.Categorical(action_probs)
+            action = m.sample()
+            
+            self.last_action_log_prob = m.log_prob(action)
+            self.last_action = action.item()
+            self.last_price[symbol] = current_price
+            
+            # Action Execution
+            if self.last_action == 0 and action_probs[0][0] > 0.6:
+                self.SetHoldings(symbol, 0.5)
+            elif self.last_action == 1:
                 self.SetHoldings(symbol, 0.0)
-                self.Log(f"📉 AI Exit Signal: {{symbol}} (Confidence: {{sell_prob:.2f}})")
 """

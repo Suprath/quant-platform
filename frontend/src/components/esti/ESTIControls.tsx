@@ -54,12 +54,38 @@ export function ESTIControls() {
         }
     };
 
+    const handleReset = async () => {
+        if (!confirm("Are you sure you want to wipe all training state and metrics?")) return;
+        setLoading(true);
+        try {
+            const res = await fetch(`${API_URL}/train/reset`, { method: "POST" });
+            if (res.ok) {
+                setIsRunning(false);
+                // Force a page refresh or state clear could go here, 
+                // but usually SSE will clear if we send a clear signal
+                window.location.reload();
+            }
+        } catch (err) {
+            console.error("Reset failed", err);
+        } finally {
+            setLoading(false);
+        }
+    };
+
     return (
         <Card className="bg-black/40 backdrop-blur-md border-white/10 shadow-2xl">
-            <CardHeader className="pb-4 border-b border-white/10">
+            <CardHeader className="pb-4 border-b border-white/10 flex flex-row items-center justify-between">
                 <CardTitle className="text-slate-200 font-semibold tracking-wide">
                     Training Controls
                 </CardTitle>
+                <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleReset}
+                    className="text-red-400 hover:text-red-300 hover:bg-red-950/30 h-8 px-2 text-[10px] uppercase font-bold tracking-widest border border-red-900/30"
+                >
+                    Reset Engine
+                </Button>
             </CardHeader>
             <CardContent className="space-y-6 pt-6">
                 <div className="grid grid-cols-2 gap-4">
