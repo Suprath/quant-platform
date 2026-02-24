@@ -40,7 +40,7 @@ class AlgorithmEngine:
     SQUARE_OFF_HOUR = 15
     SQUARE_OFF_MINUTE = 20
 
-    def __init__(self, run_id=None, backtest_mode=False, speed="fast"):
+    def __init__(self, run_id=None, backtest_mode=False, speed="fast", trading_mode="MIS"):
         self.Algorithm = None
         self.SubscriptionManager = SubscriptionManager()
         self.Indicators = {} # Symbol -> [Indicators]
@@ -48,6 +48,7 @@ class AlgorithmEngine:
         self.RunID = run_id
         self.BacktestMode = backtest_mode
         self.Speed = speed  # fast, medium, slow
+        self.TradingMode = trading_mode.upper()
         self.KafkaConsumer = None
         self.CurrentSlice = None
         self.UniverseSettings = None # Stores selection function
@@ -65,7 +66,7 @@ class AlgorithmEngine:
         conn.close()
         
         # Init Exchange
-        self.Exchange = PaperExchange(DB_CONF, backtest_mode=self.BacktestMode, run_id=self.RunID)
+        self.Exchange = PaperExchange(DB_CONF, backtest_mode=self.BacktestMode, run_id=self.RunID, trading_mode=self.TradingMode)
         self.IsRunning = False
 
     def LoadAlgorithm(self, module_name, class_name):
@@ -152,6 +153,9 @@ class AlgorithmEngine:
 
     def _should_square_off(self, time_obj):
         """Check if it's time for mandatory intraday square-off (3:20 PM IST)."""
+        if self.TradingMode == "CNC":
+            return False
+            
         ist = self._to_ist(time_obj)
         today = ist.date()
         

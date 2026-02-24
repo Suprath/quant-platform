@@ -28,10 +28,11 @@ class PaperExchange:
     # GST: 18% on (brokerage + exchange charges)
     GST_PCT = 0.18
 
-    def __init__(self, db_config, backtest_mode=False, run_id=None):
+    def __init__(self, db_config, backtest_mode=False, run_id=None, trading_mode="MIS"):
         self.db_config = db_config
         self.backtest_mode = backtest_mode
         self.run_id = run_id
+        self.trading_mode = trading_mode.upper()
         self.user_id = 'default_user' # Single user for now
 
     def _get_conn(self):
@@ -39,18 +40,21 @@ class PaperExchange:
 
     def calculate_transaction_costs(self, turnover, side):
         """
-        Calculate realistic Indian intraday transaction costs.
+        Calculate realistic Indian transaction costs based on trading mode.
         side: 'BUY' or 'SELL'
         Returns total charges as a positive number.
         """
         brokerage_flat = float(os.getenv('BROKERAGE_FLAT', self.BROKERAGE_FLAT))
         brokerage_pct = float(os.getenv('BROKERAGE_PCT', self.BROKERAGE_PCT))
         
-        # 1. Brokerage: min(FLAT, % of turnover)
+        # 1. Brokerage: min(FLAT, % of turnover) (Some brokers offer free delivery, assuming flat pricing here)
         brokerage = min(brokerage_flat, turnover * brokerage_pct)
 
-        # 2. STT: 0.025% on SELL side only
-        stt = turnover * self.STT_PCT if side == 'SELL' else 0.0
+        # 2. STT
+        if self.trading_mode == 'CNC':
+            stt = turnover * 0.001  # 0.1% on BOTH Buy and Sell for Delivery
+        else:
+            stt = turnover * self.STT_PCT if side == 'SELL' else 0.0 # 0.025% on Sell only for Intraday
 
         # 3. Exchange Transaction Charges
         exchange_txn = turnover * self.EXCHANGE_TXN_PCT
@@ -58,11 +62,14 @@ class PaperExchange:
         # 4. SEBI Turnover Fee
         sebi_fee = turnover * self.SEBI_FEE_PCT
 
-        # 5. Stamp Duty: 0.003% on BUY side only
-        stamp_duty = turnover * self.STAMP_DUTY_PCT if side == 'BUY' else 0.0
+        # 5. Stamp Duty: 0.003% for MIS, 0.015% for CNC (on BUY side only)
+        if side == 'BUY':
+            stamp_duty = turnover * (0.00015 if self.trading_mode == 'CNC' else self.STAMP_DUTY_PCT)
+        else:
+            stamp_duty = 0.0
 
-        # 6. GST: 18% on (brokerage + exchange charges)
-        gst = (brokerage + exchange_txn) * self.GST_PCT
+        # 6. GST: 18% on (brokerage + exchange charges + SEBI)
+        gst = (brokerage + exchange_txn + sebi_fee) * self.GST_PCT
 
         total = brokerage + stt + exchange_txn + sebi_fee + stamp_duty + gst
         return round(total, 2)

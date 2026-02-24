@@ -23,19 +23,23 @@ class DemoStrategy(QCAlgorithm):
         if not self.fast_ma.IsReady or not self.slow_ma.IsReady:
             return
 
+        if self.symbol not in data or data[self.symbol] is None:
+            return
+
         # Access Indicator Values
         fast = self.fast_ma.Value
         slow = self.slow_ma.Value
         
-        self.Log(f"Price: {data[self.symbol].Close} | Fast: {fast} | Slow: {slow}")
+        price = data[self.symbol].Close
+        self.Log(f"Price: {price} | Fast: {fast} | Slow: {slow}")
         
         # Simple Logic
         if fast > slow:
              if not self.Portfolio.get(self.symbol) or not self.Portfolio[self.symbol].Invested:
                  self.SetHoldings(self.symbol, 1.0)
-                 self.Debug(f"BUY {self.symbol} @ {data[self.symbol].Close}")
+                 self.Debug(f"BUY {self.symbol} @ {price}")
         
         elif fast < slow:
              if self.Portfolio.get(self.symbol) and self.Portfolio[self.symbol].Invested:
                  self.Liquidate(self.symbol)
-                 self.Debug(f"SELL {self.symbol} @ {data[self.symbol].Close}")
+                 self.Debug(f"SELL {self.symbol} @ {price}")

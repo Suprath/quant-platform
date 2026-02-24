@@ -33,6 +33,7 @@ class BacktestRequest(BaseModel):
     strategy_name: str = "CustomStrategy"
     project_files: Optional[Dict[str, str]] = None  # {filename: code} for multi-file projects
     speed: str = "fast"  # fast, medium, slow
+    trading_mode: str = "MIS" # MIS or CNC
 
 class LiveStartRequest(BaseModel):
     strategy_name: str
@@ -396,6 +397,7 @@ def run_backtest_process(run_id: str, request: BacktestRequest, strategy_file_pa
     env['RUN_ID'] = run_id
     env['STRATEGY_NAME'] = strategy_module_name
     env['BACKTEST_MODE'] = 'true'
+    env['TRADING_MODE'] = request.trading_mode
     
     cmd = [
         "python3", "backtest_runner.py",

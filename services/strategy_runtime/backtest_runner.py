@@ -18,6 +18,7 @@ import math
 RUN_ID = os.getenv('RUN_ID', 'test_run')
 STRATEGY_NAME = os.getenv('STRATEGY_NAME')
 QUESTDB_URL = os.getenv('QUESTDB_URL', 'http://questdb_tsdb:9000')
+TRADING_MODE = os.getenv('TRADING_MODE', 'MIS')
 UPSTOX_ACCESS_TOKEN = os.getenv('UPSTOX_ACCESS_TOKEN', '')
 UPSTOX_API_BASE = "https://api.upstox.com/v3/historical-candle"
 
@@ -459,7 +460,7 @@ def run(symbol, start, end, initial_cash, speed="fast"):
     except Exception as e:
         logger.error(f"Failed to initialize backtest DB: {e}")
 
-    engine = AlgorithmEngine(run_id=RUN_ID, backtest_mode=True, speed=speed)
+    engine = AlgorithmEngine(run_id=RUN_ID, backtest_mode=True, speed=speed, trading_mode=TRADING_MODE)
     
     # Load Strategy
     try:

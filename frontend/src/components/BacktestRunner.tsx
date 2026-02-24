@@ -47,7 +47,8 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
         startDate: "2024-01-01",
         endDate: "2024-01-31",
         cash: 100000,
-        speed: "fast"
+        speed: "fast",
+        tradingMode: "MIS"
     });
 
     const [stats, setStats] = useState({
@@ -114,7 +115,8 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                     initial_cash: config.cash,
                     strategy_name: strategyName,
                     project_files: projectFiles || undefined,
-                    speed: config.speed
+                    speed: config.speed,
+                    trading_mode: config.tradingMode
                 })
             });
 
@@ -282,6 +284,19 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                                         <SelectItem value="fast">Fast</SelectItem>
                                         <SelectItem value="medium">Medium</SelectItem>
                                         <SelectItem value="slow">Slow</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="flex items-center gap-2 bg-[#0a0a0b] px-3 py-1.5 rounded-md border border-slate-800">
+                                <Target className="h-4 w-4 text-slate-500" />
+                                <Select value={config.tradingMode} onValueChange={v => setConfig({ ...config, tradingMode: v })}>
+                                    <SelectTrigger className="h-7 w-[100px] bg-transparent border-none focus:ring-0 text-white font-mono text-sm px-0">
+                                        <SelectValue placeholder="Mode" />
+                                    </SelectTrigger>
+                                    <SelectContent className="bg-[#1a1a1e] border-slate-700 text-white">
+                                        <SelectItem value="MIS">Intraday (MIS)</SelectItem>
+                                        <SelectItem value="CNC">Delivery (CNC)</SelectItem>
                                     </SelectContent>
                                 </Select>
                             </div>
