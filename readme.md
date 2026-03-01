@@ -100,8 +100,8 @@ By default, this pulls the latest **stable** release.
 
 ```bash
 mkdir kira-platform && cd kira-platform
-curl -O https://raw.githubusercontent.com/suprathps/quant-platform/master/docker-compose.prod.yml
-curl -o .env https://raw.githubusercontent.com/suprathps/quant-platform/master/services/ingestion/.env.example
+curl -O https://raw.githubusercontent.com/suprathps/kira/master/docker-compose.prod.yml
+curl -o .env https://raw.githubusercontent.com/suprathps/kira/master/services/ingestion/.env.example
 # Edit .env with your Upstox API keys
 docker compose -f docker-compose.prod.yml up -d
 ```
@@ -115,8 +115,8 @@ APP_VERSION=beta docker compose -f docker-compose.prod.yml up -d
 ### Developer Installation (Build from Source)
 Clone repository and prepare environment:
 ```bash
-git clone https://github.com/suprathps/quant-platform.git
-cd quant-platform
+git clone https://github.com/suprathps/kira.git
+cd kira
 cp services/ingestion/.env.example .env
 docker compose -f infra/docker-compose.yml up -d --build
 ```
