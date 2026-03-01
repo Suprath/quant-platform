@@ -171,18 +171,18 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Run Trivy vulnerability scanner on the built image before pushing
+      # Run Trivy vulnerability scanner securely using the official Docker image
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.28.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          image-ref: ${{ env.REGISTRY }}/${{ steps.repo_name.outputs.repository }}/${{ matrix.name }}:sha-${{ github.sha }}
-          format: 'table'
-          exit-code: '0' # DO NOT fail the build, just report
-          ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
+        run: |
+          # Use Trivy inside a Docker container directly, skipping problematic Github Action binary downloads
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasecurity/trivy:latest \
+            image \
+            --format table \
+            --exit-code 0 \
+            --ignore-unfixed \
+            --vuln-type os,library \
+            --severity CRITICAL,HIGH \
+            ${{ env.REGISTRY }}/${{ steps.repo_name.outputs.repository }}/${{ matrix.name }}:sha-${{ github.sha }}
 
       - name: Push Docker image
         if: github.event_name != 'pull_request'
