@@ -3,13 +3,30 @@ import os
 import time
 import json
 from confluent_kafka import Producer, Consumer
+from confluent_kafka.admin import AdminClient, NewTopic
 
 KAFKA_BROKER = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9094")
 TEST_INPUT_TOPIC = "market.equity.ticks"
 TEST_OUTPUT_TOPIC = "scanner.suggestions"
 
+def setup_test_topics():
+    admin = AdminClient({'bootstrap.servers': KAFKA_BROKER})
+    new_topics = [
+        NewTopic(TEST_INPUT_TOPIC, num_partitions=1, replication_factor=1),
+        NewTopic(TEST_OUTPUT_TOPIC, num_partitions=1, replication_factor=1)
+    ]
+    # Call create_topics to proactively make them before Consumers try to bind
+    fs = admin.create_topics(new_topics)
+    for topic, f in fs.items():
+        try:
+            f.result()
+        except Exception as e:
+            if "already exists" not in str(e).lower():
+                print(f"Failed to create test topic {topic}: {e}")
+
 @pytest.fixture(scope="module")
 def kafka_producer():
+    setup_test_topics()
     p = Producer({'bootstrap.servers': KAFKA_BROKER})
     yield p
     p.flush()
