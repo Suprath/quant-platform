@@ -1,10 +1,10 @@
-# 📘 Quantitative Strategy Development Guide
+#  Quantitative Strategy Development Guide
 
 This guide details how to write, backtest, and deploy algorithmic trading strategies using the **Quant Platform SDK**. The SDK is designed to be familiar to users of **QuantConnect**, providing a robust event-driven framework.
 
 ---
 
-## 🏗 Strategy Structure
+##  Strategy Structure
 
 All strategies must inherit from `QCAlgorithm` and implement two required methods: `Initialize` and `OnData`.
 
@@ -52,7 +52,7 @@ class MyStrategy(QCAlgorithm):
 
 ---
 
-## 📚 API Reference
+##  API Reference
 
 ### 1. Initialization Methods
 Call these inside `Initialize()`.
@@ -97,7 +97,7 @@ if self.sma.IsReady:
 
 ---
 
-## 📦 Data Objects
+##  Data Objects
 
 ### Slice (`data`)
 The object passed to `OnData`. It represents a "slice" of time containing data for all subscribed symbols.
@@ -118,7 +118,7 @@ print(f"Close: {bar.Close}, Volume: {bar.Volume}, Time: {bar.Time}")
 
 ---
 
-## 💼 Portfolio Management
+##  Portfolio Management
 Access current state via `self.Portfolio`.
 
 - **`self.Portfolio.Cash`**: Available cash (float).
@@ -134,7 +134,7 @@ Access via `self.Portfolio[symbol]`:
 
 ---
 
-## ⚡ Live Trading vs Backtesting
+## Live Trading vs Backtesting
 The same code runs in both modes!
 - **Backtesting**: Engine loads historical data from QuestDB.
 - **Live Trading**: Engine streams realtime data from Kafka (Upstox).
@@ -143,7 +143,7 @@ The same code runs in both modes!
 
 ---
 
-## 📝 Example: EMA Crossover Strategy
+## Example: EMA Crossover Strategy
 
 ```python
 from quant_sdk import QCAlgorithm, Resolution

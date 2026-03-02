@@ -3,12 +3,12 @@
 ## Overview
 The backtesting system allows you to test your trading strategy against historical data to evaluate performance before risking real capital.
 
-## ✅ API Limits (Upstox Free Tier)
+## API Limits (Upstox Free Tier)
 - **Historical Data**: 20 requests/second
 - **1-Minute Candles**: Max 30 days per request
 - **Estimated Time**: 1 month backtest ≈ 1 API call (safe!)
 
-## 🚀 3-Step Workflow
+## 3-Step Workflow
 
 ### Step 1: Download Historical Data
 ```bash
@@ -120,7 +120,7 @@ To test different strategy parameters:
 
 ---
 
-## 🎯 Best Practices
+## Best Practices
 
 1. **Start Small**: Test 1 week first, then expand to 1 month
 2. **Compare Multiple Runs**: Try different RSI thresholds (45, 50, 55)
@@ -130,16 +130,15 @@ To test different strategy parameters:
 
 ---
 
-## ⚠️ Known Limitations
+##  Known Limitations
 
 - **No Slippage**: Assumes perfect execution at signal price
-- **No Transaction Costs**: Real trading has brokerage fees
 - **Limited Depth**: Uses OHLC, not full order book
 - **Future Leak Risk**: Ensure your strategy doesn't "look ahead"
 
 ---
 
-## 🆘 Troubleshooting
+## Troubleshooting
 
 **"No data found for symbol"**
 → Verify symbol format: `NSE_EQ|<ISIN>` (not `NSE_EQ:<SYMBOL>`)
