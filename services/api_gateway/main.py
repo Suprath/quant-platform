@@ -107,7 +107,9 @@ def get_env_config():
                 if line and not line.startswith("#"):
                     if "=" in line:
                         key, val = line.split("=", 1)
-                        env_vars[key.strip()] = val.strip()
+                        clean_key = key.strip()
+                        if not clean_key.startswith("GRAFANA_"):
+                            env_vars[clean_key] = val.strip()
         return {"env": env_vars}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
