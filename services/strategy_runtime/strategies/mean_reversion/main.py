@@ -16,7 +16,7 @@ class MeanReversion(QCAlgorithm):
             price = tick.Price
 
             if symbol not in self.bands:
-                self.bands[symbol] = BollingerBands(period=50, num_std=1.5)
+                self.bands[symbol] = BollingerBands(period=100, num_std=1.5)
 
             self.bands[symbol].update(price)
 
