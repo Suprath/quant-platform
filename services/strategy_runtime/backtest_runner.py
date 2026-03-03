@@ -136,12 +136,14 @@ def find_missing_dates(symbols, start_date, end_date):
                         existing_days.add(day_str)
 
                 sym_missing = [d for d in expected_days if d not in existing_days]
-                
-                # Loose check: If we have >90% of data, assume it's fine (holidays etc)
-                # But typically we want exact matches. 
-                # Let's log if we find *some* data but not all.
-                if len(existing_days) > 0 and len(sym_missing) > 0:
-                     logger.info(f"  ℹ️ {sym}: Found {len(existing_days)} days, Missing {len(sym_missing)} days")
+
+                # Use 75% threshold to account for NSE market holidays
+                # (weekdays that are NSE holidays will never have data)
+                coverage = len(existing_days) / len(expected_days) if expected_days else 0
+                if coverage >= 0.75:
+                    # Enough data present — skip this symbol (holidays account for the rest)
+                    logger.info(f"  ✅ {sym}: {len(existing_days)}/{len(expected_days)} days ({coverage*100:.0f}% coverage) — skipping backfill")
+                    continue
 
                 if sym_missing:
                     missing[sym] = sym_missing
@@ -472,9 +474,10 @@ def run(symbol, start, end, initial_cash, speed="fast"):
     end_clean = end.split('T')[0] if 'T' in end else end
     
     # ===== STEP 1: Auto-backfill missing data =====
-    all_known_symbols = list(KNOWN_STOCKS.keys())
+    # Only backfill the symbol actually used in the backtest (not all 40 known stocks)
+    symbols_to_check = [symbol] if symbol in KNOWN_STOCKS else list(KNOWN_STOCKS.keys())
     try:
-        asyncio.run(auto_backfill(all_known_symbols, start_clean, end_clean))
+        asyncio.run(auto_backfill(symbols_to_check, start_clean, end_clean))
     except Exception as e:
         logger.warning(f"⚠️ Auto-backfill encountered an error (continuing): {e}")
     

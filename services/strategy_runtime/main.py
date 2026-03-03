@@ -449,11 +449,59 @@ def run_backtest_process(run_id: str, request: BacktestRequest, strategy_file_pa
         
         # Notify the log file so the frontend knows to stop polling
         from datetime import datetime
+        ts = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
         with open(log_file, "a") as outfile:
             if process.returncode != 0:
-                outfile.write(f"\n{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} - ERROR - Backtest Stopped (Error code: {process.returncode})\n")
+                # ── Extract full error details from the log so far ──
+                full_error_block = ""
+                try:
+                    with open(log_file, "r") as readfile:
+                        lines = readfile.readlines()
+
+                    # Collect ERROR lines and any subsequent non-timestamped lines (traceback lines)
+                    error_chunks = []
+                    current_chunk = []
+                    in_error = False
+                    log_line_re = __import__('re').compile(r'^\d{4}-\d{2}-\d{2}')
+
+                    for line in lines:
+                        stripped = line.rstrip()
+                        is_new_log_line = bool(log_line_re.match(stripped))
+                        if is_new_log_line:
+                            if current_chunk:
+                                error_chunks.append('\n'.join(current_chunk))
+                                current_chunk = []
+                            if ' - ERROR - ' in stripped:
+                                # Extract just the message after " - ERROR - "
+                                msg = stripped.split(' - ERROR - ', 1)[-1].strip()
+                                current_chunk = [msg]
+                                in_error = True
+                            else:
+                                in_error = False
+                        elif in_error and stripped:
+                            # Continuation line for the current error (traceback lines)
+                            current_chunk.append(stripped)
+
+                    if current_chunk:
+                        error_chunks.append('\n'.join(current_chunk))
+
+                    if error_chunks:
+                        # Pick most informative chunk (longest = most traceback detail)
+                        best = max(error_chunks, key=len)
+                        full_error_block = best
+                except Exception:
+                    full_error_block = f"Process exited with code {process.returncode}"
+
+                if not full_error_block:
+                    full_error_block = f"Process exited with code {process.returncode}"
+
+                # Write as a single parseable line (escape newlines as literal \n for JS parser)
+                compact = full_error_block.replace('\n', '\\n')
+                outfile.write(f"\n{ts} - ERROR - STRATEGY_ERROR: {compact}\n")
+                # Also write the human-readable stopped message
+                outfile.write(f"{ts} - ERROR - Backtest Stopped (Error code: {process.returncode})\n")
             else:
-                outfile.write(f"\n{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} - INFO - Backtest Runner Finished.\n")
+                outfile.write(f"\n{ts} - INFO - Backtest Runner Finished.\n")
 
         # ── Always compute stats from DB after process ends ──
         # The subprocess may have already called SaveStatistics, but we

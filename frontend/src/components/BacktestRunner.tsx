@@ -9,7 +9,7 @@ import {
     DialogContent,
     DialogTrigger,
 } from "@/components/ui/dialog";
-import { Play, Loader2, TrendingUp, BarChart3, Clock, DollarSign, Activity, Settings2, Target, Percent, IndianRupee, Zap, Gauge } from 'lucide-react';
+import { Play, Loader2, TrendingUp, BarChart3, Clock, DollarSign, Activity, Settings2, Target, Percent, IndianRupee, Zap, Gauge, AlertTriangle, XCircle } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
@@ -49,6 +49,10 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
     const [avgSpeed, setAvgSpeed] = useState<number>(0);
     const [speedFinal, setSpeedFinal] = useState<boolean>(false);
 
+    // Strategy runtime error state
+    const [runtimeErrors, setRuntimeErrors] = useState<string[]>([]);
+    const [hasRuntimeError, setHasRuntimeError] = useState(false);
+
     const [searchQuery, setSearchQuery] = useState("");
     const [searchResults, setSearchResults] = useState<{ key: string, symbol: string, name: string, exchange: string, lot_size: number }[]>([]);
     const [searchOpen, setSearchOpen] = useState(false);
@@ -85,6 +89,9 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
         brokeragePaid: 0.0
     });
 
+    const [isBackfilling, setIsBackfilling] = useState(false);
+    const [backfillMessage, setBackfillMessage] = useState("");
+
     const addLog = (message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info') => {
         // Log stripped for Dashboard UI
         console.log(`[${type.toUpperCase()}] ${message}`);
@@ -100,6 +107,7 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
             if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
             setIsLoading(false);
             setIsComplete(true);
+            setIsBackfilling(false);
             setActiveRunId(null);
         } catch (e) {
             console.error("Failed to stop backtest", e);
@@ -110,6 +118,10 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
     const runBacktest = async () => {
         setIsLoading(true);
         setIsComplete(false);
+        setIsBackfilling(false);
+        setBackfillMessage("");
+        setRuntimeErrors([]);
+        setHasRuntimeError(false);
         setActiveRunId(null);
         setEquityHistory([]);
         setTrades([]);
@@ -161,17 +173,59 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                     if (logRes.ok) {
                         const logData = await logRes.json();
 
-                        // Parse log array into formatted entries
-                        const parsedLogs: LogEntry[] = logData.logs.map((l: string) => {
-                            const match = l.match(/^([\d-:\s]+) - (INFO|ERROR|WARNING) - (.*)$/);
-                            if (match) return { time: match[1], type: match[2].toLowerCase(), message: match[3] };
-                            return { time: '', type: 'info', message: l };
-                        });
+                        // Parse log array into formatted entries — handle two formats:
+                        // 1. Python logger: "ERROR:LoggerName:message" (+ multiline traceback)
+                        // 2. Sentinel:      "YYYY-MM-DD HH:MM:SS - ERROR - message"
+                        const parsedLogs: LogEntry[] = [];
+                        let pendingError: LogEntry | null = null;
+                        const tsPattern = /^(\d{4}-\d{2}-\d{2}[\d\s:]+) - (INFO|ERROR|WARNING) - (.*)$/;
+                        const pyPattern = /^(ERROR|WARNING|INFO|DEBUG):[\w.]+:(.*)$/;
 
-                        // ── Parse speed metrics from logs ──
+                        for (const raw of (logData.logs as string[])) {
+                            const ts = raw.match(tsPattern);
+                            const py = raw.match(pyPattern);
+                            if (ts) {
+                                if (pendingError) parsedLogs.push(pendingError);
+                                pendingError = null;
+                                parsedLogs.push({ time: ts[1], type: ts[2].toLowerCase(), message: ts[3] });
+                            } else if (py) {
+                                if (pendingError) parsedLogs.push(pendingError);
+                                const entry: LogEntry = { time: '', type: py[1].toLowerCase(), message: py[2] };
+                                if (py[1] === 'ERROR') {
+                                    pendingError = entry; // may have traceback continuation lines
+                                } else {
+                                    pendingError = null;
+                                    parsedLogs.push(entry);
+                                }
+                            } else if (pendingError) {
+                                // Continuation/traceback line for previous ERROR entry
+                                pendingError.message += '\n' + raw;
+                            } else {
+                                parsedLogs.push({ time: '', type: 'info', message: raw });
+                            }
+                        }
+                        if (pendingError) parsedLogs.push(pendingError);
+
+                        // ── Parse metrics from logs ──
+                        let currentBackfilling = false;
+                        let currentBackfillMsg = "";
+
                         for (const l of parsedLogs) {
-                            // Live speed: ...⚡ SPEED: 123,456 ticks/sec | Progress: 50.0% (100,000/200,000)
-                            // Log format is: INFO:AlgorithmEngine:⚡ SPEED: ... (no ^ anchor)
+                            // Check backfill status
+                            if (l.message.includes("AUTO-BACKFILL: Checking")) {
+                                currentBackfilling = true;
+                                currentBackfillMsg = "Scanning missing data...";
+                            } else if (l.message.includes("Backfilling ")) {
+                                currentBackfilling = true;
+                                // Extract the stock string like "[1/5] Backfilling RELIANCE..."
+                                const bfMatch = l.message.match(/(\[\d+\/\d+\].*)/);
+                                if (bfMatch) currentBackfillMsg = bfMatch[1];
+                            } else if (l.message.includes("BACKFILL COMPLETE") || l.message.includes("All data present")) {
+                                currentBackfilling = false;
+                                currentBackfillMsg = "";
+                            }
+
+                            // Live speed
                             const speedMatch = l.message.match(/SPEED: ([\d,]+) ticks\/sec \| Progress: ([\d.]+)%/);
                             if (speedMatch && !l.message.includes('SPEED_FINAL')) {
                                 const tps = parseInt(speedMatch[1].replace(/,/g, ''), 10);
@@ -180,13 +234,39 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                                 setProgress(prog);
                                 setMaxSpeed(prev => Math.max(prev, tps));
                             }
-                            // Final speed: ...⚡ SPEED_FINAL: avg=123,456 max=234,567 ticks/sec
+                            // Final speed
                             const finalMatch = l.message.match(/SPEED_FINAL: avg=([\d,]+) max=([\d,]+) ticks\/sec/);
                             if (finalMatch) {
                                 setAvgSpeed(parseInt(finalMatch[1].replace(/,/g, ''), 10));
                                 setMaxSpeed(parseInt(finalMatch[2].replace(/,/g, ''), 10));
                                 setSpeedFinal(true);
                                 setProgress(100);
+                            }
+                        }
+
+                        // Update backfill state dynamically if it changes during polling
+                        setIsBackfilling(currentBackfilling);
+                        if (currentBackfillMsg) setBackfillMessage(currentBackfillMsg);
+
+                        // ── Parse strategy runtime errors ──
+                        const newErrors: string[] = [];
+                        for (const l of parsedLogs) {
+                            if (l.type === 'error' && l.message) {
+                                newErrors.push(l.message);
+                            }
+                        }
+                        if (newErrors.length > 0) {
+                            setRuntimeErrors(prev => {
+                                // Deduplicate by message content
+                                const prevSet = new Set(prev);
+                                const unique = newErrors.filter(e => !prevSet.has(e));
+                                return unique.length > 0 ? [...prev, ...unique] : prev;
+                            });
+                            setHasRuntimeError(true);
+                            // Stop loading if there's a strategy error
+                            if (newErrors.some(e => e.includes('STRATEGY_ERROR:'))) {
+                                if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+                                setIsLoading(false);
                             }
                         }
 
@@ -410,8 +490,23 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                     </div>
 
                     <div className="flex items-center gap-3 w-full lg:w-auto lg:justify-end mt-2 lg:mt-0">
+                        {/* Backfill Indicator */}
+                        {isLoading && isBackfilling && (
+                            <div className="flex items-center gap-3 bg-[#111113] border border-amber-500/30 rounded-lg px-4 py-2 shrink-0 shadow-[0_0_12px_rgba(245,158,11,0.15)]">
+                                <Loader2 className="h-4 w-4 text-amber-500 animate-spin" />
+                                <div className="flex flex-col">
+                                    <span className="text-amber-500 font-mono text-sm font-bold leading-tight">
+                                        Backfilling Data
+                                    </span>
+                                    <span className="text-slate-400 text-xs font-mono truncate max-w-[150px]">
+                                        {backfillMessage || "Initializing..."}
+                                    </span>
+                                </div>
+                            </div>
+                        )}
+
                         {/* Live Speed Indicator */}
-                        {isLoading && liveSpeed > 0 && (
+                        {isLoading && liveSpeed > 0 && !isBackfilling && (
                             <div className="flex items-center gap-3 bg-[#0a0a0b] border border-emerald-500/30 rounded-lg px-4 py-2 shrink-0 shadow-[0_0_12px_rgba(16,185,129,0.15)]">
                                 <Zap className="h-4 w-4 text-emerald-400 animate-pulse" />
                                 <div className="flex flex-col">
@@ -453,6 +548,62 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                 {/* Main Content Body (Scrollable Area) */}
                 <div className="flex-1 overflow-y-auto custom-scrollbar p-4 bg-[#0a0a0b]">
                     <div className="flex flex-col max-w-7xl mx-auto gap-6">
+
+                        {/* ── Strategy Runtime Error Panel ── */}
+                        {hasRuntimeError && runtimeErrors.length > 0 && (
+                            <div className="border border-red-500/50 rounded-xl overflow-hidden shadow-[0_0_20px_rgba(239,68,68,0.15)]">
+                                {/* Error Header */}
+                                <div className="flex items-center justify-between px-4 py-3 bg-red-950/60 border-b border-red-500/30">
+                                    <div className="flex items-center gap-2">
+                                        <XCircle className="h-5 w-5 text-red-500 shrink-0" />
+                                        <span className="text-red-400 font-bold text-sm tracking-wide uppercase">
+                                            Strategy Runtime Error
+                                        </span>
+                                        <Badge className="bg-red-500/20 text-red-400 border-red-500/40 text-xs">
+                                            {runtimeErrors.length} {runtimeErrors.length === 1 ? 'error' : 'errors'}
+                                        </Badge>
+                                    </div>
+                                    <button
+                                        onClick={() => { setHasRuntimeError(false); setRuntimeErrors([]); }}
+                                        className="text-slate-500 hover:text-red-400 transition-colors text-xs font-mono px-2 py-1 hover:bg-red-500/10 rounded"
+                                    >
+                                        Dismiss
+                                    </button>
+                                </div>
+                                {/* Error Messages */}
+                                <div className="bg-[#0d0506] p-4 flex flex-col gap-4 max-h-[400px] overflow-y-auto custom-scrollbar">
+                                    {runtimeErrors.map((err, idx) => {
+                                        // Clean up STRATEGY_ERROR: prefix for display
+                                        const rawMsg = err.replace(/^STRATEGY_ERROR:\s*/, '');
+                                        // Unescape literal \n written by the backend into real newlines
+                                        const displayMsg = rawMsg.replace(/\\n/g, '\n');
+                                        // Split into first line (error type) and rest (traceback)
+                                        const lines = displayMsg.split('\n').filter(l => l.trim());
+                                        const headline = lines[lines.length - 1] || lines[0]; // last line = actual error (e.g. NameError: ...)
+                                        const traceback = lines.slice(0, -1).join('\n'); // everything before = traceback context
+
+                                        return (
+                                            <div key={idx} className="flex flex-col gap-1">
+                                                {/* Error headline */}
+                                                <div className="flex items-start gap-2">
+                                                    <AlertTriangle className="h-4 w-4 text-red-500 mt-0.5 shrink-0" />
+                                                    <span className="text-red-400 font-mono text-sm font-semibold break-all">{headline}</span>
+                                                </div>
+                                                {/* Traceback block */}
+                                                {traceback && (
+                                                    <pre className="text-slate-400 font-mono text-xs leading-relaxed whitespace-pre-wrap break-all bg-black/40 rounded-lg p-3 border border-slate-800/60 mt-1">
+                                                        {traceback.trim()}
+                                                    </pre>
+                                                )}
+                                                {idx < runtimeErrors.length - 1 && (
+                                                    <div className="border-b border-red-900/40 mt-2" />
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
 
                         {/* Top Insights Layer */}
                         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">

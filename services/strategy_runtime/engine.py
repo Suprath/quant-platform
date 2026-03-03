@@ -83,7 +83,8 @@ class AlgorithmEngine:
             self._patch_slow_indicators(module, module_name)
 
         except Exception as e:
-            logger.error(f"❌ Failed to load algorithm: {e}")
+            import traceback
+            logger.error(f"STRATEGY_ERROR: Failed to load strategy: {e}\n{traceback.format_exc()}")
             raise e
 
     def _patch_slow_indicators(self, module, module_name):
@@ -240,7 +241,7 @@ class AlgorithmEngine:
 
         except Exception as e:
             import traceback
-            logger.error(f"Error in Event Loop: {e}\n{traceback.format_exc()}")
+            logger.error(f"STRATEGY_ERROR: {e}\n{traceback.format_exc()}")
 
     # ──────────────────────────────────────────────────────────────
     # BACKTEST FAST PATH — zero allocations, zero timezone math
@@ -417,7 +418,13 @@ class AlgorithmEngine:
                     continue
 
             # ── User strategy ──
-            _ondata(_slice)
+            try:
+                _ondata(_slice)
+            except Exception as _e:
+                import traceback as _tb
+                logger.error(f"STRATEGY_ERROR: {_e}\n{_tb.format_exc()}")
+                # Stop further ticks on unrecoverable error
+                break
             _exchange._bt_tick_count += 1
 
             # ── Periodic speed report ──
@@ -728,7 +735,32 @@ class AlgorithmEngine:
             stats = self.CalculateStatistics()
             conn = self.Exchange._get_conn()
             cur = conn.cursor()
-            
+
+            # ── Sanitize numpy types → native Python before psycopg2 binding ──
+            def _sf(v):
+                try:
+                    import numpy as np
+                    if isinstance(v, (np.floating, np.integer)):
+                        return float(v)
+                    if isinstance(v, np.ndarray):
+                        return v.tolist()
+                except ImportError:
+                    pass
+                return v
+
+            # JSON encoder that handles any remaining numpy types
+            class _NpEncoder(json.JSONEncoder):
+                def default(self, obj):
+                    try:
+                        import numpy as np
+                        if isinstance(obj, (np.floating, np.integer)):
+                            return float(obj)
+                        if isinstance(obj, np.ndarray):
+                            return obj.tolist()
+                    except ImportError:
+                        pass
+                    return super().default(obj)
+
             # Ensure table exists
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS backtest_results (
@@ -751,17 +783,17 @@ class AlgorithmEngine:
                     total_return = EXCLUDED.total_return,
                     stats_json = EXCLUDED.stats_json
             """, (
-                self.RunID, 
-                stats['sharpe_ratio'], 
-                stats['max_drawdown'], 
-                stats['win_rate'], 
-                stats['total_return'], 
-                json.dumps(stats)
+                self.RunID,
+                float(_sf(stats.get('sharpe_ratio', 0.0))),
+                float(_sf(stats.get('max_drawdown', 0.0))),
+                float(_sf(stats.get('win_rate', 0.0))),
+                float(_sf(stats.get('total_return', 0.0))),
+                json.dumps(stats, cls=_NpEncoder)
             ))
             
             conn.commit()
             conn.close()
-            logger.info(f"📊 Statistics Saved: Sharpe={stats['sharpe_ratio']}, Return={stats['total_return']}%")
+            logger.info(f"📊 Statistics Saved: Sharpe={stats.get('sharpe_ratio')}, Return={stats.get('total_return')}%")
         except Exception as e:
             logger.error(f"Failed to save statistics: {e}")
 
