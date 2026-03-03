@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 import calculations
 import timesync
 from confluent_kafka import Consumer
-from quant_sdk.data import Tick, Slice
+from quant_sdk.data import Tick, Slice, FastSlice
 from quant_sdk.algorithm import Resolution
 from paper_exchange import PaperExchange
 from schema import ensure_schema
@@ -139,12 +139,12 @@ class AlgorithmEngine:
 
 
     def ProcessTick(self, tick_dict):
+        """Standard tick processing (used for LIVE mode)."""
         # 1. Parse Data
         try:
             symbol = tick_dict.get('symbol')
             price = tick_dict.get('ltp', 0)
-            volume = tick_dict.get('v', 0) # 'v' or 'volume'
-            if not volume: volume = tick_dict.get('volume', 0)
+            volume = tick_dict.get('v', 0) or tick_dict.get('volume', 0)
             
             ts = tick_dict.get('timestamp')
             
@@ -155,15 +155,13 @@ class AlgorithmEngine:
             tick = Tick(time_obj, symbol, price, volume)
 
             # --- MARKET HOURS FILTER (9:15 AM - 3:30 PM IST) ---
-            # Only apply in LIVE mode. Backtest data is already curated.
             if not self.BacktestMode and not self._is_market_hours(time_obj):
-                return  # Skip pre/post-market ticks
+                return
 
             # Ensure Portfolio has entry
             if symbol not in self.Algorithm.Portfolio:
                 self.Algorithm.Portfolio[symbol] = SecurityHolding(symbol)
 
-            # Cache last known price for each symbol (used by Liquidate)
             self._last_prices[symbol] = price
 
             # 3. Update Indicators
@@ -174,37 +172,24 @@ class AlgorithmEngine:
             # 4. Create Slice
             slice_obj = Slice(time_obj, {symbol: tick})
             self.CurrentSlice = slice_obj
-            
-            # 5. Inject Time
             self.Algorithm.Time = time_obj
 
             # --- END OF DAY LOGIC & SQUARE-OFF ---
-            # For MIS (Intraday), force liquidation at 3:20 PM. 
-            # For all modes, log End-Of-Day equity for stats when the date rolling over.
             ist_now = self._to_ist(time_obj)
             h, m = ist_now.hour, ist_now.minute
             today = ist_now.date()
             
-            # Record Daily Equity if the calendar day has rolled forward
             if self._last_square_off_date and self._last_square_off_date != today:
-                # We've entered a new day. Log the previous day's final equity
                 self.SyncPortfolio()
                 equity = self.Algorithm.Portfolio.get('TotalPortfolioValue', 0.0)
-                # Appending the timestamp of the new tick but representing yesterday's close
                 self.EquityCurve.append({'timestamp': ist_now, 'equity': equity})
-                
-                # Reset the flag completely for the new day
                 self._squared_off_today = False
             
-            # Only set last square off date if it's currently None to initiate tracking
             if self._last_square_off_date is None:
                 self._last_square_off_date = today
 
-            # Auto Square-Off at 3:20 PM (ONLY for MIS mode)
             if h == self.SQUARE_OFF_HOUR and m >= self.SQUARE_OFF_MINUTE and not self._squared_off_today:
                 self._squared_off_today = True
-                
-                # Double-check MIS explicitly
                 if self.TradingMode != "CNC":
                     has_positions = any(
                         isinstance(hold, SecurityHolding) and hold.Invested
@@ -214,18 +199,102 @@ class AlgorithmEngine:
                     if has_positions:
                         logger.info("⏰ 3:20 PM IST — AUTO SQUARE-OFF: Liquidating all intraday positions")
                         self.Liquidate()
-                
-                return # Block new trades after 3:20 PM
+                return
 
-            # 7. Realtime Portfolio Valuation
-            self.CalculatePortfolioValue()
+            # Realtime Portfolio Valuation (live mode only)
+            if not self.BacktestMode:
+                self.CalculatePortfolioValue()
 
-            # 8. Call User Code
             self.Algorithm.OnData(slice_obj)
 
         except Exception as e:
             import traceback
             logger.error(f"Error in Event Loop: {e}\n{traceback.format_exc()}")
+
+    # ──────────────────────────────────────────────────────────────
+    # BACKTEST FAST PATH — zero allocations, zero timezone math
+    # ──────────────────────────────────────────────────────────────
+
+    def ProcessTickFast(self, tick_dict):
+        """
+        Backtest-only hot path. All per-tick overhead has been eliminated:
+        - No datetime.fromtimestamp() (pre-computed in tick dict)
+        - No Tick/Slice allocation (reuses cached objects)
+        - No to_ist() timezone conversion (pre-computed fields)
+        - No per-tick CalculatePortfolioValue (only on trade + day rollover)
+        """
+        symbol = tick_dict['symbol']
+        price  = tick_dict['ltp']
+
+        # ── Reuse cached Tick object ──
+        _tick = self._reusable_tick
+        _tick.Price = price
+        _tick.Value = price
+        _tick.Volume = tick_dict['v']
+        _tick.Time = tick_dict['_dt']
+        _tick.Symbol = symbol
+
+        # ── Reuse cached FastSlice ──
+        _slice = self._reusable_slice
+        _slice.Time = tick_dict['_dt']
+        _slice._data_symbol = symbol
+        _slice._data_tick = _tick
+
+        # ── Update state ──
+        self._last_prices[symbol] = price
+        self.Algorithm.Time = tick_dict['_dt']
+        self.CurrentSlice = _slice
+
+        # ── Ensure Portfolio has entry (first tick for this symbol) ──
+        if symbol not in self.Algorithm.Portfolio:
+            self.Algorithm.Portfolio[symbol] = SecurityHolding(symbol)
+
+        # ── Indicator update (pre-cached list, no dict lookup) ──
+        indicators = self._indicator_cache.get(symbol)
+        if indicators:
+            dt = tick_dict['_dt']
+            for ind in indicators:
+                ind.Update(dt, price)
+
+        # ── Date rollover check (integer comparison, no datetime) ──
+        tick_date = tick_dict['_date_int']
+        if tick_date != self._bt_last_date_int:
+            self._bt_handle_date_rollover(tick_dict)
+
+        # ── Square-off check (pre-computed ints) ──
+        if tick_dict['_hour'] == self.SQUARE_OFF_HOUR and tick_dict['_minute'] >= self.SQUARE_OFF_MINUTE:
+            if not self._squared_off_today:
+                self._bt_handle_square_off()
+                return
+
+        # ── Call user strategy ──
+        self.Algorithm.OnData(_slice)
+
+    def _bt_handle_date_rollover(self, tick_dict):
+        """Handle date change during backtest. Called at most once per day."""
+        self._bt_last_date_int = tick_dict['_date_int']
+
+        if self._last_square_off_date is not None:
+            # Log previous day's equity
+            self.CalculatePortfolioValue()
+            equity = self.Algorithm.Portfolio.get('TotalPortfolioValue', 0.0)
+            self.EquityCurve.append({'timestamp': tick_dict['_dt'], 'equity': equity})
+
+        self._last_square_off_date = tick_dict['_dt'].date() if hasattr(tick_dict['_dt'], 'date') else None
+        self._squared_off_today = False
+
+    def _bt_handle_square_off(self):
+        """Handle auto square-off at 3:20 PM during backtest."""
+        self._squared_off_today = True
+        if self.TradingMode != "CNC":
+            has_positions = any(
+                isinstance(hold, SecurityHolding) and hold.Invested
+                for sym, hold in self.Algorithm.Portfolio.items()
+                if sym not in ('Cash', 'TotalPortfolioValue')
+            )
+            if has_positions:
+                logger.info("⏰ 3:20 PM IST — AUTO SQUARE-OFF: Liquidating all intraday positions")
+                self.Liquidate()
 
 
     def CalculatePortfolioValue(self):
@@ -261,7 +330,9 @@ class AlgorithmEngine:
         # Inject Initial Equity Point (t=0) for Statistics
         start_ts = datetime.now()
         if self.BacktestMode and getattr(self, 'LocalData', None) and len(self.LocalData) > 0:
-            start_ts = datetime.fromtimestamp(self.LocalData[0]['timestamp'] / 1000.0) - timedelta(seconds=1)
+            first_tick = self.LocalData[0]
+            start_ts = first_tick.get('_dt') or datetime.fromtimestamp(first_tick['timestamp'] / 1000.0)
+            start_ts = start_ts - timedelta(seconds=1)
             
         self.EquityCurve.append({'timestamp': start_ts, 'equity': self.Algorithm.Portfolio.TotalPortfolioValue})
         
@@ -272,25 +343,46 @@ class AlgorithmEngine:
             elif self.Speed == 'slow': delay = 0.1
 
             # ── Open persistent session (zero per-trade connections) ──
-            if self.BacktestMode and hasattr(self.Exchange, 'begin_session'):
+            _has_session = self.BacktestMode and hasattr(self.Exchange, 'begin_session')
+            _has_tick_count = self.BacktestMode and hasattr(self.Exchange, '_bt_tick_count')
+            if _has_session:
                 initial_bal = self.Algorithm.Portfolio.get('Cash', 100000.0)
                 self.Exchange.begin_session(initial_bal)
 
             _t0 = _time.time()
             _n  = len(self.LocalData)
-            for tick in self.LocalData:
-                self.ProcessTick(tick)
-                if self.BacktestMode and hasattr(self.Exchange, '_bt_tick_count'):
-                    self.Exchange._bt_tick_count += 1
-                if delay > 0: _time.sleep(delay)
+
+            # ── Choose fast path or standard path ──
+            if self.BacktestMode and delay == 0:
+                # ═══ TURBO BACKTEST PATH ═══
+                # Pre-cache indicator lookups (avoid dict.get per tick)
+                self._indicator_cache = dict(self.Indicators)
+                # Create reusable objects (zero allocation per tick)
+                self._reusable_tick = Tick(None, '', 0, 0)
+                self._reusable_slice = FastSlice()
+                self._bt_last_date_int = 0
+
+                # Local method reference (avoids attribute lookup per tick)
+                _process = self.ProcessTickFast
+                _exchange = self.Exchange
+
+                for tick in self.LocalData:
+                    _process(tick)
+                    _exchange._bt_tick_count += 1
+            else:
+                # Standard path (slow/medium speed, or live mode with local data)
+                for tick in self.LocalData:
+                    self.ProcessTick(tick)
+                    if _has_tick_count:
+                        self.Exchange._bt_tick_count += 1
+                    if delay > 0: _time.sleep(delay)
 
             _elapsed = _time.time() - _t0
             _tps = _n / _elapsed if _elapsed > 0 else 0
             logger.info(f"⚡ Tick loop done: {_n:,} ticks in {_elapsed:.2f}s = {_tps:,.0f} ticks/sec")
 
             # ── Flush all buffered orders + positions to DB in one shot ──
-            if self.BacktestMode and hasattr(self.Exchange, 'flush_session'):
-                # Sync final in-memory balance to algorithm portfolio
+            if _has_session:
                 self.Algorithm.Portfolio['Cash'] = self.Exchange._bt_balance
                 self.Exchange.flush_session()
 
@@ -541,13 +633,13 @@ class AlgorithmEngine:
         Uses self.Leverage (default 1x, configurable via SetLeverage).
         Returns True if order was executed, False otherwise.
         """
-        # 1. Sync Portfolio to get latest Balance
-        self.SyncPortfolio()
+        # 1. Sync Portfolio to get latest Balance (skip in backtest — memory is current)
+        if not self.BacktestMode:
+            self.SyncPortfolio()
         
         cash = self.Algorithm.Portfolio.get('Cash', 0.0)
         
         # Calculate total equity (cash + position values)
-        # Use Realtime Calculator
         self.CalculatePortfolioValue()
         total_equity = self.Algorithm.Portfolio.get('TotalPortfolioValue', cash)
         

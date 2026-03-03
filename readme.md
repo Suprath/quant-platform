@@ -255,3 +255,11 @@ Always pair the Sharpe Ratio with the **Win Rate**, **Max Drawdown**, and **tota
 
 ## Disclaimer
 This software is for educational, quantitative research, and informational purposes only. Do not risk money which you are afraid to lose. USE THE SOFTWARE AT YOUR OWN RISK. THE AUTHORS AND ALL AFFILIATES ASSUME NO RESPONSIBILITY FOR YOUR TRADING RESULTS.
+## Core Backtest Fast Path
+
+To scale out simulation effectively using in-memory Python calculations:
+ - Our platform supports a simulated event loop using unlinked local data.
+ - Ticks load datetime objects (`_dt`, `_hour`, `_minute`) internally. No per-trick datetime variables dynamically compute via loop.
+ - Avoid explicit class declarations within iterations using Python `__slots__` memory assignments (`FastSlice`). Time complexity dramatically goes down!
+
+---

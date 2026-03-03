@@ -48,6 +48,9 @@ class Slice:
     def __getitem__(self, symbol):
         return self._data.get(symbol)
 
+    def __contains__(self, symbol):
+        return symbol in self._data
+
     def ContainsKey(self, symbol):
         return symbol in self._data
 
@@ -61,3 +64,36 @@ class Slice:
     
     def get(self, symbol):
         return self._data.get(symbol)
+
+
+class FastSlice:
+    """
+    Zero-allocation Slice for single-symbol backtest ticks.
+    Instead of creating a new dict per tick, reuses two slot attributes.
+    """
+    __slots__ = ('Time', '_data_symbol', '_data_tick')
+
+    def __init__(self):
+        self.Time = None
+        self._data_symbol = None
+        self._data_tick = None
+
+    def __getitem__(self, symbol):
+        return self._data_tick if symbol == self._data_symbol else None
+
+    def __contains__(self, symbol):
+        return symbol == self._data_symbol
+
+    def ContainsKey(self, symbol):
+        return symbol == self._data_symbol
+
+    @property
+    def Keys(self):
+        return (self._data_symbol,) if self._data_symbol else ()
+
+    @property
+    def Values(self):
+        return (self._data_tick,) if self._data_tick else ()
+
+    def get(self, symbol):
+        return self._data_tick if symbol == self._data_symbol else None

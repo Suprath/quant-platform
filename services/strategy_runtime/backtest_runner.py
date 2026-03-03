@@ -13,6 +13,7 @@ from db import get_db_connection
 import requests
 import urllib.parse
 import math
+from operator import itemgetter
 
 # Config
 RUN_ID = os.getenv('RUN_ID', 'test_run')
@@ -422,28 +423,42 @@ def ohlc_to_ticks(timestamp, open_price, high, low, close, volume):
     Convert OHLC to Ticks with direction-aware price path.
     Bullish candle (close > open): O → L → H → C
     Bearish candle (close < open): O → H → L → C
-    This reduces directional bias in backtests.
+    
+    Pre-computes _dt, _hour, _minute, _date_int fields for the engine's
+    fast path (ProcessTickFast) so no datetime math is needed per tick.
     """
-    ticks = []
     base_ts = int(timestamp.timestamp() * 1000)
     vol_per_tick = int(volume / 4)
     
+    # Pre-compute datetime fields ONCE per candle (shared by all 4 ticks)
+    dt_obj = timestamp
+    date_int = dt_obj.year * 10000 + dt_obj.month * 100 + dt_obj.day
+    hour = dt_obj.hour
+    minute = dt_obj.minute
+    
+    # Base dict fields (pre-computed, avoids per-tick datetime math)
+    common = {'_dt': dt_obj, '_date_int': date_int, '_hour': hour, '_minute': minute}
+    
     # Open (always first)
-    ticks.append({"ltp": open_price, "v": vol_per_tick, "timestamp": base_ts})
+    t_open  = {'ltp': open_price, 'v': vol_per_tick, 'timestamp': base_ts}
+    t_open.update(common)
     
     if close >= open_price:
-        # Bullish: O → L → H → C (dips then rallies)
-        ticks.append({"ltp": low, "v": vol_per_tick, "timestamp": base_ts + 15000})
-        ticks.append({"ltp": high, "v": vol_per_tick, "timestamp": base_ts + 30000})
+        # Bullish: O → L → H → C
+        t_mid1 = {'ltp': low,  'v': vol_per_tick, 'timestamp': base_ts + 15000}
+        t_mid2 = {'ltp': high, 'v': vol_per_tick, 'timestamp': base_ts + 30000}
     else:
-        # Bearish: O → H → L → C (rallies then dips)
-        ticks.append({"ltp": high, "v": vol_per_tick, "timestamp": base_ts + 15000})
-        ticks.append({"ltp": low, "v": vol_per_tick, "timestamp": base_ts + 30000})
+        # Bearish: O → H → L → C
+        t_mid1 = {'ltp': high, 'v': vol_per_tick, 'timestamp': base_ts + 15000}
+        t_mid2 = {'ltp': low,  'v': vol_per_tick, 'timestamp': base_ts + 30000}
+    t_mid1.update(common)
+    t_mid2.update(common)
     
     # Close (always last)
-    ticks.append({"ltp": close, "v": vol_per_tick, "timestamp": base_ts + 45000})
+    t_close = {'ltp': close, 'v': vol_per_tick, 'timestamp': base_ts + 45000}
+    t_close.update(common)
     
-    return ticks
+    return [t_open, t_mid1, t_mid2, t_close]
 
 def run(symbol, start, end, initial_cash, speed="fast"):
     if not STRATEGY_NAME:
@@ -568,8 +583,8 @@ def run(symbol, start, end, initial_cash, speed="fast"):
     _fetch_elapsed = _time_br.time() - _fetch_start
     logger.info(f"⚡ Parallel data fetch: {len(universe_symbols)} symbols, {len(all_ticks):,} ticks in {_fetch_elapsed:.2f}s")
                  
-    # Sort by Timestamp to simulate market playback
-    all_ticks.sort(key=lambda x: x['timestamp'])
+    # Sort by timestamp for chronological playback (C-level key for speed)
+    all_ticks.sort(key=itemgetter('timestamp'))
     
     if not all_ticks:
         logger.warning("⚠️ No data found for any symbol in universe. Exiting Backtest.")
