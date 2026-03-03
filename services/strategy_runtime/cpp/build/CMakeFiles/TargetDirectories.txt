@@ -1,0 +1,7 @@
+/app/cpp/build/CMakeFiles/kira_engine.dir
+/app/cpp/build/CMakeFiles/edit_cache.dir
+/app/cpp/build/CMakeFiles/rebuild_cache.dir
+/app/cpp/build/CMakeFiles/list_install_components.dir
+/app/cpp/build/CMakeFiles/install.dir
+/app/cpp/build/CMakeFiles/install/local.dir
+/app/cpp/build/CMakeFiles/install/strip.dir

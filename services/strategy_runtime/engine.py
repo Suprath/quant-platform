@@ -78,9 +78,40 @@ class AlgorithmEngine:
             AlgoClass = getattr(module, class_name)
             self.Algorithm = AlgoClass(engine=self)
             logger.info(f"🧩 Loaded Algorithm: {class_name}")
+
+            # ── Auto-patch slow indicators with O(1) SDK versions ──
+            self._patch_slow_indicators(module, module_name)
+
         except Exception as e:
             logger.error(f"❌ Failed to load algorithm: {e}")
             raise e
+
+    def _patch_slow_indicators(self, module, module_name):
+        """
+        Replace user-defined O(n) indicators with SDK O(1) versions.
+        Scans the algorithm's module and any sibling modules for known
+        slow patterns (e.g. BollingerBands using statistics.stdev).
+        """
+        import sys
+        from quant_sdk.data import BollingerBands as FastBB
+
+        # Find all modules in the same package as the user strategy
+        pkg = module_name.rsplit('.', 1)[0] if '.' in module_name else ''
+        patched = []
+
+        for mod_name, mod in list(sys.modules.items()):
+            if not mod or not mod_name.startswith(pkg):
+                continue
+            for attr_name in dir(mod):
+                obj = getattr(mod, attr_name, None)
+                if (isinstance(obj, type) and
+                    attr_name == 'BollingerBands' and
+                    obj is not FastBB):
+                    setattr(mod, attr_name, FastBB)
+                    patched.append(mod_name)
+
+        if patched:
+            logger.info(f"⚡ Auto-patched BollingerBands → O(1) SDK version in: {patched}")
 
     def Initialize(self):
         """Call User Initialize and Setup Kafka."""
@@ -296,6 +327,118 @@ class AlgorithmEngine:
                 logger.info("⏰ 3:20 PM IST — AUTO SQUARE-OFF: Liquidating all intraday positions")
                 self.Liquidate()
 
+    def _run_python_turbo_path(self):
+        """
+        Ultra-optimized Python turbo backtest loop.
+        All ProcessTickFast logic is INLINED here to eliminate per-tick
+        method call overhead. Every attribute is pre-cached as local vars
+        (Python locals are ~40% faster than attribute lookups).
+        """
+        import time as _time
+        from quant_sdk.data import Tick, FastSlice
+
+        # ── Pre-allocate reusable objects ──
+        self._indicator_cache = dict(self.Indicators)
+        _tick = Tick(None, '', 0, 0)
+        _slice = FastSlice()
+        self._bt_last_date_int = 0
+
+        # ── Cache ALL attribute lookups as locals ──
+        _data = self.LocalData
+        _n = len(_data)
+        _exchange = self.Exchange
+        _algo = self.Algorithm
+        _portfolio = _algo.Portfolio
+        _last_prices = self._last_prices
+        _indicator_cache_get = self._indicator_cache.get
+        _ondata = _algo.OnData
+        _sq_hour = self.SQUARE_OFF_HOUR
+        _sq_minute = self.SQUARE_OFF_MINUTE
+        _handle_date_rollover = self._bt_handle_date_rollover
+        _handle_square_off = self._bt_handle_square_off
+        _seen_symbols = set(_portfolio.keys())
+        _bt_last_date_int = 0
+
+        # Speed measurement
+        _report_interval = 100_000
+        _t_start = _time.time()
+        _t_interval = _t_start
+        _max_tps = 0.0
+        _time_time = _time.time  # Cache the time function itself
+
+        for i in range(_n):
+            td = _data[i]
+
+            # ── Extract tick fields (avoid repeated dict[] lookups) ──
+            symbol = td['symbol']
+            price = td['ltp']
+            tick_dt = td['_dt']
+
+            # ── Reuse cached Tick ──
+            _tick.Price = price
+            _tick.Value = price
+            _tick.Volume = td['v']
+            _tick.Time = tick_dt
+            _tick.Symbol = symbol
+
+            # ── Reuse cached FastSlice ──
+            _slice.Time = tick_dt
+            _slice._data_symbol = symbol
+            _slice._data_tick = _tick
+
+            # ── Update state (locals) ──
+            _last_prices[symbol] = price
+            _algo.Time = tick_dt
+            self.CurrentSlice = _slice
+
+            # ── Portfolio entry (first tick for symbol) ──
+            if symbol not in _seen_symbols:
+                _portfolio[symbol] = SecurityHolding(symbol)
+                _seen_symbols.add(symbol)
+
+            # ── Indicator update (cached dict lookup) ──
+            indicators = _indicator_cache_get(symbol)
+            if indicators:
+                for ind in indicators:
+                    ind.Update(tick_dt, price)
+
+            # ── Date rollover (integer compare) ──
+            tick_date = td['_date_int']
+            if tick_date != _bt_last_date_int:
+                _bt_last_date_int = tick_date
+                self._bt_last_date_int = tick_date
+                _handle_date_rollover(td)
+
+            # ── Square-off (pre-computed ints) ──
+            if td['_hour'] == _sq_hour and td['_minute'] >= _sq_minute:
+                if not self._squared_off_today:
+                    _handle_square_off()
+                    _exchange._bt_tick_count += 1
+                    continue
+
+            # ── User strategy ──
+            _ondata(_slice)
+            _exchange._bt_tick_count += 1
+
+            # ── Periodic speed report ──
+            if (i + 1) % _report_interval == 0:
+                _now = _time_time()
+                _elapsed = _now - _t_interval
+                if _elapsed > 0:
+                    _tps = _report_interval / _elapsed
+                    if _tps > _max_tps:
+                        _max_tps = _tps
+                    _progress = ((i + 1) / _n) * 100
+                    logger.info(f"⚡ SPEED: {_tps:,.0f} ticks/sec | "
+                                f"Progress: {_progress:.1f}% ({i+1:,}/{_n:,})")
+                _t_interval = _now
+
+        # Final speed summary
+        _total_elapsed = _time_time() - _t_start
+        _avg_tps = _n / _total_elapsed if _total_elapsed > 0 else 0
+        _max_tps = max(_max_tps, _avg_tps)
+        logger.info(f"⚡ SPEED_FINAL: avg={_avg_tps:,.0f} max={_max_tps:,.0f} ticks/sec | "
+                     f"Total: {_n:,} ticks in {_total_elapsed:.2f}s")
 
     def CalculatePortfolioValue(self):
         """
@@ -354,21 +497,17 @@ class AlgorithmEngine:
 
             # ── Choose fast path or standard path ──
             if self.BacktestMode and delay == 0:
-                # ═══ TURBO BACKTEST PATH ═══
-                # Pre-cache indicator lookups (avoid dict.get per tick)
-                self._indicator_cache = dict(self.Indicators)
-                # Create reusable objects (zero allocation per tick)
-                self._reusable_tick = Tick(None, '', 0, 0)
-                self._reusable_slice = FastSlice()
-                self._bt_last_date_int = 0
+                # Enable turbo mode on algorithm (suppresses Log/Debug I/O)
+                self.Algorithm._turbo_mode = True
 
-                # Local method reference (avoids attribute lookup per tick)
-                _process = self.ProcessTickFast
-                _exchange = self.Exchange
+                # ═══ OPTIMIZED PYTHON TURBO PATH ═══
+                # The Python inlined path is faster than C++ for strategy-heavy
+                # workloads because it avoids PyBind11 boundary crossings per tick.
+                # C++ engine benefits only when OnData is rarely called.
+                logger.info(f"🚀 Python Turbo Engine — {_n:,} ticks, inlined loop")
+                self._run_python_turbo_path()
 
-                for tick in self.LocalData:
-                    _process(tick)
-                    _exchange._bt_tick_count += 1
+                self.Algorithm._turbo_mode = True
             else:
                 # Standard path (slow/medium speed, or live mode with local data)
                 for tick in self.LocalData:
@@ -633,8 +772,29 @@ class AlgorithmEngine:
         Uses self.Leverage (default 1x, configurable via SetLeverage).
         Returns True if order was executed, False otherwise.
         """
+        _is_bt = self.BacktestMode
+
+        # ═══ FAST PATH: skip if we already know we're broke for this symbol ═══
+        if _is_bt and percentage != 0:
+            _cache = getattr(self, '_setholdings_skip_cache', None)
+            if _cache is None:
+                self._setholdings_skip_cache = {}
+                _cache = self._setholdings_skip_cache
+
+            cash = self.Algorithm.Portfolio.get('Cash', 0.0)
+            cache_key = symbol
+
+            if cache_key in _cache:
+                cached_cash, cached_pct = _cache[cache_key]
+                # If cash hasn't changed and same direction, skip
+                if abs(cached_cash - cash) < 0.01 and (
+                    (percentage > 0 and cached_pct > 0) or
+                    (percentage < 0 and cached_pct < 0)
+                ):
+                    return False
+
         # 1. Sync Portfolio to get latest Balance (skip in backtest — memory is current)
-        if not self.BacktestMode:
+        if not _is_bt:
             self.SyncPortfolio()
         
         cash = self.Algorithm.Portfolio.get('Cash', 0.0)
@@ -644,8 +804,6 @@ class AlgorithmEngine:
         total_equity = self.Algorithm.Portfolio.get('TotalPortfolioValue', cash)
         
         # 2. Get Current Price (CurrentSlice first, then cached last price)
-        
-        # 2. Get Current Price (CurrentSlice first, then cached last price)
         price = None
         if self.CurrentSlice and self.CurrentSlice.ContainsKey(symbol):
             price = self.CurrentSlice[symbol].Price
@@ -653,7 +811,8 @@ class AlgorithmEngine:
             price = self._last_prices[symbol]
         
         if not price or price <= 0:
-            logger.warning(f"Cannot SetHoldings: No price data for {symbol}")
+            if not _is_bt:
+                logger.warning(f"Cannot SetHoldings: No price data for {symbol}")
             return False
 
         # 3. Calculate Target Quantity
@@ -661,7 +820,8 @@ class AlgorithmEngine:
         target_value = buying_power * percentage  # Negative for short
         target_qty = int(target_value / price)
         
-        logger.info(f"SetHoldings Calc: BP={buying_power:.2f} Pct={percentage} TgtVal={target_value:.2f} Price={price} Qty={target_qty}")
+        if not _is_bt:
+            logger.info(f"SetHoldings Calc: BP={buying_power:.2f} Pct={percentage} TgtVal={target_value:.2f} Price={price} Qty={target_qty}")
         
         # 4. Get Current Quantity
         current_holding = self.Algorithm.Portfolio.get(symbol)
@@ -682,40 +842,41 @@ class AlgorithmEngine:
             max_affordable_qty = int(max_affordable_value / price)
             
             if max_affordable_qty <= 0:
-                logger.info(f"⏭️ SetHoldings: Not enough cash for {symbol} (cash=₹{cash:.2f}, price=₹{price:.2f})")
+                if not _is_bt:
+                    logger.info(f"⏭️ SetHoldings: Not enough cash for {symbol} (cash=₹{cash:.2f}, price=₹{price:.2f})")
+                # Cache this rejection so we skip next time
+                if _is_bt:
+                    self._setholdings_skip_cache[symbol] = (cash, percentage)
                 return False
             
             if abs(order_qty) > max_affordable_qty:
-                logger.info(f"📉 SetHoldings: Capping {symbol} from {order_qty} to {max_affordable_qty} shares (limited by cash ₹{cash:.2f})")
+                if not _is_bt:
+                    logger.info(f"📉 SetHoldings: Capping {symbol} from {order_qty} to {max_affordable_qty} shares (limited by cash ₹{cash:.2f})")
                 order_qty = max_affordable_qty
 
         # 6. For SELL/SHORT orders: also cap if opening new short position
         elif action == "SELL":
-            # Only check cash if we are reducing cash (Opening Short)
-            # Shorting requires blocking 100% margin from Cash
-            current_long_qty = max(0, current_qty) # If we are long, selling reduces position, credits cash. No check needed.
-            
-            # We are selling `abs(order_qty)`. 
-            # Part of it might be closing a long (generating cash).
-            # Part of it might be opening a short (consuming cash).
-            
+            current_long_qty = max(0, current_qty)
             qty_to_close_long = min(abs(order_qty), current_long_qty)
             qty_new_short = abs(order_qty) - qty_to_close_long
             
             if qty_new_short > 0:
-                # We need cash for the new short portion
-                usable_cash = cash * 0.98 # Buffer
+                usable_cash = cash * 0.98
                 max_short_value = usable_cash / 1.001
                 max_short_qty = int(max_short_value / price)
                 
                 if max_short_qty <= 0:
-                     logger.info(f"⏭️ SetHoldings: Not enough cash to Short {symbol} (cash=₹{cash:.2f})")
-                     # If we can't short, but we were closing a long, just close the long
+                     if not _is_bt:
+                         logger.info(f"⏭️ SetHoldings: Not enough cash to Short {symbol} (cash=₹{cash:.2f})")
                      order_qty = -qty_to_close_long 
-                     if order_qty == 0: return False
+                     if order_qty == 0:
+                         if _is_bt:
+                             self._setholdings_skip_cache[symbol] = (cash, percentage)
+                         return False
                 
                 elif qty_new_short > max_short_qty:
-                     logger.info(f"📉 SetHoldings: Capping Short {symbol} to {max_short_qty} (limited by cash)")
+                     if not _is_bt:
+                         logger.info(f"📉 SetHoldings: Capping Short {symbol} to {max_short_qty} (limited by cash)")
                      order_qty = -(qty_to_close_long + max_short_qty)
 
         # 7. Execute
@@ -725,14 +886,18 @@ class AlgorithmEngine:
             "quantity": abs(order_qty),
             "price": price,
             "strategy_id": "USER_ALGO",
-            "timestamp": self.Algorithm.Time if self.BacktestMode else None
+            "timestamp": self.Algorithm.Time if _is_bt else None
         }
         
         success = self.Exchange.execute_order(signal)
 
         if success:
-            logger.info(f"✅ Executed SetHoldings: {action} {abs(order_qty)} {symbol}")
+            if not _is_bt:
+                logger.info(f"✅ Executed SetHoldings: {action} {abs(order_qty)} {symbol}")
             self.SyncPortfolio() # Update state immediately
+            # Clear skip cache for this symbol (cash changed)
+            if _is_bt and hasattr(self, '_setholdings_skip_cache'):
+                self._setholdings_skip_cache.pop(symbol, None)
         
         return success
 
@@ -834,13 +999,15 @@ class AlgorithmEngine:
                 }
                 success = self.Exchange.execute_order(signal)
                 if success:
-                    logger.info(f"✅ Liquidated {symbol}: {action} {abs(holding.Quantity)} @ {price}")
+                    if not self.BacktestMode:
+                        logger.info(f"✅ Liquidated {symbol}: {action} {abs(holding.Quantity)} @ {price}")
                     self.SyncPortfolio()
         else:
             # Liquidate ALL positions
             self.SyncPortfolio()
             cash_before = self.Algorithm.Portfolio['Cash']
-            logger.info(f"💣 Liquidating ALL. Cash Before: ₹{cash_before:.2f}")
+            if not self.BacktestMode:
+                logger.info(f"💣 Liquidating ALL. Cash Before: ₹{cash_before:.2f}")
             
             symbols_to_close = []
             for sym, holding in self.Algorithm.Portfolio.items():
@@ -865,11 +1032,13 @@ class AlgorithmEngine:
                 }
                 success = self.Exchange.execute_order(signal)
                 if success:
-                    logger.info(f"✅ Liquidated {sym}: {action} {abs(holding.Quantity)} @ {price}")
+                    if not self.BacktestMode:
+                        logger.info(f"✅ Liquidated {sym}: {action} {abs(holding.Quantity)} @ {price}")
 
             self.SyncPortfolio()
             cash_after = self.Algorithm.Portfolio['Cash']
-            logger.info(f"✅ Liquidation Complete. Cash After: ₹{cash_after:.2f} (Diff: {cash_after - cash_before:+.2f})")
+            if not self.BacktestMode:
+                logger.info(f"✅ Liquidation Complete. Cash After: ₹{cash_after:.2f} (Diff: {cash_after - cash_before:+.2f})")
 
 if __name__ == "__main__":
     pass

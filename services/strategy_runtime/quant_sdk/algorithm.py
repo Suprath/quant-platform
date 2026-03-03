@@ -151,8 +151,12 @@ class QCAlgorithm(ABC):
 
     def Debug(self, message):
         """Send a debug message to the console/log."""
+        if getattr(self, '_turbo_mode', False):
+            return
         self._logger.info(f"DEBUG: {message}")
 
     def Log(self, message):
         """Send a log message."""
+        if getattr(self, '_turbo_mode', False):
+            return
         self._logger.info(f"LOG: {message}")

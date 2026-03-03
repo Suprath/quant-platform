@@ -1,0 +1,1 @@
+/usr/bin/c++ -fPIC -O3 -DNDEBUG -march=native -flto -flto=auto -Wl,--dependency-file=CMakeFiles/kira_engine.dir/link.d -shared  -o kira_engine.cpython-311-aarch64-linux-gnu.so CMakeFiles/kira_engine.dir/bindings.cpp.o

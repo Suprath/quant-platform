@@ -264,7 +264,6 @@ class PaperExchange:
                 else:
                     positions[symbol] = {'qty': new_qty, 'avg_price': avg_entry}
 
-                logger.info(f"🔵 COVERED {qty_to_close} {symbol} @ {price:.2f} | PnL: ₹{gross_pnl:.2f}")
                 self._bt_order_buf.append((self.run_id, symbol, action, quantity, price, gross_pnl, trade_time))
 
             else:
@@ -274,7 +273,6 @@ class PaperExchange:
                 total_outflow = cost + charges
 
                 if balance < total_outflow:
-                    logger.warning(f"⏭️ Skip BUY {symbol}: need ₹{total_outflow:.2f}, have ₹{balance:.2f}")
                     return False
 
                 self._bt_balance -= total_outflow
@@ -287,7 +285,6 @@ class PaperExchange:
                 else:
                     positions[symbol] = {'qty': quantity, 'avg_price': price}
 
-                logger.info(f"🟢 BOUGHT {quantity} {symbol} @ {price:.2f}")
                 self._bt_order_buf.append((self.run_id, symbol, action, quantity, price, None, trade_time))
 
         elif action == 'SELL':
@@ -308,7 +305,6 @@ class PaperExchange:
                 else:
                     positions[symbol] = {'qty': new_qty, 'avg_price': avg_buy}
 
-                logger.info(f"🔴 SOLD {qty_to_close} {symbol} @ {price:.2f} | PnL: ₹{pnl:.2f}")
                 self._bt_order_buf.append((self.run_id, symbol, action, quantity, price, pnl, trade_time))
 
             else:
@@ -318,7 +314,6 @@ class PaperExchange:
                 total_outflow = cost + charges
 
                 if balance < total_outflow:
-                    logger.warning(f"⏭️ Skip SHORT {symbol}: need ₹{total_outflow:.2f}, have ₹{balance:.2f}")
                     return False
 
                 self._bt_balance -= total_outflow
@@ -331,7 +326,6 @@ class PaperExchange:
                 else:
                     positions[symbol] = {'qty': -quantity, 'avg_price': price}
 
-                logger.info(f"🔻 SHORTED {quantity} {symbol} @ {price:.2f}")
                 self._bt_order_buf.append((self.run_id, symbol, action, quantity, price, None, trade_time))
 
         self._bt_trade_count += 1

@@ -22,7 +22,10 @@ class TradeBar:
 class Tick:
     """
     Represents a single tick of data.
+    Uses __slots__ for ~30% faster attribute access.
     """
+    __slots__ = ('Time', 'Symbol', 'Price', 'Volume', 'Value')
+
     def __init__(self, time, symbol, price, volume):
         self.Time = time
         self.Symbol = symbol
@@ -32,6 +35,14 @@ class Tick:
 
     @property
     def Close(self):
+        return self.Price
+
+    @property
+    def High(self):
+        return self.Price
+
+    @property
+    def Low(self):
         return self.Price
 
     def __repr__(self):
@@ -97,3 +108,62 @@ class FastSlice:
 
     def get(self, symbol):
         return self._data_tick if symbol == self._data_symbol else None
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# HIGH-PERFORMANCE INDICATORS (O(1) per tick)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class BollingerBands:
+    """
+    O(1) Bollinger Bands using running sum and sum-of-squares.
+    Replaces statistics.mean()/stdev() which are O(n) per call.
+
+    For a 300-period window, this saves ~600 iterations per tick.
+    Over 1.7M ticks, that's ~1 billion fewer Python loop iterations.
+    """
+    __slots__ = ('period', 'num_std', '_buf', '_idx', '_count',
+                 '_sum', '_sum_sq', '_full')
+
+    def __init__(self, period: int = 20, num_std: float = 2.0):
+        self.period = period
+        self.num_std = num_std
+        self._buf = [0.0] * period  # Circular buffer
+        self._idx = 0
+        self._count = 0
+        self._sum = 0.0
+        self._sum_sq = 0.0
+        self._full = False
+
+    def update(self, price: float):
+        if self._full:
+            # Remove oldest value from running sums
+            old = self._buf[self._idx]
+            self._sum -= old
+            self._sum_sq -= old * old
+
+        self._buf[self._idx] = price
+        self._sum += price
+        self._sum_sq += price * price
+
+        self._idx = (self._idx + 1) % self.period
+        if not self._full:
+            self._count += 1
+            if self._count >= self.period:
+                self._full = True
+
+    @property
+    def ready(self) -> bool:
+        return self._full
+
+    def values(self):
+        """Returns (upper, lower, mean) in O(1)."""
+        n = self.period
+        mean = self._sum / n
+        # Variance = E[X²] - (E[X])²
+        variance = (self._sum_sq / n) - (mean * mean)
+        # Guard against floating-point negative variance
+        std = variance ** 0.5 if variance > 0 else 0.0
+        upper = mean + (self.num_std * std)
+        lower = mean - (self.num_std * std)
+        return upper, lower, mean

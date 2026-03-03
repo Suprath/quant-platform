@@ -120,6 +120,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONOPTIMIZE=1 # Disable debug assertions for speed
+      - KIRA_CPP_ENGINE=${KIRA_CPP_ENGINE:-false}
     env_file:
       - ../.env
     volumes:

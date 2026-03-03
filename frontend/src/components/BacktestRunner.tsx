@@ -9,7 +9,7 @@ import {
     DialogContent,
     DialogTrigger,
 } from "@/components/ui/dialog";
-import { Play, Loader2, TrendingUp, BarChart3, Clock, DollarSign, Activity, Settings2, Target, Percent, IndianRupee } from 'lucide-react';
+import { Play, Loader2, TrendingUp, BarChart3, Clock, DollarSign, Activity, Settings2, Target, Percent, IndianRupee, Zap, Gauge } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
@@ -41,6 +41,13 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
 
     const [equityHistory, setEquityHistory] = useState<{ time: string, equity: number }[]>([]);
     const [trades, setTrades] = useState<Trade[]>([]);
+
+    // Speed metrics state
+    const [liveSpeed, setLiveSpeed] = useState<number>(0);
+    const [progress, setProgress] = useState<number>(0);
+    const [maxSpeed, setMaxSpeed] = useState<number>(0);
+    const [avgSpeed, setAvgSpeed] = useState<number>(0);
+    const [speedFinal, setSpeedFinal] = useState<boolean>(false);
 
     const [searchQuery, setSearchQuery] = useState("");
     const [searchResults, setSearchResults] = useState<{ key: string, symbol: string, name: string, exchange: string, lot_size: number }[]>([]);
@@ -106,6 +113,11 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
         setActiveRunId(null);
         setEquityHistory([]);
         setTrades([]);
+        setLiveSpeed(0);
+        setProgress(0);
+        setMaxSpeed(0);
+        setAvgSpeed(0);
+        setSpeedFinal(false);
         setStats({
             totalReturn: "0.0%", netProfit: 0.0, sharpeRatio: 0.0,
             maxDrawdown: "0.0%", winRate: "0.0%", totalTrades: 0, profitFactor: 0.0, brokeragePaid: 0.0
@@ -155,6 +167,28 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                             if (match) return { time: match[1], type: match[2].toLowerCase(), message: match[3] };
                             return { time: '', type: 'info', message: l };
                         });
+
+                        // ── Parse speed metrics from logs ──
+                        for (const l of parsedLogs) {
+                            // Live speed: ...⚡ SPEED: 123,456 ticks/sec | Progress: 50.0% (100,000/200,000)
+                            // Log format is: INFO:AlgorithmEngine:⚡ SPEED: ... (no ^ anchor)
+                            const speedMatch = l.message.match(/SPEED: ([\d,]+) ticks\/sec \| Progress: ([\d.]+)%/);
+                            if (speedMatch && !l.message.includes('SPEED_FINAL')) {
+                                const tps = parseInt(speedMatch[1].replace(/,/g, ''), 10);
+                                const prog = parseFloat(speedMatch[2]);
+                                setLiveSpeed(tps);
+                                setProgress(prog);
+                                setMaxSpeed(prev => Math.max(prev, tps));
+                            }
+                            // Final speed: ...⚡ SPEED_FINAL: avg=123,456 max=234,567 ticks/sec
+                            const finalMatch = l.message.match(/SPEED_FINAL: avg=([\d,]+) max=([\d,]+) ticks\/sec/);
+                            if (finalMatch) {
+                                setAvgSpeed(parseInt(finalMatch[1].replace(/,/g, ''), 10));
+                                setMaxSpeed(parseInt(finalMatch[2].replace(/,/g, ''), 10));
+                                setSpeedFinal(true);
+                                setProgress(100);
+                            }
+                        }
 
                         // Check for completion
                         const isFinished = parsedLogs.some((l) => l.message.includes("Backtest Runner Finished") || l.message.includes("Backtest Stopped"));
@@ -376,6 +410,26 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                     </div>
 
                     <div className="flex items-center gap-3 w-full lg:w-auto lg:justify-end mt-2 lg:mt-0">
+                        {/* Live Speed Indicator */}
+                        {isLoading && liveSpeed > 0 && (
+                            <div className="flex items-center gap-3 bg-[#0a0a0b] border border-emerald-500/30 rounded-lg px-4 py-2 shrink-0 shadow-[0_0_12px_rgba(16,185,129,0.15)]">
+                                <Zap className="h-4 w-4 text-emerald-400 animate-pulse" />
+                                <div className="flex flex-col">
+                                    <span className="text-emerald-400 font-mono text-lg font-bold leading-tight">
+                                        {liveSpeed >= 1_000_000 ? `${(liveSpeed / 1_000_000).toFixed(1)}M` : liveSpeed >= 1000 ? `${(liveSpeed / 1000).toFixed(0)}K` : liveSpeed}
+                                        <span className="text-emerald-600 text-xs font-normal ml-1">ticks/s</span>
+                                    </span>
+                                    <div className="flex items-center gap-2 mt-0.5">
+                                        <div className="w-24 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                                            <div className="h-full bg-gradient-to-r from-emerald-500 to-cyan-400 rounded-full transition-all duration-500"
+                                                style={{ width: `${Math.min(progress, 100)}%` }} />
+                                        </div>
+                                        <span className="text-slate-500 text-[10px] font-mono">{progress.toFixed(0)}%</span>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
                         {isLoading ? (
                             <Button onClick={stopBacktest} variant="destructive" className="h-10 px-6 font-semibold shadow-[0_0_15px_rgba(239,68,68,0.4)] shrink-0">
                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" /> HALT EXECUTION
@@ -464,13 +518,23 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                     </div>
 
                     {/* Top Insights Layer */}
-                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 shrink-0">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 shrink-0">
                         {[
                             { label: "Net Profit", val: `₹${stats.netProfit.toFixed(1)}`, icon: IndianRupee, color: stats.netProfit >= 0 ? 'text-green-400' : 'text-red-400' },
                             { label: "Win Rate", val: stats.winRate, icon: Target, color: 'text-blue-400' },
                             { label: "Max Drawdown", val: stats.maxDrawdown, icon: Percent, color: 'text-red-400' },
                             { label: "Sharpe Ratio", val: stats.sharpeRatio.toFixed(2), icon: Activity, color: 'text-purple-400' },
                             { label: "Est. Brokerage", val: `₹${(stats.brokeragePaid || 0).toFixed(2)}`, icon: IndianRupee, color: 'text-yellow-500' },
+                            {
+                                label: "Processing Speed",
+                                val: speedFinal
+                                    ? `${avgSpeed >= 1_000_000 ? (avgSpeed / 1_000_000).toFixed(1) + 'M' : avgSpeed >= 1000 ? (avgSpeed / 1000).toFixed(0) + 'K' : avgSpeed} avg / ${maxSpeed >= 1_000_000 ? (maxSpeed / 1_000_000).toFixed(1) + 'M' : maxSpeed >= 1000 ? (maxSpeed / 1000).toFixed(0) + 'K' : maxSpeed} max`
+                                    : liveSpeed > 0
+                                        ? `${liveSpeed >= 1_000_000 ? (liveSpeed / 1_000_000).toFixed(1) + 'M' : liveSpeed >= 1000 ? (liveSpeed / 1000).toFixed(0) + 'K' : liveSpeed} ticks/s`
+                                        : '---',
+                                icon: Gauge,
+                                color: 'text-emerald-400'
+                            },
                         ].map((s, i) => (
                             <div key={i} className="bg-[#111113] border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
                                 <div className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-1 sm:gap-0 mb-2">
@@ -478,7 +542,7 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                                     <s.icon className={`h-4 w-4 opacity-50 shrink-0 ${s.color}`} />
                                 </div>
                                 <span className={`text-xl font-bold tracking-tight font-mono ${s.color}`}>
-                                    {isComplete ? s.val : "---"}
+                                    {(isComplete || i === 5) ? s.val : "---"}
                                 </span>
                             </div>
                         ))}
