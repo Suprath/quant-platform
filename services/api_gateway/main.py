@@ -483,6 +483,20 @@ def get_project(project_name: str):
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
 
+@app.get("/api/v1/strategies/ide-projects")
+def get_all_ide_projects():
+    """Bulk fetch all strategy projects Proxy"""
+    try:
+        response = requests.get(
+            "http://strategy_runtime:8000/strategies/ide-projects",
+            timeout=10
+        )
+        if response.status_code == 200:
+             return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+
 class BacktestRequest(BaseModel):
     strategy_code: str
     symbol: str

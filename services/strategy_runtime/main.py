@@ -313,6 +313,37 @@ def get_project(project_name: str):
     
     return {"project": project_name, "files": files}
 
+@app.get("/strategies/ide-projects")
+def get_all_ide_projects():
+    """Bulk fetch all strategy projects and their files for the React IDE."""
+    projects = []
+    for d in glob.glob("strategies/*/"):
+        pkg_name = os.path.basename(os.path.normpath(d))
+        if pkg_name.startswith("backtest_") or pkg_name.startswith("__"):
+            continue
+            
+        files = []
+        for py_file in sorted(glob.glob(os.path.join(d, "*.py"))):
+            filename = os.path.basename(py_file)
+            file_id = f"f_{pkg_name}_{filename.replace('.py', '')}"
+            with open(py_file, 'r') as f:
+                content = f.read()
+            files.append({
+                "id": file_id,
+                "name": filename,
+                "content": content
+            })
+            
+        if files:
+            projects.append({
+                "id": f"proj_{pkg_name}",
+                "name": pkg_name,
+                "expanded": False,
+                "files": files
+            })
+            
+    return {"projects": projects}
+
 @app.get("/live/status")
 def get_live_status():
     global ACTIVE_ENGINE, ACTIVE_STRATEGY_NAME

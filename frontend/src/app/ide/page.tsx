@@ -210,22 +210,61 @@ export default function IdePage() {
     // Save feedback
     const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
-    // --- Load from LocalStorage ---
+    // --- Load from LocalStorage & Backend ---
     useEffect(() => {
-        const saved = localStorage.getItem('quant_ide_projects_v2');
-        if (saved) {
+        const loadProjects = async () => {
+            let localProjects: Project[] = [];
+            const saved = localStorage.getItem('quant_ide_projects_v2');
+            if (saved) {
+                try {
+                    localProjects = JSON.parse(saved);
+                } catch (e) {
+                    console.error("Failed to load local projects", e);
+                }
+            }
+
+            let backendProjects: Project[] = [];
             try {
-                const parsed = JSON.parse(saved);
-                if (parsed.length > 0) {
-                    setProjects(parsed);
-                    setActiveProjectId(parsed[0].id);
-                    if (parsed[0].files.length > 0) {
-                        setActiveFileId(parsed[0].files[0].id);
-                        setOpenTabs([{ projectId: parsed[0].id, fileId: parsed[0].files[0].id }]);
+                const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+                const res = await fetch(`${API_URL}/api/v1/strategies/ide-projects`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.projects && Array.isArray(data.projects)) {
+                        backendProjects = data.projects;
                     }
                 }
-            } catch (e) { console.error("Failed to load projects", e); }
-        }
+            } catch (e) {
+                console.error("Failed to fetch backend projects", e);
+            }
+
+            // Merge: backend takes precedence over local if names match
+            const merged = [...backendProjects];
+            localProjects.forEach(lp => {
+                if (!merged.find(bp => bp.name === lp.name)) {
+                    merged.push(lp);
+                }
+            });
+
+            if (merged.length > 0) {
+                setProjects(merged);
+
+                // Only reset active file if current is invalid
+                setActiveProjectId(prevProjId => {
+                    const exists = merged.find(p => p.id === prevProjId);
+                    return exists ? prevProjId : merged[0].id;
+                });
+
+                // Initialize default open tab if empty
+                setOpenTabs(prev => {
+                    if (prev.length === 0 && merged[0].files.length > 0) {
+                        return [{ projectId: merged[0].id, fileId: merged[0].files[0].id }];
+                    }
+                    return prev;
+                });
+            }
+        };
+
+        loadProjects();
     }, []);
 
     const saveToStorage = useCallback((newProjects: Project[]) => {
