@@ -5,7 +5,7 @@ from typing import Optional, Dict
 from starlette.middleware.cors import CORSMiddleware
 
 # Initialize FastMCP Server
-mcp = FastMCP("KIRA Quant Platform")
+mcp = FastMCP("Kira")
 
 # Point to the api_gateway container inside the docker network
 API_BASE_URL = "http://api_gateway:8000/api/v1"
@@ -28,24 +28,52 @@ async def get_kira_documentation() -> str:
 3. QCAlgorithm METHODS (use with `self.`):
    - `SetCash(amount: float)`
    - `SetStartDate(year, month, day)` / `SetEndDate(...)`
-   - `AddEquity(symbol: str)`
-   - `SetHoldings(symbol: str, percentage: float)` -> percentage is 0.0 to 1.0 (-1.0 for short).
+   - `AddEquity(symbol: str)` -> EX: `self.AddEquity("NSE_EQ|INE002A01018")` (RELIANCE)
+   - `SetHoldings(symbol: str, percentage: float)`
    - `Liquidate(symbol: str = None)`
-   - `SMA(symbol, period)` / `EMA(symbol, period)` -> Returns an indicator object.
+   - `SMA(symbol, period)` / `EMA(symbol, period)` -> EX: `self.SMA("NSE_EQ|INE002A01018", 20)`
    - `Schedule.On(self.DateRules.EveryDay(), self.TimeRules.At(hour, minute), self.FuncName)`
    - `Debug(msg)` / `Log(msg)`
 
-4. ONDATA / SLICE (`data`):
-   - Check if symbol exists: `if data.ContainsKey("NSE_INDEX|Nifty 50"):`
-   - Get price: `price = data["NSE_INDEX|Nifty 50"].Price`
+4. SYMBOL KEYS: 
+   - You MUST use the Upstox Instrument Key (Token) for all symbol arguments.
+   - Use the `search_symbols` tool to find the correct token (e.g., `NSE_EQ|INE002A01018` for RELIANCE).
+   - DO NOT use human-readable names like "RELIANCE" or placeholders like "AAPL".
 
-5. INDICATORS:
-   - Must be initialized in `Initialize()`, e.g., `self.sma = self.SMA("AAPL", 14)`
+5. ONDATA / SLICE (`data`):
+   - Check if symbol exists: `if data.ContainsKey("NSE_EQ|INE002A01018"):`
+   - Get price: `price = data["NSE_EQ|INE002A01018"].Price`
+
+6. INDICATORS:
+   - Must be initialized in `Initialize()`, e.g., `self.sma = self.SMA("NSE_EQ|INE002A01018", 14)`
    - Usage in `OnData`: `if self.sma.IsReady: value = self.sma.Current.Value`
 
-6. PORTFOLIO STATE (`self.Portfolio`):
-   - Check holdings: `if self.Portfolio["AAPL"].Invested:`
+7. UNIVERSE SELECTION (DYNAMIC):
+   - Definition: `self.AddUniverse(self.CoarseSelectionFunction)` in `Initialize()`.
+   - The function receives a list of `candidates` (dicts with `symbol` and `score`).
+   - `score` is a combination of Relative Strength (RS) vs Nifty 50 and Volume.
+   - Example (Top 3 by RS):
+     ```python
+     def CoarseSelectionFunction(self, candidates):
+         # Sort by score (Momentum/RS) descending
+         sorted_candidates = sorted(candidates, key=lambda x: x['score'], reverse=True)
+         # Return the top 3 symbol strings
+         return [x['symbol'] for x in sorted_candidates[:3]]
+     ```
+
+8. PORTFOLIO STATE (`self.Portfolio`):
+   - Check holdings: `if self.Portfolio["NSE_EQ|INE002A01018"].Invested:`
    - Get total equity: `self.Portfolio.TotalPortfolioValue`
+
+9. BACKTEST WORKFLOW (LLM INSTRUCTIONS):
+   - Step 1: Use `search_symbols` to get the correct instrument keys for your strategy.
+   - Step 2: Write strategy using ISIN-based keys or AddUniverse for dynamic selection.
+   - Step 3: Call `run_backtest`. It returns a `run_id`.
+   - Step 4: POLL `get_backtest_status` every 5-10 seconds.
+   - Step 5: if status is 'running', WAIT. Do not call stats yet.
+   - Step 6: if status is 'completed', call `get_backtest_stats`.
+   - Step 7: if status is 'failed', call `get_backtest_logs` to debug.
+   - NOTE: Backfills can take 30-60s due to Upstox Free Tier (1 req/s) rate limits. BE PATIENT.
 """
 
 @mcp.tool()
@@ -101,19 +129,36 @@ async def run_backtest(
     start_date: str, 
     end_date: str, 
     initial_cash: float, 
-    strategy_name: str = "CustomStrategy"
+    strategy_name: str = "CustomStrategy",
+    trading_mode: str = "MIS"
 ) -> str:
     """Trigger a historical backtest for a strategy on the KIRA engine.
     
     Args:
-        strategy_code: The raw Python code of the strategy to run (must inherit QCAlgorithm)
-        symbol: The instrument identifier, e.g. 'NSE_INDEX|Nifty 50' or 'NSE_EQ|RELIANCE'
+        strategy_code: The raw Python code of the strategy (must inherit QCAlgorithm)
+        symbol: The instrument identifier, e.g. 'NSE_EQ|RELIANCE'
         start_date: YYYY-MM-DD
         end_date: YYYY-MM-DD
-        initial_cash: Starting capital, e.g. 100000.0
+        initial_cash: Starting capital
         strategy_name: Optional name for the strategy run
+        trading_mode: 'MIS' for Intraday, 'CNC' for Delivery (default: MIS)
+        
+    LLM INSTRUCTION: This starts an ASYNCHRONOUS process. You must capture the `run_id` 
+    and poll `get_backtest_status` until it reaches 'completed' or 'failed'.
     """
     async with httpx.AsyncClient() as client:
+        # Automated symbol translation for better LLM UX
+        try:
+            mapping_resp = await client.get(f"{API_BASE_URL}/backfill/stocks", timeout=10.0)
+            if mapping_resp.status_code == 200:
+                stock_map = mapping_resp.json()
+                name_to_token = {s["name"].upper(): s["token"] for s in stock_map}
+                clean_symbol = symbol.split('|')[-1].upper() if '|' in symbol else symbol.upper()
+                if clean_symbol in name_to_token:
+                    symbol = name_to_token[clean_symbol]
+        except Exception:
+            pass
+
         payload = {
             "strategy_code": strategy_code,
             "symbol": symbol,
@@ -121,6 +166,7 @@ async def run_backtest(
             "end_date": end_date,
             "initial_cash": initial_cash,
             "strategy_name": strategy_name,
+            "trading_mode": trading_mode,
             "speed": "fast"
         }
         try:
@@ -136,11 +182,13 @@ async def get_backtest_status(run_id: str) -> str:
     
     Args:
         run_id: The UUID of the backtest
+        
+    LLM INSTRUCTION: Poll this every 5 seconds. If the status is 'running', 
+    yield control and wait. If 'failed', use `get_backtest_logs` for a traceback.
     """
     async with httpx.AsyncClient() as client:
         try:
-            # Reusing the logs endpoint which has the status
-            response = await client.get(f"{API_BASE_URL}/backtest/logs/{run_id}")
+            response = await client.get(f"{API_BASE_URL}/backtest/status/{run_id}")
             response.raise_for_status()
             data = response.json()
             return f"Status: {data.get('status', 'Unknown')}"
@@ -153,6 +201,9 @@ async def get_backtest_stats(run_id: str) -> str:
     
     Args:
         run_id: The UUID of the backtest
+        
+    LLM INSTRUCTION: Do NOT call this until `get_backtest_status` returns 'completed'.
+    Calling this on a running or failed backtest will return an error or empty stats.
     """
     async with httpx.AsyncClient() as client:
         try:
@@ -240,6 +291,28 @@ async def get_backtest_logs(run_id: str) -> str:
             return "\\n".join(logs)
         except Exception as e:
             return f"Error getting logs: {str(e)}"
+
+@mcp.tool()
+async def search_symbols(query: str = "") -> str:
+    """Search for the correct Upstox Instrument Keys (Tokens) for stocks.
+    
+    USE THIS TOOL to find the correct symbol strings for AddEquity, SMA, etc.
+    Examples: 'RELIANCE' -> 'NSE_EQ|INE002A01018', 'SBIN' -> 'NSE_EQ|INE062A01020'
+    
+    Args:
+        query: Optional stock name or partial string to filter by (e.g. 'TATA')
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{API_BASE_URL}/backfill/stocks")
+            response.raise_for_status()
+            stocks = response.json()
+            if query:
+                q = query.upper()
+                stocks = [s for s in stocks if q in s["name"].upper() or q in s["token"].upper()]
+            return json.dumps(stocks, indent=2)
+        except Exception as e:
+            return f"Error searching symbols: {str(e)}"
 # Expose the ASGI app for Uvicorn
 if hasattr(mcp, "sse_app"):
     app = mcp.sse_app()

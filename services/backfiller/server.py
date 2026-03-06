@@ -23,10 +23,11 @@ app = FastAPI(title="Backfiller Service")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # --- CONFIG ---
-API_BASE_URL = "https://api.upstox.com/v2/historical-candle"
+API_BASE_URL = "https://api.upstox.com/v2/historical-candle/intraday"
 ACCESS_TOKEN = os.getenv('UPSTOX_ACCESS_TOKEN')
-DELAY_BETWEEN_CHUNKS = 1.5
-DELAY_BETWEEN_STOCKS = 3.0
+# Safe margin for Free Tier (1 req/s)
+DELAY_BETWEEN_CHUNKS = 1.6
+DELAY_BETWEEN_STOCKS = 3.2
 
 # Top Nifty 50 stocks
 STOCK_LIST = [
@@ -145,7 +146,7 @@ async def fetch_candle_chunk(session, symbol, unit, interval, to_date, from_date
                 add_log(f"❌ Auth failed ({response.status}). Token expired?")
                 return None
             elif response.status == 429:
-                add_log("⚠️ Rate limited! Waiting 60s...")
+                add_log("⚠️ Rate limited (429)! Waiting 60 seconds before retry...")
                 await asyncio.sleep(60)
                 return []
             else:
@@ -154,6 +155,10 @@ async def fetch_candle_chunk(session, symbol, unit, interval, to_date, from_date
                     add_log(f"   ⚠️ API Error ({response.status}): {error_data}")
                 except:
                     add_log(f"   ⚠️ API Error: {response.status}")
+                
+                # If resource not found (404), return empty list so loop continues
+                if response.status == 404:
+                    return []
                 return None
     except Exception as e:
         add_log(f"   Network error: {e}")

@@ -21,7 +21,7 @@ STRATEGY_NAME = os.getenv('STRATEGY_NAME')
 QUESTDB_URL = os.getenv('QUESTDB_URL', 'http://questdb_tsdb:9000')
 TRADING_MODE = os.getenv('TRADING_MODE', 'MIS')
 UPSTOX_ACCESS_TOKEN = os.getenv('UPSTOX_ACCESS_TOKEN', '')
-UPSTOX_API_BASE = "https://api.upstox.com/v3/historical-candle"
+UPSTOX_API_BASE = "https://api.upstox.com/v2/historical-candle/intraday"
 
 # Known stocks for backfill (ISIN -> Name mapping)
 KNOWN_STOCKS = {
@@ -69,9 +69,9 @@ KNOWN_STOCKS = {
     "BSE_EQ|INE775A01035": "TATAMOTORS (BSE)"
 }
 
-# Rate limit config (safe margin below Upstox limits)
-BACKFILL_DELAY_CHUNKS = 1.5   # seconds between API calls
-BACKFILL_DELAY_STOCKS = 3.0   # seconds between stocks
+# Rate limit config (safe margin below Upstox limits - Free Tier 1 req/s)
+BACKFILL_DELAY_CHUNKS = 1.6   # seconds between API calls
+BACKFILL_DELAY_STOCKS = 3.2   # seconds between stocks
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("BacktestRunner")
@@ -159,9 +159,9 @@ def find_missing_dates(symbols, start_date, end_date):
 
 
 async def fetch_candle_chunk(session, symbol, to_date, from_date):
-    """Fetch a single chunk from Upstox V3 API."""
+    """Fetch a single chunk from Upstox V2 API."""
     encoded_symbol = urllib.parse.quote(symbol)
-    url = f"{UPSTOX_API_BASE}/{encoded_symbol}/minutes/1/{to_date}/{from_date}"
+    url = f"{UPSTOX_API_BASE}/{encoded_symbol}/1minute/{to_date}/{from_date}"
     headers = {
         'Accept': 'application/json',
         'Authorization': f'Bearer {UPSTOX_ACCESS_TOKEN}'
@@ -175,7 +175,7 @@ async def fetch_candle_chunk(session, symbol, to_date, from_date):
                 logger.error("❌ Upstox API: 401 Unauthorized — Token expired")
                 return None
             elif response.status == 429:
-                logger.warning("⚠️ Rate limited! Waiting 60s...")
+                logger.warning("⚠️ Rate limited (429)! Waiting 60s before retry...")
                 await asyncio.sleep(60)
                 return []
             else:
@@ -195,44 +195,51 @@ async def backfill_symbol(session, qdb_conn, symbol, missing_dates):
     name = KNOWN_STOCKS.get(symbol, symbol)
     total_saved = 0
 
-    # Group consecutive missing dates into date ranges for efficient API calls
+    # Group consecutive missing dates into date ranges
     missing_dts = sorted([datetime.strptime(d, "%Y-%m-%d") for d in missing_dates])
     ranges = []
-    range_start = missing_dts[0]
-    range_end = missing_dts[0]
+    if missing_dts:
+        range_start = missing_dts[0]
+        range_end = missing_dts[0]
 
-    for dt in missing_dts[1:]:
-        if (dt - range_end).days <= 3:  # Group dates within 3 days (skipping weekends)
-            range_end = dt
-        else:
-            ranges.append((range_start, range_end))
-            range_start = dt
-            range_end = dt
-    ranges.append((range_start, range_end))
+        for dt in missing_dts[1:]:
+            if (dt - range_end).days <= 3:  # Group dates within 3 days (skipping weekends)
+                range_end = dt
+            else:
+                ranges.append((range_start, range_end))
+                range_start = dt
+                range_end = dt
+        ranges.append((range_start, range_end))
 
     for r_start, r_end in ranges:
-        from_str = r_start.strftime('%Y-%m-%d')
-        to_str = r_end.strftime('%Y-%m-%d')
-        logger.info(f"  📥 Backfilling {name}: {from_str} → {to_str}...")
+        # Split each range into 30-day chunks to satisfy Upstox API limits
+        current_to = r_end
+        while current_to >= r_start:
+            current_from = max(r_start, current_to - timedelta(days=30))
+            
+            from_str = current_from.strftime('%Y-%m-%d')
+            to_str = current_to.strftime('%Y-%m-%d')
+            logger.info(f"  📥 Backfilling {name}: {from_str} → {to_str}...")
 
-        candles = await fetch_candle_chunk(session, symbol, to_str, from_str)
+            candles = await fetch_candle_chunk(session, symbol, to_str, from_str)
 
-        if candles is None:  # Auth error
-            return -1
+            if candles is None:  # Auth error
+                return -1
 
-        if candles:
-            cur = qdb_conn.cursor()
-            for c in candles:
-                cur.execute("""
-                    INSERT INTO ohlc (timestamp, symbol, timeframe, open, high, low, close, volume)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, (c[0], symbol, "1m", c[1], c[2], c[3], c[4], c[5]))
-            qdb_conn.commit()
-            cur.close()
-            total_saved += len(candles)
-            logger.info(f"  ✅ {name}: {len(candles)} candles saved & committed")
+            if candles:
+                cur = qdb_conn.cursor()
+                for c in candles:
+                    cur.execute("""
+                        INSERT INTO ohlc (timestamp, symbol, timeframe, open, high, low, close, volume)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (c[0], symbol, "1m", c[1], c[2], c[3], c[4], c[5]))
+                qdb_conn.commit()
+                cur.close()
+                total_saved += len(candles)
+                logger.info(f"  ✅ {name}: {len(candles)} candles saved & committed")
 
-        await asyncio.sleep(BACKFILL_DELAY_CHUNKS)
+            current_to = current_from - timedelta(days=1)
+            await asyncio.sleep(BACKFILL_DELAY_CHUNKS)
 
     return total_saved
 
@@ -316,9 +323,10 @@ async def auto_backfill(symbols, start_date, end_date):
             logger.warning(f"  ⚠️ Post-backfill verification error: {e}")
 
 
-def scan_market(date_str, top_n=5):
+def scan_market(date_str, selection_func=None):
     """
-    Mimic Scanner Service: Fetch top N stocks by Momentum/RS from QuestDB.
+    Mimic Scanner Service: Fetch stocks by Momentum/RS from QuestDB.
+    Passes candidates to selection_func if provided, otherwise returns top 5.
     """
     try:
         # 1. Get Nifty 50 Performance (Reference)
@@ -351,8 +359,24 @@ def scan_market(date_str, top_n=5):
                      score = abs(rs) * math.log10(vol)
                      scored.append({"symbol": sym, "score": score})
                      
-        # Top N
-        top = sorted(scored, key=lambda x: x['score'], reverse=True)[:top_n]
+        # Hand over to user's selection function if provided
+        if selection_func and callable(selection_func):
+            try:
+                # User function expects a list of dicts with 'symbol' and 'score'
+                selected = selection_func(scored)
+                # Ensure it returns symbols
+                if selected and isinstance(selected[0], dict):
+                    top = selected
+                else:
+                    # If it returned strings, wrap back into dicts for persistence
+                    symbol_set = set(selected)
+                    top = [s for s in scored if s['symbol'] in symbol_set]
+            except Exception as e:
+                logger.error(f"User Selection Function Failed: {e}. Falling back to top 5.")
+                top = sorted(scored, key=lambda x: x['score'], reverse=True)[:5]
+        else:
+            # Default: Top 5
+            top = sorted(scored, key=lambda x: x['score'], reverse=True)[:5]
         
         # Persist to Postgres
         try:
@@ -541,7 +565,7 @@ def run(symbol, start, end, initial_cash, speed="fast"):
                 # Skip weekends (Sat=5, Sun=6) — NSE is closed
                 if current.weekday() < 5:
                     date_str = current.strftime("%Y-%m-%d")
-                    scanned = scan_market(date_str)
+                    scanned = scan_market(date_str, selection_func=engine.UniverseSettings)
                     if scanned:
                         universe_symbols.update(scanned)
                         logger.info(f"🌌 Day {date_str}: Scanned {len(scanned)} stocks")

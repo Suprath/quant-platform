@@ -317,22 +317,28 @@ def get_project(project_name: str):
 def get_all_ide_projects():
     """Bulk fetch all strategy projects and their files for the React IDE."""
     projects = []
+    
+    # 1. Look for folders (Packages)
     for d in glob.glob("strategies/*/"):
         pkg_name = os.path.basename(os.path.normpath(d))
-        if pkg_name.startswith("backtest_") or pkg_name.startswith("__"):
+        if pkg_name.startswith("backtest_") or pkg_name.startswith("__") or pkg_name == "venv":
             continue
             
         files = []
         for py_file in sorted(glob.glob(os.path.join(d, "*.py"))):
             filename = os.path.basename(py_file)
-            file_id = f"f_{pkg_name}_{filename.replace('.py', '')}"
-            with open(py_file, 'r') as f:
-                content = f.read()
-            files.append({
-                "id": file_id,
-                "name": filename,
-                "content": content
-            })
+            id_clean = filename.replace('.py', '').replace('.', '_')
+            file_id = f"f_{pkg_name}_{id_clean}"
+            try:
+                with open(py_file, 'r') as f:
+                    content = f.read()
+                files.append({
+                    "id": file_id,
+                    "name": filename,
+                    "content": content
+                })
+            except Exception as e:
+                print(f"Error reading {py_file}: {e}")
             
         if files:
             projects.append({
@@ -341,8 +347,35 @@ def get_all_ide_projects():
                 "expanded": False,
                 "files": files
             })
+
+    # 2. Look for standalone files
+    for f_path in glob.glob("strategies/*.py"):
+        filename = os.path.basename(f_path)
+        if filename.startswith("backtest_") or filename.startswith("__") or filename == "engine.py":
+            continue
             
-    return {"projects": projects}
+        pkg_name = filename.replace(".py", "")
+        # Check if we already have a folder with the same name (folder takes precedence)
+        if any(p["name"] == pkg_name for p in projects):
+            continue
+            
+        try:
+            with open(f_path, 'r') as f:
+                content = f.read()
+            projects.append({
+                "id": f"proj_{pkg_name}",
+                "name": pkg_name,
+                "expanded": False,
+                "files": [{
+                    "id": f"f_{pkg_name}_main",
+                    "name": filename,
+                    "content": content
+                }]
+            })
+        except Exception as e:
+            print(f"Error reading {f_path}: {e}")
+            
+    return {"projects": sorted(projects, key=lambda x: x["name"])}
 
 @app.get("/live/status")
 def get_live_status():
@@ -813,6 +846,29 @@ def get_logs(run_id: str):
         with open(log_file, "r") as f:
             return {"logs": f.read().splitlines()}
     return {"logs": ["Waiting for logs..."]}
+
+@app.get("/backtest/status/{run_id}")
+def get_backtest_status(run_id: str):
+    """Robustly check the status of a backtest run"""
+    if run_id in active_processes:
+        return {"run_id": run_id, "status": "running"}
+    
+    log_file = f"logs/{run_id}.log"
+    if os.path.exists(log_file):
+        try:
+            with open(log_file, "r") as f:
+                content = f.read()
+                if "STRATEGY_ERROR:" in content:
+                    return {"run_id": run_id, "status": "failed"}
+                if "Backtest Runner Finished" in content or "✅ Backtest Complete" in content:
+                    return {"run_id": run_id, "status": "completed"}
+                if "Backtest Stopped" in content:
+                    return {"run_id": run_id, "status": "stopped"}
+        except:
+            pass
+        return {"run_id": run_id, "status": "finished"} # Default for existing logs
+
+    return {"run_id": run_id, "status": "not_found"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

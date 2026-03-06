@@ -506,6 +506,7 @@ class BacktestRequest(BaseModel):
     strategy_name: str = "CustomStrategy"
     project_files: Optional[Dict[str, str]] = None
     speed: Optional[str] = "fast"
+    trading_mode: str = "MIS" # MIS or CNC
 
 @app.post("/api/v1/backtest/run")
 def run_backtest(request: BacktestRequest):
@@ -680,6 +681,20 @@ def get_backtest_logs(run_id: str):
     try:
         response = requests.get(
             f"http://strategy_runtime:8000/backtest/logs/{run_id}",
+            timeout=5
+        )
+        if response.status_code == 200:
+             return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+
+@app.get("/api/v1/backtest/status/{run_id}")
+def get_backtest_status(run_id: str):
+    """Proxy status request to Strategy Runtime"""
+    try:
+        response = requests.get(
+            f"http://strategy_runtime:8000/backtest/status/{run_id}",
             timeout=5
         )
         if response.status_code == 200:
