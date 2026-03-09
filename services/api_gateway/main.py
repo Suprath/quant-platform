@@ -225,6 +225,79 @@ def get_ohlc(
         return {"symbol": symbol, "timeframe": timeframe, "count": len(candles), "candles": candles}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+@app.get("/api/v1/options/expiries/{underlying}")
+def get_option_expiries(
+    underlying: str, 
+    as_of: Optional[str] = Query(None, description="YYYY-MM-DD. Fetch expiries >= this date. Defaults to today."),
+    conn = Depends(get_pg_conn)
+):
+    """Fetch distinct expiry dates for a given underlying symbol from Postgres."""
+    try:
+        cur = conn.cursor()
+        if as_of:
+            query = """
+                SELECT DISTINCT expiry 
+                FROM instruments 
+                WHERE underlying_symbol = %s 
+                  AND segment IN ('OPTIDX', 'OPTSTK')
+                  AND expiry >= %s
+                ORDER BY expiry ASC;
+            """
+            cur.execute(query, (underlying, as_of))
+        else:
+            query = """
+                SELECT DISTINCT expiry 
+                FROM instruments 
+                WHERE underlying_symbol = %s 
+                  AND segment IN ('OPTIDX', 'OPTSTK')
+                  AND expiry >= CURRENT_DATE
+                ORDER BY expiry ASC;
+            """
+            cur.execute(query, (underlying,))
+            
+        rows = cur.fetchall()
+        return {"underlying": underlying, "expiries": [str(r[0]) for r in rows]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/options/chain/{underlying}")
+def get_option_chain(
+    underlying: str, 
+    expiry: str = Query(..., description="Expiry date YYYY-MM-DD"),
+    conn = Depends(get_pg_conn)
+):
+    """Fetch all CE and PE tokens for a specific underlying and expiry."""
+    try:
+        cur = conn.cursor()
+        query = """
+            SELECT instrument_token, symbol, strike, option_type, lot_size 
+            FROM instruments 
+            WHERE underlying_symbol = %s 
+              AND expiry = %s
+              AND segment IN ('OPTIDX', 'OPTSTK')
+            ORDER BY strike ASC, option_type ASC;
+        """
+        cur.execute(query, (underlying, expiry))
+        rows = cur.fetchall()
+        
+        contracts = []
+        for r in rows:
+            contracts.append({
+                "instrument_token": r[0],
+                "symbol": r[1],
+                "strike": float(r[2]) if r[2] else 0.0,
+                "option_type": r[3],
+                "lot_size": int(r[4]) if r[4] else 1
+            })
+            
+        return {
+            "underlying": underlying,
+            "expiry": expiry,
+            "count": len(contracts),
+            "contracts": contracts
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/v1/market/top-performers")

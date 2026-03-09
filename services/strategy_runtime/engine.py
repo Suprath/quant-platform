@@ -61,6 +61,7 @@ class AlgorithmEngine:
         self._last_prices = {}  # Cache: symbol -> last known price
         self.EquityCurve = []   # List of {'timestamp': ts, 'equity': float}
         self.DailyReturns = []  # List of daily % returns
+        self._options_expiries = {} # sym -> date
         
         # Connect to DB
         conn = get_db_connection()
@@ -120,12 +121,33 @@ class AlgorithmEngine:
         
         logger.info("⚙️ Initializing Algorithm...")
         self.Algorithm.Initialize()
+
+        # Fetch expiries for auto-square-off
+        self._fetch_options_expiries()
         
         # Init Portfolio State
         self.SyncPortfolio()
         
         # Setup Kafka
         self.SetupKafka()
+
+    def _fetch_options_expiries(self):
+        """Fetch expiry dates for all subscribed F&O instruments from Postgres."""
+        fo_symbols = [s for s in self.SubscriptionManager.Subscriptions.keys() if s.startswith("NSE_FO|")]
+        if not fo_symbols:
+            return
+
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT instrument_token, expiry FROM instruments WHERE instrument_token = ANY(%s)", (fo_symbols,))
+            for token, expiry in cur.fetchall():
+                self._options_expiries[token] = expiry
+            cur.close()
+            conn.close()
+            logger.info(f"📅 Pre-fetched expiries for {len(self._options_expiries)} F&O instruments")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not fetch option expiries: {e}")
 
     def SetupKafka(self):
         conf = {
@@ -156,7 +178,27 @@ class AlgorithmEngine:
     def SetBacktestData(self, ticks):
         """Set local data for backtesting (bypassing Kafka)."""
         self.LocalData = ticks
+        self._options_expiries = {}
+        self._prefetch_expiries()
         logger.info(f"📁 Loaded {len(ticks)} ticks for Local Backtest")
+        
+    def _prefetch_expiries(self):
+        """Pre-fetch expiry dates for all symbols in LocalData to avoid DB lookups in tick loop."""
+        try:
+            unique_symbols = set(t.get('symbol') for t in self.LocalData if t.get('symbol'))
+            if not unique_symbols:
+                return
+            
+            conn = get_db_connection()
+            cur = conn.cursor()
+            query = "SELECT instrument_token, expiry FROM instruments WHERE instrument_token = ANY(%s) AND expiry IS NOT NULL"
+            cur.execute(query, (list(unique_symbols),))
+            for sym, exp in cur.fetchall():
+                self._options_expiries[sym] = exp
+            conn.close()
+            logger.info(f"📅 Pre-fetched expiries for {len(self._options_expiries)} F&O instruments")
+        except Exception as e:
+            logger.error(f"Failed to prefetch expiries: {e}")
 
     # Indian Standard Time offset — delegate to timesync module
     IST = timesync.IST
@@ -222,6 +264,36 @@ class AlgorithmEngine:
 
             if h == self.SQUARE_OFF_HOUR and m >= self.SQUARE_OFF_MINUTE and not self._squared_off_today:
                 self._squared_off_today = True
+                
+                # 1. Option Expiration Square-Off (Both MIS and CNC)
+                expiring_symbols = []
+                for sym, hold in self.Algorithm.Portfolio.items():
+                    if sym not in ('Cash', 'TotalPortfolioValue') and hold.Invested:
+                        # Fetch expiry lazily for live mode if not fetched yet
+                        if not hasattr(self, '_options_expiries'):
+                            self._options_expiries = {}
+                        if sym not in self._options_expiries:
+                            try:
+                                conn = get_db_connection()
+                                cur = conn.cursor()
+                                cur.execute("SELECT expiry FROM instruments WHERE instrument_token = %s", (sym,))
+                                row = cur.fetchone()
+                                if row and row[0]:
+                                    self._options_expiries[sym] = row[0]
+                                conn.close()
+                            except:
+                                pass
+                        
+                        expiry_date = self._options_expiries.get(sym)
+                        if expiry_date and expiry_date <= today:
+                            expiring_symbols.append(sym)
+                            
+                if expiring_symbols:
+                    logger.info(f"⌛ EXPIRY SQUARE-OFF: Auto-liquidating {len(expiring_symbols)} expiring contract(s) today ({today})")
+                    for sym in expiring_symbols:
+                        self.Liquidate(sym)
+                
+                # 2. Daily Intraday Square-Off (MIS only)
                 if self.TradingMode != "CNC":
                     has_positions = any(
                         isinstance(hold, SecurityHolding) and hold.Invested
@@ -318,6 +390,23 @@ class AlgorithmEngine:
     def _bt_handle_square_off(self):
         """Handle auto square-off at 3:20 PM during backtest."""
         self._squared_off_today = True
+        
+        # 1. Option Expiration Square-Off (Both MIS and CNC)
+        today = self._last_square_off_date
+        expiring_symbols = []
+        if getattr(self, '_options_expiries', None) and today:
+            for sym, hold in self.Algorithm.Portfolio.items():
+                if sym not in ('Cash', 'TotalPortfolioValue') and hold.Invested:
+                    expiry_date = self._options_expiries.get(sym)
+                    if expiry_date and expiry_date <= today:
+                        expiring_symbols.append(sym)
+                        
+        if expiring_symbols:
+            logger.info(f"⌛ EXPIRY SQUARE-OFF: Auto-liquidating {len(expiring_symbols)} expiring contract(s) today ({today})")
+            for sym in expiring_symbols:
+                self.Liquidate(sym)
+
+        # 2. Daily Intraday Square-Off (MIS only)
         if self.TradingMode != "CNC":
             has_positions = any(
                 isinstance(hold, SecurityHolding) and hold.Invested
@@ -340,8 +429,9 @@ class AlgorithmEngine:
 
         # ── Pre-allocate reusable objects ──
         self._indicator_cache = dict(self.Indicators)
-        _tick = Tick(None, '', 0, 0)
-        _slice = FastSlice()
+        _tick_cache = {}    # sym -> Tick (reused)
+        _slice_data = {}    # sym -> Tick (current)
+        _slice_obj = Slice(None, _slice_data)
         self._bt_last_date_int = 0
 
         # ── Cache ALL attribute lookups as locals ──
@@ -367,63 +457,65 @@ class AlgorithmEngine:
         _last_hm = None
 
         # Speed measurement
-        _report_interval = 100_000
+        _report_interval = 250_000
         _t_start = _time.time()
         _t_interval = _t_start
         _max_tps = 0.0
-        _time_time = _time.time  # Cache the time function itself
+        _time_time = _time.time
 
-        for i in range(_n):
+        i = 0
+        while i < _n:
             td = _data[i]
-
-            # ── Extract tick fields (avoid repeated dict[] lookups) ──
-            symbol = td['symbol']
-            price = td['ltp']
             tick_dt = td['_dt']
-
-            # ── Reuse cached Tick ──
-            _tick.Price = price
-            _tick.Value = price
-            _tick.Volume = td['v']
-            _tick.Time = tick_dt
-            _tick.Symbol = symbol
-
-            # ── Reuse cached FastSlice ──
-            _slice.Time = tick_dt
-            _slice._data_symbol = symbol
-            _slice._data_tick = _tick
-
-            # ── Update state (locals) ──
-            _last_prices[symbol] = price
-            _algo.Time = tick_dt
-            self.CurrentSlice = _slice
-
-            # ── Portfolio entry (first tick for symbol) ──
-            if symbol not in _seen_symbols:
-                _portfolio[symbol] = SecurityHolding(symbol)
-                _seen_symbols.add(symbol)
-
-            # ── Indicator update (cached dict lookup) ──
-            indicators = _indicator_cache_get(symbol)
-            if indicators:
-                for ind in indicators:
-                    ind.Update(tick_dt, price)
-
-            # ── Date rollover (integer compare) ──
             tick_date = td['_date_int']
+
+            # ── 1. Group simultaneous ticks (Aggregation) ──
+            j = i
+            while j < _n and _data[j]['_dt'] == tick_dt:
+                curr_td = _data[j]
+                sym = curr_td['symbol']
+                price = curr_td['ltp']
+                
+                _last_prices[sym] = price
+                _algo.Time = tick_dt
+                if sym not in _seen_symbols:
+                    _portfolio[sym] = SecurityHolding(sym)
+                    _seen_symbols.add(sym)
+                
+                indicators = _indicator_cache_get(sym)
+                if indicators:
+                    for ind in indicators:
+                        ind.Update(tick_dt, price)
+                
+                if sym not in _tick_cache:
+                    _tick_cache[sym] = Tick(tick_dt, sym, price, curr_td['v'])
+                tck = _tick_cache[sym]
+                tck.Time = tick_dt
+                tck.Price = price
+                tck.Value = price
+                tck.Volume = curr_td['v']
+                _slice_data[sym] = tck
+                j += 1
+
+            _slice_obj.Time = tick_dt
+            self.CurrentSlice = _slice_obj
+
+            # ── 2. Date rollover ──
             if tick_date != _bt_last_date_int:
                 _bt_last_date_int = tick_date
                 self._bt_last_date_int = tick_date
                 _handle_date_rollover(td)
 
-            # ── Square-off (pre-computed ints) — MIS only ──
+            # ── 3. Square-off ──
             if not _is_cnc and td['_hour'] == _sq_hour and td['_minute'] >= _sq_minute:
                 if not self._squared_off_today:
                     _handle_square_off()
-                    _exchange._bt_tick_count += 1
+                    _exchange._bt_tick_count += (j - i)
+                    i = j
+                    _slice_data.clear()
                     continue
 
-            # ── Scheduled Events (Check on minute boundaries) ──
+            # ── 4. Scheduled Events ──
             if _scheduled_events:
                 _current_hm = (td['_hour'], td['_minute'])
                 if _current_hm != _last_hm:
@@ -440,27 +532,29 @@ class AlgorithmEngine:
                                     raise _e
                                 ev['last_triggered'] = tick_date
 
-            # ── User strategy ──
+            # ── 5. User strategy (aggregator) ──
             try:
-                _ondata(_slice)
+                _ondata(_slice_obj)
             except Exception as _e:
                 import traceback as _tb
                 logger.error(f"STRATEGY_ERROR: {_e}\n{_tb.format_exc()}")
-                # Stop further ticks on unrecoverable error
                 break
-            _exchange._bt_tick_count += 1
+
+            _exchange._bt_tick_count += (j - i)
+            _slice_data.clear() 
+            i = j
 
             # ── Periodic speed report ──
-            if (i + 1) % _report_interval == 0:
+            if i % _report_interval < (j - i):
                 _now = _time_time()
                 _elapsed = _now - _t_interval
                 if _elapsed > 0:
                     _tps = _report_interval / _elapsed
                     if _tps > _max_tps:
                         _max_tps = _tps
-                    _progress = ((i + 1) / _n) * 100
+                    _progress = (i / _n) * 100
                     logger.info(f"⚡ SPEED: {_tps:,.0f} ticks/sec | "
-                                f"Progress: {_progress:.1f}% ({i+1:,}/{_n:,})")
+                                f"Progress: {_progress:.1f}% ({i:,}/{_n:,})")
                 _t_interval = _now
 
         # Final speed summary

@@ -4,8 +4,8 @@ WORKDIR /app
 
 # Install dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir httpx
-RUN pip install --no-cache-dir mcp[cli,sse]>=1.1.2 uvicorn starlette
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir uvicorn starlette
 
 # Copy server code
 COPY server.py .

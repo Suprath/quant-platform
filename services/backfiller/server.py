@@ -22,8 +22,7 @@ load_dotenv()
 app = FastAPI(title="Backfiller Service")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# --- CONFIG ---
-API_BASE_URL = "https://api.upstox.com/v2/historical-candle/intraday"
+API_BASE_URL = "https://api.upstox.com/v2/historical-candle"
 ACCESS_TOKEN = os.getenv('UPSTOX_ACCESS_TOKEN')
 # Safe margin for Free Tier (1 req/s)
 DELAY_BETWEEN_CHUNKS = 1.6
@@ -50,7 +49,7 @@ STOCK_LIST = [
     ("NSE_EQ|INE047A01021", "SUNPHARMA"),
     ("NSE_EQ|INE326A01037", "ULTRACEMCO"),
     ("NSE_EQ|INE101A01026", "HCLTECH"),
-    ("NSE_EQ|INE775A01035", "TATAMOTORS"),
+    ("NSE_EQ|INE155A01022", "TATAMOTORS"),
 ]
 
 # --- Global Progress State ---
@@ -105,12 +104,23 @@ def ensure_instruments(stocks):
         conn = get_pg_conn()
         cur = conn.cursor()
         cur.execute("""CREATE TABLE IF NOT EXISTS instruments (
-            instrument_token VARCHAR(255) PRIMARY KEY, exchange VARCHAR(50),
-            segment VARCHAR(50), symbol VARCHAR(50));""")
+            instrument_token VARCHAR(255) PRIMARY KEY, 
+            exchange VARCHAR(50),
+            segment VARCHAR(50), 
+            symbol VARCHAR(50),
+            expiry DATE NULL,
+            strike DOUBLE PRECISION NULL,
+            option_type VARCHAR(10) NULL,
+            underlying_symbol VARCHAR(50) NULL,
+            lot_size INT NULL
+        );""")
         for token, name in stocks:
-            cur.execute("""INSERT INTO instruments (instrument_token, exchange, segment, symbol)
-                VALUES (%s, %s, %s, %s) ON CONFLICT (instrument_token) DO UPDATE SET symbol = EXCLUDED.symbol;
-            """, (token, "NSE_EQ", "EQUITY", name))
+            cur.execute("""INSERT INTO instruments 
+                (instrument_token, exchange, segment, symbol, lot_size)
+                VALUES (%s, %s, %s, %s, %s) 
+                ON CONFLICT (instrument_token) DO UPDATE 
+                SET symbol = EXCLUDED.symbol, lot_size = EXCLUDED.lot_size;
+            """, (token, "NSE_EQ", "EQUITY", name, 1))
         conn.commit()
         cur.close()
         conn.close()
@@ -189,14 +199,14 @@ async def run_backfill(stocks, start_str, end_str, unit, interval):
 
             # Calculate total chunks for progress
             total_days = (end_dt - start_dt).days
-            total_chunks = max(1, total_days // 30 + 1)
+            total_chunks = max(1, total_days // 25 + 1)
             chunk_idx = 0
 
             current_to = end_dt
             stock_candles = 0
 
             while current_to > start_dt:
-                current_from = max(start_dt, current_to - timedelta(days=30))
+                current_from = max(start_dt, current_to - timedelta(days=25))
                 to_s = current_to.strftime('%Y-%m-%d')
                 from_s = current_from.strftime('%Y-%m-%d')
 

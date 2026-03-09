@@ -97,7 +97,7 @@ async def backfill_data(symbol, unit, interval, start_date_str, end_date_str):
         total_saved = 0
 
         while current_to > start_dt:
-            current_from = max(start_dt, current_to - timedelta(days=30))
+            current_from = max(start_dt, current_to - timedelta(days=25))
             
             to_str = current_to.strftime('%Y-%m-%d')
             from_str = current_from.strftime('%Y-%m-%d')

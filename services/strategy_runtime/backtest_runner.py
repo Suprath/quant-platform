@@ -21,7 +21,7 @@ STRATEGY_NAME = os.getenv('STRATEGY_NAME')
 QUESTDB_URL = os.getenv('QUESTDB_URL', 'http://questdb_tsdb:9000')
 TRADING_MODE = os.getenv('TRADING_MODE', 'MIS')
 UPSTOX_ACCESS_TOKEN = os.getenv('UPSTOX_ACCESS_TOKEN', '')
-UPSTOX_API_BASE = "https://api.upstox.com/v2/historical-candle/intraday"
+UPSTOX_API_BASE = "https://api.upstox.com/v2/historical-candle"
 
 # Known stocks for backfill (ISIN -> Name mapping)
 KNOWN_STOCKS = {
@@ -45,7 +45,7 @@ KNOWN_STOCKS = {
     "NSE_EQ|INE047A01021": "SUNPHARMA",
     "NSE_EQ|INE326A01037": "ULTRACEMCO",
     "NSE_EQ|INE101A01026": "HCLTECH",
-    "NSE_EQ|INE775A01035": "TATAMOTORS",
+    "NSE_EQ|INE155A01022": "TATAMOTORS",
     # BSE
     "BSE_EQ|INE002A01018": "RELIANCE (BSE)",
     "BSE_EQ|INE040A01034": "HDFCBANK (BSE)",
@@ -66,7 +66,7 @@ KNOWN_STOCKS = {
     "BSE_EQ|INE047A01021": "SUNPHARMA (BSE)",
     "BSE_EQ|INE326A01037": "ULTRACEMCO (BSE)",
     "BSE_EQ|INE101A01026": "HCLTECH (BSE)",
-    "BSE_EQ|INE775A01035": "TATAMOTORS (BSE)"
+    "BSE_EQ|INE155A01022": "TATAMOTORS (BSE)"
 }
 
 # Rate limit config (safe margin below Upstox limits - Free Tier 1 req/s)
@@ -215,7 +215,7 @@ async def backfill_symbol(session, qdb_conn, symbol, missing_dates):
         # Split each range into 30-day chunks to satisfy Upstox API limits
         current_to = r_end
         while current_to >= r_start:
-            current_from = max(r_start, current_to - timedelta(days=30))
+            current_from = max(r_start, current_to - timedelta(days=25))
             
             from_str = current_from.strftime('%Y-%m-%d')
             to_str = current_to.strftime('%Y-%m-%d')
@@ -497,26 +497,13 @@ def run(symbol, start, end, initial_cash, speed="fast"):
     start_clean = start.split('T')[0] if 'T' in start else start
     end_clean = end.split('T')[0] if 'T' in end else end
     
-    # ===== STEP 1: Auto-backfill missing data =====
-    # Only backfill the symbol actually used in the backtest (not all 40 known stocks)
-    symbols_to_check = [symbol] if symbol in KNOWN_STOCKS else list(KNOWN_STOCKS.keys())
-    try:
-        asyncio.run(auto_backfill(symbols_to_check, start_clean, end_clean))
-    except Exception as e:
-        logger.warning(f"⚠️ Auto-backfill encountered an error (continuing): {e}")
-    
-    # ===== STEP 2: Initialize DB & Engine =====
+    # ===== STEP 1: Initialize Engine & Load Strategy =====
     try:
         pg_conn = get_db_connection()
         pg_cur = pg_conn.cursor()
-        
-        # 1. Ensure Portfolio exists with correct initial cash
         pg_cur.execute(f"DELETE FROM backtest_portfolios WHERE run_id = %s", (RUN_ID,))
         pg_cur.execute(f"INSERT INTO backtest_portfolios (user_id, run_id, balance, equity) VALUES (%s, %s, %s, %s)", ('default_user', RUN_ID, initial_cash, initial_cash))
-        
-        # 2. Clear stale positions for this run
         pg_cur.execute("DELETE FROM backtest_positions WHERE portfolio_id IN (SELECT id FROM backtest_portfolios WHERE run_id = %s)", (RUN_ID,))
-        
         pg_conn.commit()
         pg_cur.close()
         pg_conn.close()
@@ -526,7 +513,6 @@ def run(symbol, start, end, initial_cash, speed="fast"):
 
     engine = AlgorithmEngine(run_id=RUN_ID, backtest_mode=True, speed=speed, trading_mode=TRADING_MODE)
     
-    # Load Strategy
     try:
         module_path, class_name = STRATEGY_NAME.rsplit('.', 1)
         engine.LoadAlgorithm(module_path, class_name)
@@ -534,7 +520,7 @@ def run(symbol, start, end, initial_cash, speed="fast"):
         logger.error(f"Failed to load strategy: {e}")
         sys.exit(1)
 
-    # Initialize
+    # Initialize Strategy (adds static symbols via AddEquity)
     try:
         engine.Initialize()
     except Exception as e:
@@ -542,18 +528,27 @@ def run(symbol, start, end, initial_cash, speed="fast"):
         logger.error(f"STRATEGY_ERROR: Error in strategy Initialize(): {e}\n{traceback.format_exc()}")
         sys.exit(1)
     
-    # Override Cash & Set Stats Baseline
-    engine.SetInitialCapital(initial_cash)
-    engine.Algorithm.Portfolio['Cash'] = initial_cash
-    engine.Algorithm.Portfolio['TotalPortfolioValue'] = initial_cash
-    
     # Read scanner frequency from engine (set by strategy in Initialize)
     scanner_frequency_minutes = getattr(engine, 'ScannerFrequency', None)
     if scanner_frequency_minutes:
         logger.info(f"⏱️ Scanner frequency: every {scanner_frequency_minutes} minutes")
     
+    # Override Cash & Set Stats Baseline
+    engine.SetInitialCapital(initial_cash)
+    engine.Algorithm.Portfolio['Cash'] = initial_cash
+    engine.Algorithm.Portfolio['TotalPortfolioValue'] = initial_cash
+    
+    # ===== STEP 2: First-Pass Auto-backfill (Primary + Static Subscriptions) =====
+    # We need these to run the scanner or the first day of the loop
+    initial_symbols = set([symbol] + list(engine.SubscriptionManager.Subscriptions.keys()))
+    try:
+        logger.info("📡 Checking initial symbols for backfill...")
+        asyncio.run(auto_backfill(list(initial_symbols), start_clean, end_clean))
+    except Exception as e:
+        logger.warning(f"⚠️ Initial auto-backfill error: {e}")
+
     # ===== STEP 3: Universe Selection — Scan each trading day =====
-    universe_symbols = set()
+    universe_symbols = set(initial_symbols)
     if engine.UniverseSettings:
         logger.info("🌌 Dynamic Universe Requested. Scanning each trading day...")
         try:
@@ -562,27 +557,24 @@ def run(symbol, start, end, initial_cash, speed="fast"):
 
             current = start_dt
             while current <= end_dt:
-                # Skip weekends (Sat=5, Sun=6) — NSE is closed
                 if current.weekday() < 5:
                     date_str = current.strftime("%Y-%m-%d")
                     scanned = scan_market(date_str, selection_func=engine.UniverseSettings)
                     if scanned:
                         universe_symbols.update(scanned)
                         logger.info(f"🌌 Day {date_str}: Scanned {len(scanned)} stocks")
-                    else:
-                        logger.info(f"📅 Day {date_str}: No scanner results (holiday?)")
                 current += timedelta(days=1)
-
-            if universe_symbols:
-                logger.info(f"🌌 Total Universe: {len(universe_symbols)} unique symbols across all days")
-            else:
-                logger.warning("⚠️ Scan returned no results for any day. Fallback to provided symbol.")
-                universe_symbols = {symbol}
+            
+            # Second-Pass Auto-backfill (Capture dynamically added symbols)
+            newly_added = universe_symbols - initial_symbols
+            if newly_added:
+                logger.info(f"📡 Backfilling {len(newly_added)} symbols discovered by scanner...")
+                asyncio.run(auto_backfill(list(newly_added), start_clean, end_clean))
+                
         except Exception as e:
-            logger.error(f"Scan Failed: {e}")
-            universe_symbols = {symbol}
+            logger.error(f"Scan/Second-backfill Failed: {e}")
     else:
-        universe_symbols = {symbol}
+        universe_symbols = initial_symbols
 
     universe_symbols = list(universe_symbols)
 

@@ -71,6 +71,52 @@ class ScheduleManager:
              'last_triggered': None
         })
 
+class OptionChainProvider:
+    """
+    Provides access to Option Chains from the API Gateway.
+    """
+    def __init__(self, algorithm):
+        self.algorithm = algorithm
+        self._base_url = "http://api_gateway:8000/api/v1"
+
+    def GetExpiries(self, underlying_symbol):
+        import requests
+        try:
+            # Tell the API Gateway what our 'current' date is for historical testing
+            current_date_str = self.algorithm.Time.strftime('%Y-%m-%d')
+            url = f"{self._base_url}/options/expiries/{underlying_symbol}?as_of={current_date_str}"
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                # Server already filtered them, we just need to parse back to datetime.date
+                expiries = []
+                from datetime import datetime
+                for exp_str in data.get("expiries", []):
+                    exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+                    expiries.append(exp_date)
+                return sorted(expiries)
+            return []
+        except Exception as e:
+            self.algorithm.Debug(f"OptionChainProvider failed to get expiries: {e}")
+            return []
+
+    def GetOptionContractList(self, underlying_symbol, expiry_date):
+        import requests
+        try:
+            if isinstance(expiry_date, datetime):
+                expiry_str = expiry_date.strftime("%Y-%m-%d")
+            else:
+                expiry_str = str(expiry_date) # handle date objects
+                
+            url = f"{self._base_url}/options/chain/{underlying_symbol}?expiry={expiry_str}"
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                return resp.json().get("contracts", [])
+            return []
+        except Exception as e:
+            self.algorithm.Debug(f"OptionChainProvider failed to get chain: {e}")
+            return []
+
 class QCAlgorithm(ABC):
     """
     Base class for all user algorithms.
@@ -85,6 +131,7 @@ class QCAlgorithm(ABC):
         self.TimeRules = TimeRules()
         self.DateRules = DateRules()
         self.Schedule = ScheduleManager()
+        self.OptionChainProvider = OptionChainProvider(self)
 
     @abstractmethod
     def Initialize(self):

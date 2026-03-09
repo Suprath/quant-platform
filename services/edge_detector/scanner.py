@@ -49,15 +49,23 @@ class EdgeScanner:
                   AND timestamp <= '{ts_end}'::timestamp
                 ORDER BY timestamp ASC;
             """
+            
+            cur = conn.cursor()
+            cur.execute(query)
+            rows = cur.fetchall()
+            cur.close()
 
-            df = pd.read_sql(query, conn)
-            if df.empty:
-                return df
+            if not rows:
+                return pd.DataFrame()
 
+            df = pd.DataFrame(rows, columns=['timestamp', 'symbol', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             return df
+        except Exception as e:
+            logger.error(f"Error fetching data: {e}")
+            return pd.DataFrame()
         finally:
             self.release_connection(conn)
 

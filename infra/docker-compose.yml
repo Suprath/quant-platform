@@ -168,6 +168,8 @@ services:
       - ../.env
     ports:
       - "8002:8002"
+    volumes:
+      - ../services/edge_detector:/app
     restart: always
 
   scanner:
@@ -239,6 +241,7 @@ services:
       - "8005:8080"
     volumes:
       - ../services/mcp_server:/app
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - PYTHONUNBUFFERED=1
     restart: always

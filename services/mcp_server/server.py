@@ -3,6 +3,7 @@ import httpx
 import json
 from typing import Optional, Dict
 from starlette.middleware.cors import CORSMiddleware
+import docker
 
 # Initialize FastMCP Server
 mcp = FastMCP("Kira")
@@ -10,12 +11,19 @@ mcp = FastMCP("Kira")
 # Point to the api_gateway container inside the docker network
 API_BASE_URL = "http://api_gateway:8000/api/v1"
 
+# Initialize Docker Client for Service Logs
+try:
+    docker_client = docker.from_env()
+except Exception:
+    docker_client = None
+
 @mcp.tool()
 async def get_kira_documentation() -> str:
     """Get the KIRA Python framework rules and API reference for writing strategies.
     
-    CALL THIS BEFORE WRITING ANY STRATEGY CODE to understand the exact syntax,
-    available indicators, loop conventions, and portfolio state objects.
+    LLM CRITICAL INSTRUCTION: YOU MUST CALL THIS TOOL BEFORE WRITING ANY STRATEGY CODE.
+    Failure to read this documentation will result in incorrect syntax, missing imports,
+    and hallucinated API methods. READ THIS FIRST.
     """
     return """
 # KIRA Strategy Framework API (Token Optimized)
@@ -61,11 +69,18 @@ async def get_kira_documentation() -> str:
          return [x['symbol'] for x in sorted_candidates[:3]]
      ```
 
-8. PORTFOLIO STATE (`self.Portfolio`):
+8. OPTIONS (F&O) TRADING:
+   - Use `self.OptionChainProvider` to dynamically fetch option chains.
+   - `expiries = self.OptionChainProvider.GetExpiries(underlying_symbol)` -> returns sorted list of `datetime.date` objects.
+   - `chain = self.OptionChainProvider.GetOptionContractList(underlying_symbol, expiry_date)`
+   - `chain` returns a list of dicts: `[{"instrument_token": "NSE_FO|123", "strike": 22000.0, "option_type": "CE", "lot_size": 25}]`
+   - You MUST call `self.AddEquity(contract["instrument_token"])` before you can trade it.
+
+9. PORTFOLIO STATE (`self.Portfolio`):
    - Check holdings: `if self.Portfolio["NSE_EQ|INE002A01018"].Invested:`
    - Get total equity: `self.Portfolio.TotalPortfolioValue`
 
-9. BACKTEST WORKFLOW (LLM INSTRUCTIONS):
+10. BACKTEST WORKFLOW (LLM INSTRUCTIONS):
    - Step 1: Use `search_symbols` to get the correct instrument keys for your strategy.
    - Step 2: Write strategy using ISIN-based keys or AddUniverse for dynamic selection.
    - Step 3: Call `run_backtest`. It returns a `run_id`.
@@ -214,9 +229,77 @@ async def get_backtest_stats(run_id: str) -> str:
             return f"Error getting stats: {str(e)}"
 
 @mcp.tool()
+async def trigger_backfill(
+    symbols: list[str],
+    start_date: str = "2020-01-01",
+    end_date: str = "2030-01-01",
+    timeframe: str = "1m"
+) -> str:
+    """Trigger a historical market data backfill for one or more instruments.
+    
+    Args:
+        symbols: List of instrument identifiers, e.g. ['NSE_EQ|RELIANCE', 'NSE_EQ|TATAMOTORS']
+        start_date: Backfill start date YYYY-MM-DD
+        end_date: Backfill end date YYYY-MM-DD
+        timeframe: Resolution of the data (default: '1m')
+        
+    LLM INSTRUCTION: This starts an ASYNCHRONOUS job on the Data Backfiller service.
+    It returns immediately. You must poll `get_backfill_status` to wait for completion.
+    """
+    async with httpx.AsyncClient() as client:
+        # Automated symbol translation for better LLM UX
+        try:
+            mapping_resp = await client.get(f"{API_BASE_URL}/backfill/stocks", timeout=10.0)
+            if mapping_resp.status_code == 200:
+                stock_map = mapping_resp.json()
+                name_to_token = {s["name"].upper(): s["token"] for s in stock_map}
+                
+                translated_symbols = []
+                for sym in symbols:
+                    clean_sym = sym.split('|')[-1].upper() if '|' in sym else sym.upper()
+                    if clean_sym in name_to_token:
+                        translated_symbols.append(name_to_token[clean_sym])
+                    else:
+                        translated_symbols.append(sym)
+                symbols = translated_symbols
+        except Exception:
+            pass # Fall back to using the LLM's original symbols if mapping fails
+
+        payload = {
+            "stocks": symbols,
+            "start_date": start_date,
+            "end_date": end_date,
+            "interval": timeframe[:-1] if timeframe[-1].isalpha() else timeframe,
+            "unit": "minutes" if timeframe.endswith('m') else "day",
+        }
+        
+        try:
+            response = await client.post(f"{API_BASE_URL}/backfill/start", json=payload, timeout=15.0)
+            response.raise_for_status()
+            return f"Backfill triggered successfully. Polling ID not required. Use get_backfill_status() to check progress."
+        except Exception as e:
+            return f"Error triggering backfill: {str(e)}"
+
+
+@mcp.tool()
+async def get_backfill_status() -> str:
+    """Check the current progress of the global backfill job.
+    
+    LLM INSTRUCTION: Poll this every 5 to 10 seconds after calling `trigger_backfill`.
+    When `finished` is true and `running` is false, the backfill is complete.
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{API_BASE_URL}/backfill/status")
+            response.raise_for_status()
+            return json.dumps(response.json(), indent=2)
+        except Exception as e:
+            return f"Error getting backfill status: {str(e)}"
+
+@mcp.tool()
 async def run_edge_scan(
     symbols: list[str],
-    timeframe: str = "1d",
+    timeframe: str = "1m",
     start_date: str = "2020-01-01",
     end_date: str = "2030-01-01",
     patterns: Optional[list[str]] = None,
@@ -230,7 +313,7 @@ async def run_edge_scan(
     
     Args:
         symbols: List of instrument identifiers, e.g. ['NSE_EQ|TATAMOTORS', 'NSE_INDEX|Nifty 50']
-        timeframe: Resolution of the data (default: '1d')
+        timeframe: Resolution of the data (default: '1m')
         start_date: Start scanning from YYYY-MM-DD
         end_date: Stop scanning at YYYY-MM-DD
         patterns: List of patterns to scan (e.g. ['gap_up_fade', 'inside_bar_breakout', 'oversold_bounce'])
@@ -271,10 +354,38 @@ async def run_edge_scan(
         }
         try:
             response = await client.post(f"{API_BASE_URL}/edge/scan", json=payload)
-            response.raise_for_status()
-            return json.dumps(response.json(), indent=2)
+            if response.status_code == 200:
+                return json.dumps(response.json(), indent=2)
+            
+            # If it's a 4xx or 5xx error, extract the detail from JSON if possible, otherwise raw text
+            try:
+                err_detail = response.json().get('detail', response.text)
+            except Exception:
+                err_detail = response.text
+                
+            return f"Error {response.status_code}: {err_detail}"
         except Exception as e:
             return f"Error running edge scan: {str(e)}"
+
+@mcp.tool()
+async def get_service_logs(container_name: str, tail: int = 50) -> str:
+    """Get the recent Docker logs for a specific KIRA microservice container.
+    
+    Args:
+        container_name: Name of the container (e.g., 'edge_detector', 'api_gateway', 'strategy_runtime', 'mcp_server').
+        tail: Number of log lines to retrieve (default 50, max 500).
+        
+    LLM INSTRUCTION: ALWAYS use this tool if an API or scan returns a 500 Internal Server error or fails unexpectedly.
+    """
+    if not docker_client:
+        return "Error: Docker client not initialized or docker socket not mounted in mcp_server."
+        
+    try:
+        container = docker_client.containers.get(container_name)
+        logs = container.logs(tail=min(tail, 500), stdout=True, stderr=True)
+        return logs.decode('utf-8', errors='replace')
+    except Exception as e:
+        return f"Error fetching logs for container '{container_name}': {str(e)}"
 
 @mcp.tool()
 async def get_backtest_logs(run_id: str) -> str:
