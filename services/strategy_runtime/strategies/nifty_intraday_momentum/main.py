@@ -39,7 +39,7 @@ class NiftyIntradayMomentum(QCAlgorithm):
             "NSE_EQ|INE009A01021",  # Infosys
             "NSE_EQ|INE154A01025",  # ITC
             "NSE_EQ|INE238A01034",  # Kotak Mahindra
-            "NSE_EQ|INE062A01020",  # L&T
+            "NSE_EQ|INE062A01020",  # SBIN
             "NSE_EQ|INE917I01010",  # Axis Bank
             "NSE_EQ|INE669E01016",  # Bajaj Finance
         ]
