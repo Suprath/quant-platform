@@ -770,6 +770,9 @@ def start_backtest(request: BacktestRequest, background_tasks: BackgroundTasks):
         main_class = None
         
         for filename, code in request.project_files.items():
+            if filename == "__init__.py":
+                continue # Ignore client-provided init code, forcefully rebuild it
+
             if not filename.endswith(".py"):
                 filename += ".py"
             filepath = os.path.join(project_dir, filename)
@@ -781,12 +784,11 @@ def start_backtest(request: BacktestRequest, background_tasks: BackgroundTasks):
                 module_name = filename.replace(".py", "")
                 main_class = (module_name, matches[0])
         
-        # Auto-generate __init__.py
+        # Auto-generate __init__.py dynamically
         if main_class:
             init_path = os.path.join(project_dir, "__init__.py")
-            if not os.path.exists(init_path):
-                with open(init_path, "w") as f:
-                    f.write(f"from .{main_class[0]} import {main_class[1]}\n")
+            with open(init_path, "w") as f:
+                f.write(f"from .{main_class[0]} import {main_class[1]}\n")
         
         strategy_path = project_dir
     else:

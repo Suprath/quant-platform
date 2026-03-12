@@ -92,6 +92,172 @@ async def get_kira_documentation() -> str:
 """
 
 @mcp.tool()
+async def get_options_documentation() -> str:
+    """Get the specific KIRA Python framework rules for writing Options (F&O) strategies.
+    
+    LLM CRITICAL INSTRUCTION: IF THE USER ASKS FOR AN OPTIONS STRATEGY, READ THIS FIRE BEFORE CODING.
+    """
+    return """
+# KIRA Options (F&O) Strategy API Reference
+
+The KIRA engine supports full backtesting of NSE Options with accurate metrics and timezone handling.
+
+## 1. Subscribing to Underlying & Options
+Options strategies require subscribing to BOTH the underlying symbol and the specific option contracts.
+
+```python
+def Initialize(self):
+    self.SetStartDate(2026, 2, 25)
+    self.SetEndDate(2026, 3, 5)
+    self.SetCash(100000)
+    
+    # 1. Add Underlying
+    self.nifty = "NSE_INDEX|Nifty 50"
+    self.AddEquity(self.nifty)
+    
+    # 2. Add Specific Option Contract (Using Upstox Instrument Token)
+    # You MUST use the raw token (e.g. NSE_FO|62920) for AddEquity.
+    self.call_option = "NSE_FO|62920"
+    self.AddEquity(self.call_option)
+```
+
+## 2. Using OptionChainProvider (Dynamic Chain Discovery)
+Instead of hardcoding instrument tokens, use the `OptionChainProvider` to dynamically find strikes and expiries.
+
+```python
+def Initialize(self):
+    # Fetch valid expiries for NIFTY
+    self.expiries = self.OptionChainProvider.GetExpiries("NIFTY")
+    
+    # Fetch all contracts for the nearest expiry
+    nearest_expiry = self.expiries[0]
+    self.chain = self.OptionChainProvider.GetOptionContractList("NIFTY", nearest_expiry)
+    
+    # Example chain item:
+    # {"instrument_token": "NSE_FO|12345", "strike": 22000.0, "option_type": "CE", "lot_size": 25}
+    
+    # Find ATM Call
+    calls = [c for c in self.chain if c["option_type"] == "CE"]
+    # ... sort by strike distance to spot ...
+    
+    # YOU MUST CALL AddEquity ON THE TOKEN BEFORE TRADING IT!
+    self.AddEquity(selected_token)
+```
+
+## 3. Trading & Execution (OnData)
+Both the underlying and the option will arrive simultaneously in the `OnData` slice.
+
+```python
+def OnData(self, data):
+    # Ensure both data streams are present
+    if not data.ContainsKey(self.nifty) or not data.ContainsKey(self.call_option):
+        return
+        
+    nifty_price = data[self.nifty].Price
+    opt_price = data[self.call_option].Price
+    
+    if not self.Portfolio.Invested:
+        # Buy condition...
+        self.SetHoldings(self.call_option, 0.5) # Buy using 50% of portfolio value
+        
+    else:
+        holding = self.Portfolio[self.call_option]
+        # Target / Stop Loss Logic
+        if opt_price > holding.AveragePrice * 1.50:
+            self.Liquidate(self.call_option) # Exit position
+```
+
+## 4. Automatic Square-Off
+The KIRA Engine automatically detects expiring contracts and liquids them at 3:20 PM IST on the expiry day. You do not need to write manual expiration checks.
+
+## 5. Brokerage & Leverage
+When running the backtest via the MCP `run_backtest` tool, ensure you set the `trading_mode="OPTIONS"` argument to apply the correct F&O brokerage rules (Flat ₹20 + STT).
+"""
+
+@mcp.tool()
+async def get_options_documentation() -> str:
+    """Get the specific KIRA Python framework rules for writing Options (F&O) strategies.
+    
+    LLM CRITICAL INSTRUCTION: IF THE USER ASKS FOR AN OPTIONS STRATEGY, READ THIS FILE BEFORE CODING.
+    """
+    return """
+# KIRA Options (F&O) Strategy API Reference
+
+The KIRA engine supports full backtesting of NSE Options with accurate metrics and timezone handling.
+
+## 1. Subscribing to Underlying & Options
+Options strategies require subscribing to BOTH the underlying symbol and the specific option contracts.
+
+```python
+def Initialize(self):
+    self.SetStartDate(2026, 2, 25)
+    self.SetEndDate(2026, 3, 5)
+    self.SetCash(100000)
+    
+    # 1. Add Underlying
+    self.nifty = "NSE_INDEX|Nifty 50"
+    self.AddEquity(self.nifty)
+    
+    # 2. Add Specific Option Contract (Using Upstox Instrument Token)
+    # You MUST use the raw token (e.g. NSE_FO|62920) for AddEquity.
+    self.call_option = "NSE_FO|62920"
+    self.AddEquity(self.call_option)
+```
+
+## 2. Using OptionChainProvider (Dynamic Chain Discovery)
+Instead of hardcoding instrument tokens, use the `OptionChainProvider` to dynamically find strikes and expiries.
+
+```python
+def Initialize(self):
+    # Fetch valid expiries for NIFTY
+    self.expiries = self.OptionChainProvider.GetExpiries("NIFTY")
+    
+    # Fetch all contracts for the nearest expiry
+    nearest_expiry = self.expiries[0]
+    self.chain = self.OptionChainProvider.GetOptionContractList("NIFTY", nearest_expiry)
+    
+    # Example chain item:
+    # {"instrument_token": "NSE_FO|12345", "strike": 22000.0, "option_type": "CE", "lot_size": 25}
+    
+    # Find ATM Call
+    calls = [c for c in self.chain if c["option_type"] == "CE"]
+    # ... sort by strike distance to spot ...
+    
+    # YOU MUST CALL AddEquity ON THE TOKEN BEFORE TRADING IT!
+    self.AddEquity(selected_token)
+```
+
+## 3. Trading & Execution (OnData)
+Both the underlying and the option will arrive simultaneously in the `OnData` slice.
+
+```python
+def OnData(self, data):
+    # Ensure both data streams are present
+    if not data.ContainsKey(self.nifty) or not data.ContainsKey(self.call_option):
+        return
+        
+    nifty_price = data[self.nifty].Price
+    opt_price = data[self.call_option].Price
+    
+    if not self.Portfolio.Invested:
+        # Buy condition...
+        self.SetHoldings(self.call_option, 0.5) # Buy using 50% of portfolio value
+        
+    else:
+        holding = self.Portfolio[self.call_option]
+        # Target / Stop Loss Logic
+        if opt_price > holding.AveragePrice * 1.50:
+            self.Liquidate(self.call_option) # Exit position
+```
+
+## 4. Automatic Square-Off
+The KIRA Engine automatically detects expiring contracts and liquids them at 3:20 PM IST on the expiry day. You do not need to write manual expiration checks.
+
+## 5. Brokerage & Leverage
+When running the backtest via the MCP `run_backtest` tool, ensure you set the `trading_mode="OPTIONS"` argument to apply the correct F&O brokerage rules (Flat ₹20 + STT).
+"""
+
+@mcp.tool()
 async def list_strategies() -> str:
     """Get a list of all existing trading strategies in the KIRA platform."""
     async with httpx.AsyncClient() as client:
@@ -156,7 +322,7 @@ async def run_backtest(
         end_date: YYYY-MM-DD
         initial_cash: Starting capital
         strategy_name: Optional name for the strategy run
-        trading_mode: 'MIS' for Intraday, 'CNC' for Delivery (default: MIS)
+        trading_mode: 'MIS' for Intraday, 'CNC' for Delivery, 'OPTIONS' for F&O (default: MIS)
         
     LLM INSTRUCTION: This starts an ASYNCHRONOUS process. You must capture the `run_id` 
     and poll `get_backtest_status` until it reaches 'completed' or 'failed'.

@@ -41,14 +41,18 @@ class TransactionCostCalculator:
     """
 
     # Default regulatory rates
+    # Default regulatory rates
     BROKERAGE_FLAT  = 20.0
     BROKERAGE_PCT   = 0.0003      # 0.03 %
     STT_SELL_MIS    = 0.00025     # 0.025 %  (sell-side only for intraday)
-    STT_BOTH_CNC   = 0.001       # 0.1 %    (both sides for delivery)
+    STT_BOTH_CNC    = 0.001       # 0.1 %    (both sides for delivery)
+    STT_SELL_OPT    = 0.001       # 0.1 %    (sell-side only for options)
     EXCHANGE_TXN    = 0.0000345   # 0.00345 %
+    EXCHANGE_TXN_OPT= 0.0005      # 0.05 %   (options)
     SEBI_FEE        = 0.000001    # 0.0001 %
     STAMP_MIS       = 0.00003     # 0.003 %  (buy-side only)
     STAMP_CNC       = 0.00015     # 0.015 %  (buy-side only)
+    STAMP_OPT       = 0.00003     # 0.003 %  (buy-side only for options)
     GST_RATE        = 0.18        # 18 %
 
     def __init__(self, trading_mode: str = "MIS"):
@@ -76,23 +80,36 @@ class TransactionCostCalculator:
         brokerage_pct  = float(os.getenv('BROKERAGE_PCT', self.BROKERAGE_PCT))
 
         # 1. Brokerage
-        brokerage = min(brokerage_flat, turnover * brokerage_pct)
+        if self.trading_mode == "OPTIONS":
+            brokerage = brokerage_flat
+        else:
+            brokerage = min(brokerage_flat, turnover * brokerage_pct)
 
         # 2. STT
         if self.trading_mode == "CNC":
             stt = turnover * self.STT_BOTH_CNC
+        elif self.trading_mode == "OPTIONS":
+            stt = turnover * self.STT_SELL_OPT if side == "SELL" else 0.0
         else:
             stt = turnover * self.STT_SELL_MIS if side == "SELL" else 0.0
 
         # 3. Exchange transaction charges
-        exchange_txn = turnover * self.EXCHANGE_TXN
+        if self.trading_mode == "OPTIONS":
+            exchange_txn = turnover * self.EXCHANGE_TXN_OPT
+        else:
+            exchange_txn = turnover * self.EXCHANGE_TXN
 
         # 4. SEBI turnover fee
         sebi_fee = turnover * self.SEBI_FEE
 
         # 5. Stamp duty (buy-side only)
         if side == "BUY":
-            stamp_duty = turnover * (self.STAMP_CNC if self.trading_mode == "CNC" else self.STAMP_MIS)
+            if self.trading_mode == "CNC":
+                stamp_duty = turnover * self.STAMP_CNC
+            elif self.trading_mode == "OPTIONS":
+                stamp_duty = turnover * self.STAMP_OPT
+            else:
+                stamp_duty = turnover * self.STAMP_MIS
         else:
             stamp_duty = 0.0
 

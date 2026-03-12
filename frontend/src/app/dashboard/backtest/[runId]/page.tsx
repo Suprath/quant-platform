@@ -207,6 +207,21 @@ export default function BacktestResultPage() {
     const formatCurrency = (v: number) => `₹${Math.abs(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
     const formatPct = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
 
+    const formatSymbol = (symbolInput: string, nameInput: string) => {
+        const rawSymbol = symbolInput ? symbolInput.replace(/^(NSE_FO|NSE_EQ|BSE_EQ|BFO)\|/, '') : '';
+        const rawName = nameInput && nameInput !== symbolInput ? nameInput.replace(/^(NSE_FO|NSE_EQ|BSE_EQ|BFO)\|/, '') : rawSymbol;
+
+        const targetToParse = rawName !== rawSymbol && rawName.length > 5 ? rawName : rawSymbol;
+        const match = targetToParse.match(/^([A-Z]+)(\d{2}[A-Z]{3})(\d+)(CE|PE)$/i);
+
+        if (match) {
+            const [, underlying, expiry, strike, type] = match;
+            return `${underlying} ${expiry} ${strike} ${type}`;
+        }
+
+        return targetToParse;
+    };
+
     return (
         <div className="min-h-screen bg-[#0a0a0b] text-slate-200 p-4 md:p-6 space-y-6">
             {/* Header */}
@@ -470,7 +485,9 @@ export default function BacktestResultPage() {
                             {trades.slice().reverse().slice(0, visibleTradeCount).map((trade, i) => (
                                 <TableRow key={i} className="border-slate-800/40 hover:bg-slate-800/20">
                                     <TableCell className="font-mono text-xs text-slate-300">{new Date(trade.time).toLocaleString()}</TableCell>
-                                    <TableCell className="text-slate-200">{trade.name !== trade.symbol ? trade.name : trade.symbol}</TableCell>
+                                    <TableCell className={`text-slate-200 ${trade.symbol.startsWith('NSE_FO|') ? 'font-mono text-[11px] tracking-tight' : ''}`}>
+                                        {formatSymbol(trade.symbol, trade.name)}
+                                    </TableCell>
                                     <TableCell>
                                         <Badge variant={trade.side === 'BUY' ? 'default' : 'destructive'}
                                             className={trade.side === 'BUY'

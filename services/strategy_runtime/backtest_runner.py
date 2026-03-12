@@ -25,6 +25,9 @@ UPSTOX_API_BASE = "https://api.upstox.com/v2/historical-candle"
 
 # Known stocks for backfill (ISIN -> Name mapping)
 KNOWN_STOCKS = {
+    # Indices
+    "NSE_INDEX|Nifty 50": "NIFTY 50",
+    "NSE_INDEX|Nifty Bank": "BANK NIFTY",
     # NSE
     "NSE_EQ|INE002A01018": "RELIANCE",
     "NSE_EQ|INE040A01034": "HDFCBANK",
@@ -678,6 +681,10 @@ def run(symbol, start, end, initial_cash, speed="fast"):
     _elapsed = _time.time() - _t0
     _tps = total_ticks / _elapsed if _elapsed > 0 else 0
     logger.info(f"⚡ Streaming tick loop done: {total_ticks:,} ticks in {_elapsed:.2f}s = {_tps:,.0f} ticks/sec")
+
+    # ── Liquidate open positions for accurate PnL stats ──
+    logger.info("⏱️ Streaming Complete. Auto-liquidating open positions...")
+    engine.Liquidate()
 
     # ── Flush all buffered orders + positions to DB ──
     if _has_session:

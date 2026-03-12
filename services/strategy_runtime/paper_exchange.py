@@ -273,6 +273,7 @@ class PaperExchange:
                 total_outflow = cost + charges
 
                 if balance < total_outflow:
+                    logger.warning(f"⏩ Trade rejected: Insufficient funds for {quantity} {symbol} @ {price} (Need ₹{total_outflow:,.2f}, Have ₹{balance:,.2f})")
                     return False
 
                 self._bt_balance -= total_outflow
@@ -314,6 +315,7 @@ class PaperExchange:
                 total_outflow = cost + charges
 
                 if balance < total_outflow:
+                    logger.warning(f"⏩ Trade rejected: Insufficient funds to Short {quantity} {symbol} @ {price} (Need ₹{total_outflow:,.2f}, Have ₹{balance:,.2f})")
                     return False
 
                 self._bt_balance -= total_outflow

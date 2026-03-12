@@ -62,3 +62,47 @@ class ExponentialMovingAverage(IndicatorBase):
             self.IsReady = True
         
         return self.IsReady
+
+class RelativeStrengthIndex(IndicatorBase):
+    """
+    Relative Strength Index (RSI) indicator.
+    Calculates RSI using the standard Wilder's Smoothing method.
+    """
+    def __init__(self, name, period):
+        super().__init__(name)
+        self.Period = period
+        self._prev_price = None
+        self._avg_gain = 0.0
+        self._avg_loss = 0.0
+
+    def Update(self, timestamp, value):
+        super().Update(timestamp, value)
+        
+        if self._prev_price is None:
+            self._prev_price = value
+            return False
+
+        change = value - self._prev_price
+        gain = max(0, change)
+        loss = max(0, -change)
+
+        if self.Samples <= self.Period + 1:
+            # First Average calculation (Simple Average)
+            self._avg_gain += gain / self.Period
+            self._avg_loss += loss / self.Period
+            
+            if self.Samples == self.Period + 1:
+                rs = (self._avg_gain / self._avg_loss) if self._avg_loss != 0 else 100.0
+                self.Value = 100.0 - (100.0 / (1.0 + rs))
+                self.IsReady = True
+        else:
+            # Wilder's Smoothing
+            self._avg_gain = ((self._avg_gain * (self.Period - 1)) + gain) / self.Period
+            self._avg_loss = ((self._avg_loss * (self.Period - 1)) + loss) / self.Period
+            
+            rs = (self._avg_gain / self._avg_loss) if self._avg_loss != 0 else 100.0
+            self.Value = 100.0 - (100.0 / (1.0 + rs))
+            self.IsReady = True
+
+        self._prev_price = value
+        return self.IsReady

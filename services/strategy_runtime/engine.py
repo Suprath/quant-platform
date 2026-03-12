@@ -8,7 +8,7 @@ import calculations
 import timesync
 from confluent_kafka import Consumer
 from quant_sdk.data import Tick, Slice, FastSlice
-from quant_sdk.algorithm import Resolution
+from quant_sdk.algorithm import Resolution, QCAlgorithm
 from paper_exchange import PaperExchange
 from schema import ensure_schema
 from db import get_db_connection, DB_CONF
@@ -654,6 +654,15 @@ class AlgorithmEngine:
             equity = self.Algorithm.Portfolio.get('TotalPortfolioValue', 0.0)
             self.EquityCurve.append({'timestamp': datetime.now(), 'equity': equity})
             
+            # Liquidate any remaining open positions to realize PnL for accurate stats
+            logger.info("⏱️ Backtest loop finished. Auto-liquidating open positions...")
+            self.Liquidate()
+
+            # Flush any newly generated liquidation orders
+            if _has_session:
+                self.Algorithm.Portfolio['Cash'] = self.Exchange._bt_balance
+                self.Exchange.flush_session()
+            
             logger.info("✅ Backtest Data Exhausted.")
             return
 
@@ -678,9 +687,10 @@ class AlgorithmEngine:
                 self.KafkaConsumer.close()
 
     def Stop(self):
-        """Stop the engine loop."""
+        """Stop the engine loop and liquidate open positions."""
         self.IsRunning = False
-        logger.info("🛑 Stopping Engine Loop requested.")
+        logger.info("🛑 Stopping Engine Loop requested. Liquidating open positions...")
+        self.Liquidate()
 
     def SyncPortfolio(self):
         """
@@ -754,17 +764,44 @@ class AlgorithmEngine:
 
     def SubmitOrder(self, symbol, quantity, order_type="MARKET"):
         """
-        Execute order.
-        quantity: can be absolute int, or float (percentage) if logic handled here.
-        But SetHoldings calls with percentage.
-        How do we distinguish? 
-        QC uses `SetHoldings(symbol, percent)`. 
-        `SubmitOrder` usually takes quantity.
-        
-        Let's implement `SetHoldings` logic inside `AlgorithmEngine` helper?
-        Or make `SubmitOrder` accept `TargetPercent`.
+        Execute a raw order with a specific quantity.
+        quantity: positive for BUY, negative for SELL.
         """
-        pass
+        if quantity == 0: 
+            return False
+            
+        _is_bt = self.BacktestMode
+        action = "BUY" if quantity > 0 else "SELL"
+        abs_qty = abs(int(quantity))
+
+        # Get Current Price
+        price = None
+        if self.CurrentSlice and self.CurrentSlice.ContainsKey(symbol):
+            price = self.CurrentSlice[symbol].Price
+        elif symbol in self._last_prices:
+            price = self._last_prices[symbol]
+        
+        if not price or price <= 0:
+            if not _is_bt:
+                logger.warning(f"SubmitOrder: No price data for {symbol}")
+            return False
+
+        signal = {
+            "symbol": symbol,
+            "action": action,
+            "quantity": abs_qty,
+            "price": price,
+            "strategy_id": "USER_ALGO",
+            "timestamp": self.Algorithm.Time if _is_bt else None
+        }
+        
+        success = self.Exchange.execute_order(signal)
+        if success:
+            if not _is_bt:
+                logger.info(f"✅ Executed Order: {action} {abs_qty} {symbol} @ {price}")
+            self.SyncPortfolio() # Update state immediately
+            
+        return success
         
     def SetLeverage(self, leverage):
         """Set intraday leverage multiplier. Default is 1x (no leverage)."""

@@ -23,13 +23,15 @@ app = FastAPI(title="Backfiller Service")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 API_BASE_URL = "https://api.upstox.com/v2/historical-candle"
-ACCESS_TOKEN = os.getenv('UPSTOX_ACCESS_TOKEN')
+# ACCESS_TOKEN read dynamically when needed to prevent blank state on container start
 # Safe margin for Free Tier (1 req/s)
 DELAY_BETWEEN_CHUNKS = 1.6
 DELAY_BETWEEN_STOCKS = 3.2
 
 # Top Nifty 50 stocks
 STOCK_LIST = [
+    ("NSE_INDEX|Nifty 50", "NIFTY 50"),
+    ("NSE_INDEX|Nifty Bank", "BANK NIFTY"),
     ("NSE_EQ|INE002A01018", "RELIANCE"),
     ("NSE_EQ|INE040A01034", "HDFCBANK"),
     ("NSE_EQ|INE090A01021", "TCS"),
@@ -115,6 +117,11 @@ def ensure_instruments(stocks):
             lot_size INT NULL
         );""")
         for token, name in stocks:
+            # Skip generating dummy equity metadata for Options 
+            # (they are populated by instrument_sync job accurately with expiry/strike)
+            if token.startswith("NSE_FO|") or token.startswith("BSE_FO|"):
+                continue
+                
             cur.execute("""INSERT INTO instruments 
                 (instrument_token, exchange, segment, symbol, lot_size)
                 VALUES (%s, %s, %s, %s, %s) 
@@ -141,12 +148,12 @@ def ensure_schema(conn):
 
 
 # --- API Fetch ---
-async def fetch_candle_chunk(session, symbol, unit, interval, to_date, from_date):
+async def fetch_candle_chunk(session, symbol, unit, interval, to_date, from_date, access_token):
     encoded = urllib.parse.quote(symbol)
     # Upstox API V2 interval format: 'day', '1minute', '30minute'
     api_interval = "day" if str(unit).lower() == "day" else f"{interval}minute"
     url = f"{API_BASE_URL}/{encoded}/{api_interval}/{to_date}/{from_date}"
-    headers = {'Accept': 'application/json', 'Authorization': f'Bearer {ACCESS_TOKEN}'}
+    headers = {'Accept': 'application/json', 'Authorization': f'Bearer {access_token}'}
     try:
         async with session.get(url, headers=headers) as response:
             if response.status == 200:
@@ -176,7 +183,7 @@ async def fetch_candle_chunk(session, symbol, unit, interval, to_date, from_date
 
 
 # --- Core Backfill Logic ---
-async def run_backfill(stocks, start_str, end_str, unit, interval):
+async def run_backfill(stocks, start_str, end_str, unit, interval, access_token):
     backfill_state["running"] = True
     backfill_state["total_stocks"] = len(stocks)
     backfill_state["finished"] = False
@@ -237,7 +244,7 @@ async def run_backfill(stocks, start_str, end_str, unit, interval):
                     current_to = current_from - timedelta(days=1)
                     continue
 
-                candles = await fetch_candle_chunk(session, symbol, unit, interval, to_s, from_s)
+                candles = await fetch_candle_chunk(session, symbol, unit, interval, to_s, from_s, access_token)
 
                 if candles is None:
                     backfill_state["error"] = "Authentication failed"
@@ -287,26 +294,39 @@ def start_backfill(request: BackfillRequest):
     if backfill_state["running"]:
         raise HTTPException(status_code=409, detail="Backfill already running")
 
-    if not ACCESS_TOKEN or len(ACCESS_TOKEN) < 10:
+    access_token = os.getenv('UPSTOX_ACCESS_TOKEN')
+    if not access_token or len(access_token) < 10:
         raise HTTPException(status_code=400, detail="UPSTOX_ACCESS_TOKEN not configured")
 
     reset_state()
 
-    # Filter stocks
+    # Filter stocks dynamically handling both known Equities and raw F&O Tokens
     if request.stocks:
-        requested = [s.upper() for s in request.stocks]
-        stocks = [(token, name) for token, name in STOCK_LIST if name in requested]
+        requested_upper = [s.upper() for s in request.stocks]
+        stocks = [(token, name) for token, name in STOCK_LIST if name in requested_upper or token.upper() in requested_upper]
+        
+        # Add dynamic F&O tokens (e.g. NSE_FO|12345) that aren't in STOCK_LIST
+        # Create a set of already added tokens to prevent duplicates
+        added_tokens = {t for t, _ in stocks}
+        
+        for req_symbol in request.stocks:
+            req_upper = req_symbol.upper()
+            if "NSE_FO|" in req_upper or "BSE_FO|" in req_upper:
+                if req_symbol not in added_tokens:
+                    # Provide a fallback name (the token itself or just the ID)
+                    stocks.append((req_symbol, req_symbol.split('|')[-1]))
+                    added_tokens.add(req_symbol)
     else:
         stocks = STOCK_LIST
 
     if not stocks:
-        raise HTTPException(status_code=400, detail="No valid stocks found")
+        raise HTTPException(status_code=400, detail=f"No valid stocks found. input={request.stocks}, result={stocks}")
 
     # Run in background thread with its own event loop
     def run_in_thread():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(run_backfill(stocks, request.start_date, request.end_date, request.unit, request.interval))
+        loop.run_until_complete(run_backfill(stocks, request.start_date, request.end_date, request.unit, request.interval, access_token))
         loop.close()
 
     thread = threading.Thread(target=run_in_thread, daemon=True)

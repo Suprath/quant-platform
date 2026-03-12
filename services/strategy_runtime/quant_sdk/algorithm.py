@@ -78,12 +78,19 @@ class OptionChainProvider:
     def __init__(self, algorithm):
         self.algorithm = algorithm
         self._base_url = "http://api_gateway:8000/api/v1"
+        self._expiries_cache = {}
+        self._contracts_cache = {}
 
     def GetExpiries(self, underlying_symbol):
         import requests
         try:
             # Tell the API Gateway what our 'current' date is for historical testing
             current_date_str = self.algorithm.Time.strftime('%Y-%m-%d')
+            cache_key = f"{underlying_symbol}_{current_date_str}"
+            
+            if cache_key in self._expiries_cache:
+                return self._expiries_cache[cache_key]
+                
             url = f"{self._base_url}/options/expiries/{underlying_symbol}?as_of={current_date_str}"
             resp = requests.get(url, timeout=5)
             if resp.status_code == 200:
@@ -94,7 +101,9 @@ class OptionChainProvider:
                 for exp_str in data.get("expiries", []):
                     exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
                     expiries.append(exp_date)
-                return sorted(expiries)
+                sorted_expiries = sorted(expiries)
+                self._expiries_cache[cache_key] = sorted_expiries
+                return sorted_expiries
             return []
         except Exception as e:
             self.algorithm.Debug(f"OptionChainProvider failed to get expiries: {e}")
@@ -103,19 +112,55 @@ class OptionChainProvider:
     def GetOptionContractList(self, underlying_symbol, expiry_date):
         import requests
         try:
+            from datetime import datetime
             if isinstance(expiry_date, datetime):
                 expiry_str = expiry_date.strftime("%Y-%m-%d")
             else:
                 expiry_str = str(expiry_date) # handle date objects
                 
+            cache_key = f"{underlying_symbol}_{expiry_str}"
+            if cache_key in self._contracts_cache:
+                return self._contracts_cache[cache_key]
+                
             url = f"{self._base_url}/options/chain/{underlying_symbol}?expiry={expiry_str}"
             resp = requests.get(url, timeout=5)
             if resp.status_code == 200:
-                return resp.json().get("contracts", [])
+                contracts = resp.json().get("contracts", [])
+                parsed_contracts = [OptionContract(c) for c in contracts]
+                self._contracts_cache[cache_key] = parsed_contracts
+                return parsed_contracts
             return []
         except Exception as e:
             self.algorithm.Debug(f"OptionChainProvider failed to get chain: {e}")
             return []
+
+class ExpiryWrapper:
+    __slots__ = ['_date', 'days_to_expiry']
+    def __init__(self, date_obj):
+        self._date = date_obj
+        self.days_to_expiry = 0
+
+class OptionContract:
+    __slots__ = ['Symbol', 'Strike', 'Right', '_exp_date', 'Expiry']
+    def __init__(self, data):
+        self.Symbol = data.get("instrument_token")
+        self.Strike = float(data.get("strike", 0))
+        self.Right = 'Call' if data.get("option_type") == 'CE' else 'Put'
+        
+        # Fast string slice parsing instead of slow strptime
+        exp_str = data.get("expiry", "2026-01-01")
+        from datetime import date
+        try:
+            self._exp_date = date(int(exp_str[:4]), int(exp_str[5:7]), int(exp_str[8:10]))
+        except ValueError:
+            self._exp_date = date.today()
+        self.Expiry = ExpiryWrapper(self._exp_date)
+        
+    def update_date(self, current_date):
+        self.Expiry.days_to_expiry = (self._exp_date - current_date).days
+
+    def __repr__(self):
+        return f"<{self.Symbol} {self.Strike} {self.Right}>"
 
 class QCAlgorithm(ABC):
     """
@@ -149,6 +194,26 @@ class QCAlgorithm(ABC):
         :param data: Slice object keyed by symbol containing the stock data
         """
         pass
+
+    def OptionChain(self, underlying_symbol):
+        """
+        Fetches the active Option Chain (all strikes) for the nearest 3 expiries.
+        Returns a list of OptionContract objects that can be filtered dynamically.
+        """
+        chain = []
+        current_date = self.Time.date() if getattr(self, 'Time', None) else datetime.now().date()
+        
+        # 1. Get Expiries
+        expiries = self.OptionChainProvider.GetExpiries(underlying_symbol)
+        
+        # 2. For each expiry (limit to nearest 3 to avoid massive API overheads in backtests)
+        for expiry in expiries[:3]:
+            cached_contracts = self.OptionChainProvider.GetOptionContractList(underlying_symbol, expiry)
+            for c in cached_contracts:
+                c.update_date(current_date)
+                chain.append(c)
+                
+        return chain
 
     # --- Configuration Methods ---
     def SetStartDate(self, year, month, day):
@@ -196,6 +261,14 @@ class QCAlgorithm(ABC):
             self.Engine.RegisterIndicator(symbol, ema, resolution)
         return ema
 
+    def RSI(self, symbol, period, resolution=Resolution.Minute):
+        """Creates a Relative Strength Index (RSI) indicator."""
+        from .indicators import RelativeStrengthIndex # Local import to avoid circular dependency
+        rsi = RelativeStrengthIndex(f"RSI({period})", period)
+        if self.Engine:
+            self.Engine.RegisterIndicator(symbol, rsi, resolution)
+        return rsi
+
     # --- Trading Methods ---
     def SetHoldings(self, symbol, percentage, liquidate_existing_holdings=False):
         """
@@ -205,8 +278,27 @@ class QCAlgorithm(ABC):
             # Call the engine's SetHoldings helper directly
             if hasattr(self.Engine, 'SetHoldings'):
                 self.Engine.SetHoldings(symbol, percentage)
-            else:
-                self.Engine.SubmitOrder(symbol, percentage, "PERCENT")
+
+    def MarketOrder(self, symbol, quantity):
+        """
+        Place a market order for a specific quantity.
+        quantity: positive for BUY, negative for SELL.
+        """
+        if self.Engine:
+            return self.Engine.SubmitOrder(symbol, quantity, "MARKET")
+        return False
+
+    def Buy(self, symbol, quantity):
+        """
+        Buy a specific quantity of a symbol.
+        """
+        return self.MarketOrder(symbol, abs(quantity))
+
+    def Sell(self, symbol, quantity):
+        """
+        Sell a specific quantity of a symbol.
+        """
+        return self.MarketOrder(symbol, -abs(quantity))
 
     def Liquidate(self, symbol=None):
         """

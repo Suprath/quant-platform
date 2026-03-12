@@ -23,9 +23,17 @@ async def connect_upstox_v3():
 
     # Kafka Setup
     producer = Producer({'bootstrap.servers': KAFKA_SERVER})
+    unique_group_id = f"ingestor-subs-{int(time.time())}"
+    subscription_consumer = Consumer({
+        'bootstrap.servers': KAFKA_SERVER,
+        'group.id': unique_group_id,
+        'auto.offset.reset': 'earliest'
+    })
+    subscription_consumer.subscribe(['ingestor.subscriptions'])
+    
     scanner_consumer = Consumer({
         'bootstrap.servers': KAFKA_SERVER,
-        'group.id': 'ingestor-fix-v4',
+        'group.id': f"ingestor-scanner-{int(time.time())}",
         'auto.offset.reset': 'latest'
     })
     scanner_consumer.subscribe(['scanner.suggestions'])
@@ -104,9 +112,14 @@ async def connect_upstox_v3():
                 logger.info(f"Subscribing Equities (FULL): {equities}")
                 await websocket.send(msg.encode('utf-8'))
             
+            loop_count = 0
             while True:
-                # 1. Scanner Logic
-                msg = scanner_consumer.poll(0.1)
+                loop_count += 1
+                if loop_count % 1000 == 0:
+                    logger.info("💓 Ingestor Heartbeat: Loop active, polling Kafka/WS...")
+
+                # 1. Scanner Logic (Non-blocking)
+                msg = scanner_consumer.poll(0)
                 if msg and not msg.error():
                     new_picks = [p.replace(':', '|') for p in json.loads(msg.value())]
                     to_sub = [p for p in new_picks if p not in active_subs]
@@ -118,7 +131,54 @@ async def connect_upstox_v3():
                         }).encode('utf-8'))
                         active_subs.update(to_sub)
 
-                # 2. Receive Data
+                # 2. Dynamic Subscription Sync (Non-blocking)
+                sub_msg = subscription_consumer.poll(0)
+                if sub_msg:
+                    if sub_msg.error():
+                        logger.error(f"Kafka Sync Error: {sub_msg.error()}")
+                    else:
+                        try:
+                            sub_data = json.loads(sub_msg.value())
+                            method = sub_data.get("method", "sub")
+                            keys = sub_data.get("instrumentKeys", [])
+                            mode = sub_data.get("mode", "full")
+                            
+                            if keys:
+                                # Limit Management: Upstox V3 has a 200 instrument limit per socket.
+                                # If we are adding new keys that push us over 200, we must unsub old ones.
+                                MAX_ALLOWED = 200
+                                current_active = list(active_subs)
+                                potential_total = len(set(current_active + keys))
+
+                                if potential_total > MAX_ALLOWED:
+                                    # Identify candidates to unsub (Priority: keep Indices, unsub oldest Options)
+                                    # Option tokens usually look like NSE_FO|...
+                                    option_tokens = [k for k in current_active if "NSE_FO" in k and k not in keys]
+                                    
+                                    to_unsub_count = potential_total - MAX_ALLOWED
+                                    to_unsub = option_tokens[:to_unsub_count]
+                                    
+                                    if to_unsub:
+                                        logger.info(f"♻️ Limit reached. Unsubscribing {len(to_unsub)} old tokens to make room.")
+                                        unsub_payload = json.dumps({
+                                            "guid": "auto-unsub", "method": "unsub",
+                                            "data": {"mode": mode, "instrumentKeys": to_unsub}
+                                        })
+                                        await websocket.send(unsub_payload.encode('utf-8'))
+                                        for k in to_unsub:
+                                            active_subs.discard(k)
+
+                                logger.info(f"⚡ Kafka Sync Request: {method} {len(keys)} tokens")
+                                sync_payload = json.dumps({
+                                    "guid": "sync-request", "method": method,
+                                    "data": {"mode": mode, "instrumentKeys": keys}
+                                })
+                                await websocket.send(sync_payload.encode('utf-8'))
+                                active_subs.update(keys)
+                        except Exception as e:
+                            logger.error(f"Sync msg error: {e}")
+
+                # 3. Receive Data
                 try:
                     raw_msg = await asyncio.wait_for(websocket.recv(), timeout=0.1)
                     
@@ -154,9 +214,50 @@ async def connect_upstox_v3():
                                     if mff.HasField('ltpc'): ltpc_obj = mff.ltpc
                                     if mff.HasField('marketLevel'):
                                         quotes = mff.marketLevel.bidAskQuote
+                                    
+                                    # Extract Greeks and IV (scalars don't use HasField in proto3 unless optional)
+                                    # Extract Greeks and IV
+                                    if mff.iv != 0: 
+                                        state['iv'] = mff.iv
+                                        updated = True
+                                    # OI can be 0, but we still want to capture it if it's the first time or explicitly sent
+                                    state['oi'] = int(mff.oi)
+                                    updated = True
+                                    if mff.vtt != 0: 
+                                        state['v'] = mff.vtt
+                                        updated = True
+                                    
+                                    if mff.HasField('optionGreeks'):
+                                        og = mff.optionGreeks
+                                        state['greeks'] = {
+                                            "delta": og.delta, "theta": og.theta, 
+                                            "gamma": og.gamma, "vega": og.vega
+                                        }
+                                        updated = True
                                 elif ff_type == 'indexFF':
                                     iff = feed.fullFeed.indexFF
                                     if iff.HasField('ltpc'): ltpc_obj = iff.ltpc
+
+                            elif feed_type == 'firstLevelWithGreeks':
+                                flg = feed.firstLevelWithGreeks
+                                if flg.HasField('ltpc'): ltpc_obj = flg.ltpc
+                                if flg.iv != 0: 
+                                    state['iv'] = flg.iv
+                                    updated = True
+                                state['oi'] = int(flg.oi)
+                                updated = True
+                                    
+                                if flg.vtt > 0: 
+                                    state['v'] = flg.vtt
+                                    updated = True
+                                if flg.HasField('optionGreeks'):
+                                    og = flg.optionGreeks
+                                    state['greeks'] = {
+                                        "delta": og.delta, "theta": og.theta, 
+                                        "gamma": og.gamma, "vega": og.vega
+                                    }
+                                    updated = True
+
                             elif feed_type == 'ltpc':
                                 ltpc_obj = feed.ltpc
                             
@@ -202,7 +303,22 @@ async def connect_upstox_v3():
                                     
                                     debug_count += 1
                                     producer.produce('market.equity.ticks', key=key, value=json.dumps(tick))
-                        
+                                    
+                                    # If Greeks were updated, produce to greeks topic
+                                    if 'greeks' in state:
+                                        greek_tick = {
+                                            "symbol": key,
+                                            "iv": state.get('iv', 0.0),
+                                            "delta": state['greeks']['delta'],
+                                            "theta": state['greeks']['theta'],
+                                            "gamma": state['greeks']['gamma'],
+                                            "vega": state['greeks']['vega'],
+                                            "timestamp": tick['timestamp']
+                                        }
+                                        producer.produce('market.option.greeks', key=key, value=json.dumps(greek_tick))
+                                        # Clear greeks state after sending to avoid duplicate writes if no change
+                                        del state['greeks']
+                         
                         producer.poll(0)
 
                 except asyncio.TimeoutError:

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { ServiceHealth } from "@/components/ServiceHealth";
 import { TopPerformersTable } from "@/components/dashboard/TopPerformersTable";
-import { Code, Terminal, Book, Settings, Activity, Zap, Shield, TrendingUp } from 'lucide-react';
+import { Code, Terminal, Book, Settings, Activity, Zap, Shield, TrendingUp, Layers } from 'lucide-react';
 
 const fadeIn = {
   hidden: { opacity: 0, y: 20 },
@@ -54,6 +54,11 @@ export default function DashboardPage() {
           <Link href="/dashboard/edge" className="hidden sm:block">
             <Button variant="outline" className="border-purple-500/30 text-purple-600 hover:bg-purple-500/10 dark:text-purple-400 dark:hover:text-purple-300 transition-colors shadow-sm">
               <Zap className="mr-2 h-4 w-4 fill-current" /> Edge Scanner
+            </Button>
+          </Link>
+          <Link href="/dashboard/options" className="hidden sm:block">
+            <Button variant="outline" className="border-amber-500/30 text-amber-600 hover:bg-amber-500/10 dark:text-amber-400 dark:hover:text-amber-300 transition-colors shadow-sm">
+              <Layers className="mr-2 h-4 w-4" /> Options Chain
             </Button>
           </Link>
           <Link href="/docs" className="hidden sm:block">

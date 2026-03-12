@@ -489,6 +489,7 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                                     <SelectContent className="bg-[#1a1a1e] border-slate-700 text-white">
                                         <SelectItem value="MIS">Intraday (MIS)</SelectItem>
                                         <SelectItem value="CNC">Delivery (CNC)</SelectItem>
+                                        <SelectItem value="OPTIONS">Options (F&O)</SelectItem>
                                     </SelectContent>
                                 </Select>
                             </div>

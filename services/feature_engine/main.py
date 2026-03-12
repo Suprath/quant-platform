@@ -103,6 +103,7 @@ class QuantProcessor:
             "symbol": self.symbol,
             "ltp": ltp,
             "volume": v,
+            "oi": tick.get('oi', 0),
             "day_high": self.day_high,
             "day_low": self.day_low,
             "vwap": vwap,
@@ -187,10 +188,6 @@ def run():
 
                 # --- 1. CALCULATE ---
                 enriched_data = processors[sym].process(raw_tick)
-                logger.info(
-                    f"ENRICHED {sym} | ltp={enriched_data['ltp']} "
-                    f"vwap={enriched_data['vwap']} rsi={enriched_data['rsi']} obi={enriched_data['obi']}"
-                )
 
                 # --- 2. PUBLISH ENRICHED DATA (For Persistor) ---
                 # This goes to the new topic that your DB listens to

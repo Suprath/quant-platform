@@ -7,7 +7,8 @@ from typing import List, Optional
 import requests
 from pydantic import BaseModel
 from typing import Optional, Dict
-
+import json
+from confluent_kafka import Producer
 load_dotenv()
 
 app = FastAPI(
@@ -32,6 +33,9 @@ pg_pool = None
 qdb_pool = None
 
 import time
+
+# Kafka Producer for dynamic subscriptions
+producer = Producer({'bootstrap.servers': os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka_bus:9092')})
 
 @app.on_event("startup")
 def startup_db_pools():
@@ -234,6 +238,14 @@ def get_option_expiries(
     """Fetch distinct expiry dates for a given underlying symbol from Postgres."""
     try:
         cur = conn.cursor()
+        
+        # Auto-resolve instrument_token to base symbol if passed
+        if '|' in underlying:
+            cur.execute("SELECT symbol FROM instruments WHERE instrument_token = %s", (underlying,))
+            row = cur.fetchone()
+            if row:
+                underlying = row[0]
+
         if as_of:
             query = """
                 SELECT DISTINCT expiry 
@@ -264,12 +276,22 @@ def get_option_expiries(
 def get_option_chain(
     underlying: str, 
     expiry: str = Query(..., description="Expiry date YYYY-MM-DD"),
-    conn = Depends(get_pg_conn)
+    mock: bool = Query(False, description="Generate mathematical mock greeks and depths"),
+    conn_pg = Depends(get_pg_conn),
+    conn_qdb = Depends(get_qdb_conn)
 ):
     """Fetch all CE and PE tokens for a specific underlying and expiry."""
     try:
-        cur = conn.cursor()
-        query = """
+        cur_pg = conn_pg.cursor()
+        
+        # Auto-resolve instrument_token to base symbol if passed
+        if '|' in underlying:
+            cur_pg.execute("SELECT symbol FROM instruments WHERE instrument_token = %s", (underlying,))
+            row = cur_pg.fetchone()
+            if row:
+                underlying = row[0]
+
+        query_pg = """
             SELECT instrument_token, symbol, strike, option_type, lot_size 
             FROM instruments 
             WHERE underlying_symbol = %s 
@@ -277,25 +299,285 @@ def get_option_chain(
               AND segment IN ('OPTIDX', 'OPTSTK')
             ORDER BY strike ASC, option_type ASC;
         """
-        cur.execute(query, (underlying, expiry))
-        rows = cur.fetchall()
+        cur_pg.execute(query_pg, (underlying, expiry))
+        rows = cur_pg.fetchall()
         
         contracts = []
+        token_list = []
+        strikes = set()
         for r in rows:
+            token = r[0]
+            strk = float(r[2]) if r[2] else 0.0
+            token_list.append(token)
+            strikes.add(strk)
             contracts.append({
-                "instrument_token": r[0],
+                "instrument_token": token,
                 "symbol": r[1],
-                "strike": float(r[2]) if r[2] else 0.0,
+                "strike": strk,
                 "option_type": r[3],
-                "lot_size": int(r[4]) if r[4] else 1
+                "expiry": expiry,
+                "lot_size": int(r[4]) if r[4] else 1,
+                # Defaults if no market data exists yet
+                "ltp": 0.0, "volume": 0, "oi": 0, "bid": 0.0, "ask": 0.0,
+                "iv": 0.0, "delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0
             })
             
+        if mock and len(strikes) > 0:
+            import math
+            import random
+            sorted_strikes = sorted(list(strikes))
+            # Use the median strike as a logical spot guess
+            spot_price = sorted_strikes[len(sorted_strikes) // 2]
+            print(f"DEBUG: Generating mock data for {underlying} @ Spot ~{spot_price}")
+            
+            for c in contracts:
+                strk = c["strike"]
+                dist_pct = (strk - spot_price) / spot_price
+                
+                # 1. IV Smile (Lowest AT-The-Money)
+                # Broadened curve with higher floor
+                c["iv"] = round(0.18 + (abs(dist_pct) * 1.5), 4)
+                
+                # 2. Delta (Sigmoid crossing at Spot)
+                # Reduced steepness for more gradual transition across larger strike ranges
+                steepness = 8.0 
+                ce_delta = 1.0 / (1.0 + math.exp(steepness * dist_pct))
+                if c["option_type"] == "CE":
+                    c["delta"] = round(ce_delta, 4)
+                else:
+                    c["delta"] = round(ce_delta - 1.0, 4)
+                    
+                # 3. Gamma (Bell Curve centered at Spot)
+                gamma_peak = 0.002
+                c["gamma"] = round(gamma_peak * math.exp(-(steepness * dist_pct)**2), 6)
+                
+                # 4. Theta
+                theta_base = -12.0 
+                c["theta"] = round(theta_base * math.exp(-(steepness * dist_pct)**2), 2)
+                
+                # 5. Vega (Widened bell curve)
+                vega_base = 35.0
+                c["vega"] = round(vega_base * math.exp(-(steepness * dist_pct)**2), 2)
+                # Add a tiny floor for Vega so time_val is never zero
+                if c["vega"] < 0.5: c["vega"] = 0.5
+                
+                # 6. Pricing (Simplified Black-Scholes-ish)
+                intrinsic = max(0, spot_price - strk) if c["option_type"] == "CE" else max(0, strk - spot_price)
+                # Ensure time value exists even for deep OTM
+                time_val = (c["vega"] * c["iv"] * 15.0) + random.uniform(1.0, 5.0)
+                c["ltp"] = round(intrinsic + time_val, 2)
+                
+                c["bid"] = max(0.05, round(c["ltp"] - max(0.05, c["ltp"] * 0.005), 2))
+                c["ask"] = round(c["ltp"] + max(0.05, c["ltp"] * 0.005), 2)
+                
+                # 7. Volume Profile
+                base_vol = random.randint(500, 2000)
+                vol_multiplier = max(0.05, math.exp(-(steepness * 0.5 * dist_pct)**2))
+                c["volume"] = int(base_vol * vol_multiplier * 100)
+                c["oi"] = int(c["volume"] * random.uniform(3.0, 10.0))
+                
+        # 2. Bulk fetch real-time market data from QuestDB (Skip if mock is true)
+        elif token_list:
+            cur_qdb = conn_qdb.cursor()
+            
+            # Format IN clause for QuestDB: 'sym1', 'sym2', ...
+            in_clause = ", ".join([f"'{t}'" for t in token_list])
+            
+            # Fetch Ticks (Prices/Volume/OI)
+            query_ticks = f"SELECT symbol, ltp, volume, oi FROM ticks LATEST BY symbol WHERE symbol IN ({in_clause})"
+            try:
+                cur_qdb.execute(query_ticks)
+                tick_rows = cur_qdb.fetchall()
+                tick_map = {r[0]: {"ltp": r[1], "volume": r[2], "oi": r[3]} for r in tick_rows}
+            except Exception as e:
+                print(f"Warning: QuestDB ticks query failed: {e}")
+                conn_qdb.rollback()
+                tick_map = {}
+                
+            # Fetch Option Greeks
+            query_greeks = f"SELECT symbol, iv, delta, gamma, theta, vega FROM option_greeks LATEST BY symbol WHERE symbol IN ({in_clause})"
+            try:
+                cur_qdb.execute(query_greeks)
+                greek_rows = cur_qdb.fetchall()
+                greek_map = {r[0]: {"iv": r[1], "delta": r[2], "gamma": r[3], "theta": r[4], "vega": r[5]} for r in greek_rows}
+            except Exception as e:
+                print(f"Warning: QuestDB greeks query failed: {e}")
+                conn_qdb.rollback()
+                greek_map = {}
+                
+            # Merge QuestDB data into the main contracts array
+            for c in contracts:
+                token = c["instrument_token"]
+                
+                # Merge Ticks
+                if token in tick_map:
+                    tm = tick_map[token]
+                    c["ltp"] = float(tm["ltp"]) if tm["ltp"] is not None else 0.0
+                    c["volume"] = int(tm["volume"]) if tm["volume"] is not None else 0
+                    c["oi"] = int(tm["oi"]) if tm["oi"] is not None else 0
+                    # Estimate Bid/Ask organically if no deep spread is available in DB currently. 
+                    # Typical index option spread is roughly ~10bps
+                    spread_est = c["ltp"] * 0.001 
+                    c["bid"] = max(0.0, round(c["ltp"] - spread_est, 2))
+                    c["ask"] = round(c["ltp"] + spread_est, 2)
+                    
+                # Merge Greeks
+                if token in greek_map:
+                    gm = greek_map[token]
+                    c["iv"] = float(gm["iv"]) if gm["iv"] is not None else 0.0
+                    c["delta"] = float(gm["delta"]) if gm["delta"] is not None else 0.0
+                    c["gamma"] = float(gm["gamma"]) if gm["gamma"] is not None else 0.0
+                    c["theta"] = float(gm["theta"]) if gm["theta"] is not None else 0.0
+                    c["vega"] = float(gm["vega"]) if gm["vega"] is not None else 0.0
+
         return {
             "underlying": underlying,
             "expiry": expiry,
             "count": len(contracts),
             "contracts": contracts
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/options/prime/{underlying}")
+def prime_option_chain(
+    underlying: str, 
+    expiry: str = Query(..., description="Expiry date YYYY-MM-DD"),
+    conn_pg = Depends(get_pg_conn),
+    conn_qdb = Depends(get_qdb_conn)
+):
+    """
+    Bulk fetch LTP and OI for ALL options in the chain using Upstox Snapshot API 
+    and save to QuestDB to fill gaps.
+    """
+    try:
+        cur_pg = conn_pg.cursor()
+        query_pg = """
+            SELECT instrument_token, symbol 
+            FROM instruments 
+            WHERE underlying_symbol = %s 
+              AND expiry = %s
+              AND segment IN ('OPTIDX', 'OPTSTK')
+        """
+        cur_pg.execute(query_pg, (underlying, expiry))
+        rows = cur_pg.fetchall()
+        
+        if not rows:
+            return {"status": "error", "message": "No instruments found for this expiry"}
+
+        tokens = [r[0] for r in rows]
+        # Upstox allows multiple tokens separated by comma
+        access_token = os.getenv('UPSTOX_ACCESS_TOKEN')
+        
+        # Split into chunks of 50 to avoid URL length domestic limits
+        chunk_size = 50
+        total_synced = 0
+        
+        cur_qdb = conn_qdb.cursor()
+        
+        for i in range(0, len(tokens), chunk_size):
+            chunk = tokens[i:i + chunk_size]
+            encoded_keys = ",".join(chunk)
+            
+            url = f"https://api.upstox.com/v2/market-quote/quotes?instrument_key={encoded_keys}"
+            headers = {
+                'Accept': 'application/json',
+                'Authorization': f'Bearer {access_token}'
+            }
+            
+            resp = requests.get(url, headers=headers)
+            if resp.status_code == 200:
+                data = resp.json().get('data', {})
+                for key_alias, quote in data.items():
+                    # Upstox returns keys as "NSE_FO:SYMBOL"
+                    token = quote.get('instrument_token')
+                    ltp = quote.get('last_price', 0.0)
+                    oi = quote.get('oi', 0)
+                    volume = quote.get('volume', 0)
+                    
+                    if token:
+                        # Insert into QuestDB
+                        # Note: We use now() for timestamp if it's a fresh snapshot
+                        cur_qdb.execute("""
+                            INSERT INTO ticks (timestamp, symbol, ltp, volume, oi)
+                            VALUES (now(), %s, %s, %s, %s)
+                        """, (token, ltp, volume, oi))
+                        total_synced += 1
+            else:
+                print(f"Warning: Snapshot fetch failed for chunk {i}: {resp.text}")
+                
+        conn_qdb.commit()
+        return {
+            "status": "success", 
+            "underlying": underlying, 
+            "expiry": expiry, 
+            "primed_count": total_synced
+        }
+        
+    except Exception as e:
+        if conn_qdb: conn_qdb.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/options/sync/{underlying}")
+def sync_option_data(
+    underlying: str,
+    expiry: str = Query(..., description="Expiry date YYYY-MM-DD"),
+    conn_pg = Depends(get_pg_conn),
+    conn_qdb = Depends(get_qdb_conn)
+):
+    """Notify Ingestor to start streaming specific options near spot."""
+    try:
+        cur_pg = conn_pg.cursor()
+        
+        # 1. Get a logical Spot price to center the sync around
+        symbol_map = {
+            "NIFTY": "NSE_INDEX|Nifty 50",
+            "BANKNIFTY": "NSE_INDEX|Nifty Bank",
+            "FINNIFTY": "NSE_INDEX|FINNIFTY"
+        }
+        search_sym = symbol_map.get(underlying, f"NSE_EQ|{underlying}")
+        
+        cur_qdb = conn_qdb.cursor()
+        cur_qdb.execute(f"SELECT ltp FROM ticks WHERE symbol = %s ORDER BY timestamp DESC LIMIT 1;", (search_sym,))
+        row = cur_qdb.fetchone()
+        spot = float(row[0]) if row and row[0] else 0.0
+        
+        # Fallback if no real-time tick in QDB: Get median strike for this expiry from Postgres
+        if spot == 0:
+            cur_pg.execute("SELECT strike FROM instruments WHERE underlying_symbol = %s AND expiry = %s AND option_type = 'CE' ORDER BY strike", (underlying, expiry))
+            strikes = cur_pg.fetchall()
+            if strikes:
+                spot = float(strikes[len(strikes)//2][0])
+            else:
+                spot = 22000.0 # Extreme fallback
+                
+        # 2. Select ~80 strikes around Spot (80 strikes x 2 types = 160 instruments)
+        # This covers most of the active chain for NIFTY/BANKNIFTY
+        query = """
+            SELECT instrument_token FROM instruments 
+            WHERE underlying_symbol = %s AND expiry = %s 
+              AND segment IN ('OPTIDX', 'OPTSTK')
+            ORDER BY ABS(strike - %s) ASC LIMIT 160
+        """
+        cur_pg.execute(query, (underlying, expiry, spot))
+        tokens = [r[0] for r in cur_pg.fetchall()]
+        
+        if tokens:
+            # 3. Inform Ingestor via Kafka
+            msg = {"method": "sub", "mode": "full", "instrumentKeys": tokens}
+            producer.produce('ingestor.subscriptions', key=underlying, value=json.dumps(msg))
+            producer.flush()
+            
+        return {
+            "status": "success", 
+            "underlying": underlying, 
+            "expiry": expiry, 
+            "synced_tokens": len(tokens),
+            "spot_proxy": spot
+        }
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -618,9 +900,10 @@ def get_backtest_trades(run_id: str, conn = Depends(get_pg_conn)):
         cur = conn.cursor()
         cur.execute("""
             SELECT bo.timestamp, bo.symbol, bo.transaction_type, bo.quantity, bo.price, bo.pnl,
-                   COALESCE(i.symbol, REPLACE(REPLACE(bo.symbol, 'NSE_EQ|', ''), 'BSE_EQ|', '')) as stock_name
+                   COALESCE(i.symbol, i_fo.symbol, REPLACE(REPLACE(bo.symbol, 'NSE_EQ|', ''), 'BSE_EQ|', '')) as stock_name
             FROM backtest_orders bo
             LEFT JOIN instruments i ON i.instrument_token = bo.symbol
+            LEFT JOIN instruments i_fo ON i_fo.instrument_token = 'NSE_FO|' || bo.symbol
             WHERE bo.run_id = %s 
             ORDER BY bo.timestamp ASC;
         """, (run_id,))
