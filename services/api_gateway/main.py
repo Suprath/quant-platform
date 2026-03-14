@@ -1356,3 +1356,14 @@ def get_kira_sizer_health():
         raise HTTPException(status_code=response.status_code, detail=response.text)
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=503, detail=f"Position Sizer Unavailable: {e}")
+
+@app.post("/api/v1/kira/position-sizer/size")
+def get_kira_position_size(request: dict):
+    """Proxy to KIRA Position Sizer Logic"""
+    try:
+        response = requests.post("http://position_sizer:8000/size", json=request, timeout=2)
+        if response.status_code == 200:
+            return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Position Sizer Unavailable: {e}")

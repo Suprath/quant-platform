@@ -11,6 +11,8 @@ class SizingRequest(BaseModel):
     entry_price: float
     stop_price: Optional[float] = None
     confidence_score: float = 1.0
+    current_equity: float = 1000000.0
+    timestamp: Optional[str] = None
 
 class SizingResult(BaseModel):
     request_id: str

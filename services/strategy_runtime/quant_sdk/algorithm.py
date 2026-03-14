@@ -362,18 +362,39 @@ class QCAlgorithm(ABC):
 
     def GetKiraPositionSize(self, symbol, price, risk_pct=0.01):
         """
-        Computes risk-adjusted quantity via KIRA Position Sizer Logic.
+        Computes risk-adjusted quantity via KIRA Position Sizer Service.
         """
-        # Note: Currently uses local logic for sizing while Kafka flows are settling
+        import requests
+        import uuid
         try:
-            equity = self.Portfolio.TotalPortfolioValue
-            risk_amount = equity * risk_pct
-            # Standard 2% stop loss distance for CNC
-            stop_dist = price * 0.02
-            quantity = int(risk_amount / stop_dist) if stop_dist > 0 else 0
-            return quantity
+            # Prepare Request payload
+            payload = {
+                "request_id": str(uuid.uuid4()),
+                "symbol": symbol,
+                "strategy_id": getattr(self, 'Name', 'KiraIntegratedStrategy'),
+                "signal_type": "MOMENTUM",
+                "direction": "BUY",
+                "entry_price": float(price),
+                "confidence_score": self.GetKiraConfidence(symbol),
+                "current_equity": float(self.Portfolio.TotalPortfolioValue),
+                "timestamp": self.Time.isoformat() if hasattr(self, 'Time') else None
+            }
+
+            # Call API Gateway
+            # Note: We use the internal service name 'api_gateway' as seen in Docker Compose
+            url = "http://api_gateway:8000/api/v1/kira/position-sizer/size"
+            resp = requests.post(url, json=payload, timeout=2)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("shares", 0)
+            else:
+                self.Debug(f"Position Sizer API Error: {resp.status_code} - {resp.text}")
+        
         except Exception as e:
-            self.Debug(f"SDK KIRA Error (PS): {e}")
+            self.Debug(f"SDK Position Sizer Error: {e}")
+        
+        # Fallback to zero to avoid unmanaged risk if service is down
         return 0
 
 
