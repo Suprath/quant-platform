@@ -185,7 +185,13 @@ class QCAlgorithm(ABC):
         self.Schedule = ScheduleManager()
         self.OptionChainProvider = OptionChainProvider(self)
 
-    @abstractmethod
+    @property
+    def ActiveUniverse(self):
+        """Returns the list of symbols selected for the current trading day."""
+        if self.Engine:
+            return self.Engine.ActiveUniverse
+        return []
+
     def Initialize(self):
         """
         Initialise the data and resolution required, as well as the cash and start-end dates for your algorithm.
@@ -234,7 +240,8 @@ class QCAlgorithm(ABC):
 
     def SetCash(self, starting_cash):
         """Set the starting capital for the strategy."""
-        pass
+        if self.Engine:
+            self.Engine.SetCash(starting_cash)
 
     def AddEquity(self, symbol, resolution=Resolution.Minute):
         """

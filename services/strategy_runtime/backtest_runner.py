@@ -568,7 +568,7 @@ def run(symbol, start, end, initial_cash, speed="fast"):
 
     # ===== STEP 3: Universe Selection — Scan each trading day =====
     universe_symbols = set(initial_symbols)
-    if engine.UniverseSettings:
+    if engine.UniverseEnabled:
         logger.info("🌌 Dynamic Universe Requested. Scanning each trading day...")
         try:
             start_dt = datetime.strptime(start_clean, "%Y-%m-%d")
@@ -728,8 +728,9 @@ def run(symbol, start, end, initial_cash, speed="fast"):
         engine.SetNoiseData(day_noise)
 
         # Inject Active Universe (Phase 12)
-        # If the user is using dynamic universe, scan results were saved to backtest_universe.
-        if engine.UniverseSettings:
+        # 1. Get symbols explicitly selected by scanner for today
+        daily_symbols = []
+        if engine.UniverseEnabled:
             try:
                 pg_conn = get_db_connection()
                 pg_cur = pg_conn.cursor()
@@ -738,15 +739,23 @@ def run(symbol, start, end, initial_cash, speed="fast"):
                     WHERE run_id = %s AND date = %s
                 """, (RUN_ID, date_str))
                 daily_symbols = [row[0] for row in pg_cur.fetchall()]
-                engine.SetActiveUniverse(daily_symbols)
                 pg_cur.close()
                 pg_conn.close()
             except Exception as e:
-                logger.error(f"Failed to fetch daily universe: {e}")
-                engine.SetActiveUniverse([])
+                logger.error(f"Failed to fetch daily universe from DB: {e}")
         else:
-            # Default: Active universe is just everything we are subscribed to
-            engine.SetActiveUniverse(list(engine.SubscriptionManager.Subscriptions.keys()))
+            daily_symbols = list(engine.SubscriptionManager.Subscriptions.keys())
+
+        # 2. ALSO include symbols we currently hold (Continuity for exits/re-entries)
+        held_symbols = engine.GetHeldSymbols()
+        final_universe = list(set(daily_symbols + held_symbols))
+        
+        if len(held_symbols) > 0:
+            added = [s for s in held_symbols if s not in daily_symbols]
+            if added:
+                logger.debug(f"🌌 Continuity: Added {len(added)} held symbols to today's universe")
+        
+        engine.SetActiveUniverse(final_universe)
 
         # Sort this day's ticks chronologically
         day_ticks.sort(key=itemgetter('timestamp'))

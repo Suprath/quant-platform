@@ -54,6 +54,7 @@ class AlgorithmEngine:
         self.KafkaConsumer = None
         self.CurrentSlice = None
         self.UniverseSettings = None # Stores selection function
+        self.UniverseEnabled = False  # Track if a universe is requested
         self.Leverage = 1.0  # Default: No leverage. User can override via strategy.
         self.ScannerFrequency = None  # Minutes between scanner runs (None = once per day)
         self._squared_off_today = False  # Track if we already squared off today
@@ -169,6 +170,7 @@ class AlgorithmEngine:
         Register a universe selection function.
         """
         self.UniverseSettings = selection_function
+        self.UniverseEnabled = True
         logger.info("🌌 Universe Selection Registered")
 
     def RegisterIndicator(self, symbol, indicator, resolution):
@@ -1015,12 +1017,13 @@ class AlgorithmEngine:
                 _cache = self._setholdings_skip_cache
 
             cash = self.Algorithm.Portfolio.get('Cash', 0.0)
+            equity = self.Algorithm.Portfolio.get('TotalPortfolioValue', 0.0)
             cache_key = symbol
 
             if cache_key in _cache:
-                cached_cash, cached_pct = _cache[cache_key]
-                # If cash hasn't changed and same direction, skip
-                if abs(cached_cash - cash) < 0.01 and (
+                cached_equity, cached_pct = _cache[cache_key]
+                # If equity hasn't changed and same direction, skip
+                if abs(cached_equity - equity) < 0.01 and (
                     (percentage > 0 and cached_pct > 0) or
                     (percentage < 0 and cached_pct < 0)
                 ):
@@ -1080,7 +1083,7 @@ class AlgorithmEngine:
                     logger.info(f"⏭️ SetHoldings: Not enough cash for {symbol} (cash=₹{cash:.2f}, price=₹{price:.2f})")
                 # Cache this rejection so we skip next time
                 if _is_bt:
-                    self._setholdings_skip_cache[symbol] = (cash, percentage)
+                    self._setholdings_skip_cache[symbol] = (total_equity, percentage)
                 return False
             
                 if abs(order_qty) > max_affordable_qty:
@@ -1106,7 +1109,7 @@ class AlgorithmEngine:
                      order_qty = -qty_to_close_long 
                      if order_qty == 0:
                          if _is_bt:
-                             self._setholdings_skip_cache[symbol] = (cash, percentage)
+                             self._setholdings_skip_cache[symbol] = (total_equity, percentage)
                          return False
                 
                 elif qty_new_short > max_short_qty:
@@ -1204,7 +1207,24 @@ class AlgorithmEngine:
         }
 
     def SetInitialCapital(self, capital):
+        """Set the initial capital for benchmarking."""
         self.InitialCapital = float(capital)
+
+    def SetCash(self, capital):
+        """Set current and initial capital for the portfolio."""
+        cap = float(capital)
+        self.InitialCapital = cap
+        if self.BacktestMode and self.Exchange:
+            # Update the in-memory exchange balance
+            self.Exchange._bt_balance = cap
+            # Sync to algorithm's portfolio object
+            self.SyncPortfolio()
+            logger.info(f"💰 Account capital set to ₹{cap:,.2f} (Backtest)")
+        else:
+            # In live mode, SetCash is typically handled by the broker balance sync,
+            # but we allow it for consistency in simulated/paper trading.
+            self.Algorithm.Portfolio['Cash'] = cap
+            self.SyncPortfolio()
 
     def Liquidate(self, symbol=None):
         """
