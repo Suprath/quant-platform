@@ -15,18 +15,21 @@ public:
     static constexpr double BROKERAGE_PCT_DEFAULT  = 0.0003;
     static constexpr double STT_SELL_MIS            = 0.00025;
     static constexpr double STT_BOTH_CNC            = 0.001;
+    static constexpr double STT_SELL_OPT            = 0.001;
     static constexpr double EXCHANGE_TXN             = 0.0000345;
+    static constexpr double EXCHANGE_TXN_OPT         = 0.0005;
     static constexpr double SEBI_FEE                 = 0.000001;
     static constexpr double STAMP_MIS                = 0.00003;
     static constexpr double STAMP_CNC                = 0.00015;
+    static constexpr double STAMP_OPT                = 0.00003;
     static constexpr double GST_RATE                 = 0.18;
 
-    bool is_cnc_ = false;
+    std::string trading_mode_ = "MIS";
     double brokerage_flat_ = BROKERAGE_FLAT_DEFAULT;
     double brokerage_pct_  = BROKERAGE_PCT_DEFAULT;
 
     TransactionCostCalculator() = default;
-    explicit TransactionCostCalculator(bool is_cnc) : is_cnc_(is_cnc) {
+    explicit TransactionCostCalculator(const std::string& mode) : trading_mode_(mode) {
         // Allow env overrides (same as Python version)
         const char* flat_env = std::getenv("BROKERAGE_FLAT");
         if (flat_env) brokerage_flat_ = std::atof(flat_env);
@@ -38,18 +41,25 @@ public:
         if (turnover <= 0.0) return 0.0;
 
         // 1. Brokerage
-        double brokerage = std::min(brokerage_flat_, turnover * brokerage_pct_);
+        double brokerage = 0.0;
+        if (trading_mode_ == "OPTIONS") {
+            brokerage = brokerage_flat_;
+        } else {
+            brokerage = std::min(brokerage_flat_, turnover * brokerage_pct_);
+        }
 
         // 2. STT
         double stt = 0.0;
-        if (is_cnc_) {
+        if (trading_mode_ == "CNC") {
             stt = turnover * STT_BOTH_CNC;
+        } else if (trading_mode_ == "OPTIONS") {
+            stt = (side == "SELL") ? turnover * STT_SELL_OPT : 0.0;
         } else {
             stt = (side == "SELL") ? turnover * STT_SELL_MIS : 0.0;
         }
 
         // 3. Exchange transaction charges
-        double exchange_txn = turnover * EXCHANGE_TXN;
+        double exchange_txn = turnover * (trading_mode_ == "OPTIONS" ? EXCHANGE_TXN_OPT : EXCHANGE_TXN);
 
         // 4. SEBI turnover fee
         double sebi_fee = turnover * SEBI_FEE;
@@ -57,7 +67,13 @@ public:
         // 5. Stamp duty (buy-side only)
         double stamp_duty = 0.0;
         if (side == "BUY") {
-            stamp_duty = turnover * (is_cnc_ ? STAMP_CNC : STAMP_MIS);
+            if (trading_mode_ == "CNC") {
+                stamp_duty = turnover * STAMP_CNC;
+            } else if (trading_mode_ == "OPTIONS") {
+                stamp_duty = turnover * STAMP_OPT;
+            } else {
+                stamp_duty = turnover * STAMP_MIS;
+            }
         }
 
         // 6. GST: 18% on (brokerage + exchange + SEBI)

@@ -69,7 +69,7 @@ class AlgorithmEngine:
         conn.close()
         
         # Init Exchange
-        self.Exchange = PaperExchange(DB_CONF, backtest_mode=self.BacktestMode, run_id=self.RunID, trading_mode=self.TradingMode)
+        self.Exchange = PaperExchange(DB_CONF, backtest_mode=self.BacktestMode, run_id=self.RunID, trading_mode=self.TradingMode, leverage=self.Leverage)
         self.IsRunning = False
 
     def LoadAlgorithm(self, module_name, class_name):
@@ -447,7 +447,7 @@ class AlgorithmEngine:
         _sq_minute = self.SQUARE_OFF_MINUTE
         _handle_date_rollover = self._bt_handle_date_rollover
         _handle_square_off = self._bt_handle_square_off
-        _is_cnc = (self.TradingMode == "CNC")
+        _is_mis = (self.TradingMode == "MIS")
         _seen_symbols = set(_portfolio.keys())
         _bt_last_date_int = 0
 
@@ -507,7 +507,7 @@ class AlgorithmEngine:
                 _handle_date_rollover(td)
 
             # ── 3. Square-off ──
-            if not _is_cnc and td['_hour'] == _sq_hour and td['_minute'] >= _sq_minute:
+            if _is_mis and td['_hour'] == _sq_hour and td['_minute'] >= _sq_minute:
                 if not self._squared_off_today:
                     _handle_square_off()
                     _exchange._bt_tick_count += (j - i)
@@ -1045,12 +1045,13 @@ class AlgorithmEngine:
         
         action = "BUY" if order_qty > 0 else "SELL"
         
-        # 5. For BUY orders: cap quantity to what available cash can afford
+        # 5. For BUY orders: cap quantity to what available buying power can afford
         if action == "BUY":
-            # Keep a small cash buffer (2%) to avoid edge-case rejections
-            usable_cash = cash * 0.98
+            # Keep a small buffer (2%) to avoid edge-case rejections
+            buying_power = total_equity * self.Leverage
+            usable_power = buying_power * 0.98
             # Estimate transaction costs (~0.1%)
-            max_affordable_value = usable_cash / 1.001
+            max_affordable_value = usable_power / 1.001
             max_affordable_qty = int(max_affordable_value / price)
             
             if max_affordable_qty <= 0:
@@ -1061,10 +1062,10 @@ class AlgorithmEngine:
                     self._setholdings_skip_cache[symbol] = (cash, percentage)
                 return False
             
-            if abs(order_qty) > max_affordable_qty:
-                if not _is_bt:
-                    logger.info(f"📉 SetHoldings: Capping {symbol} from {order_qty} to {max_affordable_qty} shares (limited by cash ₹{cash:.2f})")
-                order_qty = max_affordable_qty
+                if abs(order_qty) > max_affordable_qty:
+                    if not _is_bt:
+                        logger.info(f"📉 SetHoldings: Capping {symbol} from {order_qty} to {max_affordable_qty} shares (limited by buying power ₹{buying_power:.2f})")
+                    order_qty = max_affordable_qty
 
         # 6. For SELL/SHORT orders: also cap if opening new short position
         elif action == "SELL":
@@ -1073,13 +1074,14 @@ class AlgorithmEngine:
             qty_new_short = abs(order_qty) - qty_to_close_long
             
             if qty_new_short > 0:
-                usable_cash = cash * 0.98
-                max_short_value = usable_cash / 1.001
+                buying_power = total_equity * self.Leverage
+                usable_power = buying_power * 0.98
+                max_short_value = usable_power / 1.001
                 max_short_qty = int(max_short_value / price)
                 
                 if max_short_qty <= 0:
                      if not _is_bt:
-                         logger.info(f"⏭️ SetHoldings: Not enough cash to Short {symbol} (cash=₹{cash:.2f})")
+                         logger.info(f"⏭️ SetHoldings: Not enough buying power to Short {symbol} (BP=₹{buying_power:.2f})")
                      order_qty = -qty_to_close_long 
                      if order_qty == 0:
                          if _is_bt:
@@ -1088,7 +1090,7 @@ class AlgorithmEngine:
                 
                 elif qty_new_short > max_short_qty:
                      if not _is_bt:
-                         logger.info(f"📉 SetHoldings: Capping Short {symbol} to {max_short_qty} (limited by cash)")
+                         logger.info(f"📉 SetHoldings: Capping Short {symbol} to {max_short_qty} (limited by buying power)")
                      order_qty = -(qty_to_close_long + max_short_qty)
 
         # 7. Execute

@@ -30,11 +30,12 @@ class PaperExchange:
     STAMP_DUTY_PCT   = 0.00003
     GST_PCT          = 0.18
 
-    def __init__(self, db_config, backtest_mode=False, run_id=None, trading_mode="MIS"):
+    def __init__(self, db_config, backtest_mode=False, run_id=None, trading_mode="MIS", leverage=1.0):
         self.db_config    = db_config
         self.backtest_mode = backtest_mode
         self.run_id       = run_id
         self.trading_mode = trading_mode.upper()
+        self.leverage     = float(leverage)
         self.user_id      = 'default_user'
         self._cost_calculator = TransactionCostCalculator(trading_mode=self.trading_mode)
 
@@ -169,7 +170,9 @@ class PaperExchange:
     def calculate_position_size(self, price, balance):
         if price <= 0:
             return 1
-        return max(1, int(balance / price))
+        # Use leverage for position sizing
+        buying_power = balance * self.leverage
+        return max(1, int(buying_power / price))
 
     def get_balance(self):
         """Return current cash balance (in-memory for backtest, DB for live)."""
@@ -272,7 +275,10 @@ class PaperExchange:
                 charges     = self.calculate_transaction_costs(cost, 'BUY')
                 total_outflow = cost + charges
 
-                if balance < total_outflow:
+                # If leverage is 1.0, strictly enforce balance. 
+                # If leverage > 1.0, we rely on the Engine's SetHoldings/SubmitOrder pre-flight checks 
+                # as pure balance-based buying power is inaccurate with multiple positions.
+                if self.leverage == 1.0 and balance < total_outflow:
                     logger.warning(f"⏩ Trade rejected: Insufficient funds for {quantity} {symbol} @ {price} (Need ₹{total_outflow:,.2f}, Have ₹{balance:,.2f})")
                     return False
 
@@ -314,7 +320,8 @@ class PaperExchange:
                 charges       = self.calculate_transaction_costs(cost, 'SELL')
                 total_outflow = cost + charges
 
-                if balance < total_outflow:
+                # If leverage is 1.0, strictly enforce balance.
+                if self.leverage == 1.0 and balance < total_outflow:
                     logger.warning(f"⏩ Trade rejected: Insufficient funds to Short {quantity} {symbol} @ {price} (Need ₹{total_outflow:,.2f}, Have ₹{balance:,.2f})")
                     return False
 
@@ -374,8 +381,9 @@ class PaperExchange:
                 else:
                     cost = price * quantity
                     charges = self.calculate_transaction_costs(cost, 'BUY')
-                    if balance < cost + charges:
-                        logger.warning(f"Insufficient funds for BUY {symbol}")
+                    buying_power = balance * self.leverage
+                    if buying_power < cost + charges:
+                        logger.warning(f"Insufficient buying power for BUY {symbol}")
                         return False
                     cur.execute(f"UPDATE {portfolios_table} SET balance=%s WHERE id=%s", (balance - cost - charges, pid))
                     cur.execute(f"""INSERT INTO {positions_table} (portfolio_id,symbol,quantity,avg_price)
@@ -406,8 +414,9 @@ class PaperExchange:
                 else:
                     cost = price * quantity
                     charges = self.calculate_transaction_costs(cost, 'SELL')
-                    if balance < cost + charges:
-                        logger.warning(f"Insufficient funds for SHORT {symbol}")
+                    buying_power = balance * self.leverage
+                    if buying_power < cost + charges:
+                        logger.warning(f"Insufficient buying power for SHORT {symbol}")
                         return False
                     cur.execute(f"UPDATE {portfolios_table} SET balance=%s WHERE id=%s", (balance - cost - charges, pid))
                     cur.execute(f"""INSERT INTO {positions_table} (portfolio_id,symbol,quantity,avg_price)

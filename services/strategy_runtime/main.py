@@ -33,12 +33,12 @@ class BacktestRequest(BaseModel):
     strategy_name: str = "CustomStrategy"
     project_files: Optional[Dict[str, str]] = None  # {filename: code} for multi-file projects
     speed: str = "fast"  # fast, medium, slow
-    trading_mode: str = "MIS" # MIS or CNC
+    trading_mode: str = "MIS" # MIS, CNC, or OPTIONS
 
 class LiveStartRequest(BaseModel):
     strategy_name: str
     capital: float
-    trading_mode: str = "MIS"  # MIS (intraday) or CNC (delivery)
+    trading_mode: str = "MIS"  # MIS (intraday), CNC (delivery), or OPTIONS
 
 def run_live_strategy():
     """Runs the strategy in LIVE mode."""
@@ -170,7 +170,7 @@ def start_live(request: LiveStartRequest):
         return {"status": "error", "message": "Live strategy already running. Stop it first."}
 
     mode = request.trading_mode.upper()
-    if mode not in ("MIS", "CNC"):
+    if mode not in ("MIS", "CNC", "OPTIONS"):
         mode = "MIS"
     engine = AlgorithmEngine(backtest_mode=False, trading_mode=mode)
     ACTIVE_STRATEGY_NAME = request.strategy_name

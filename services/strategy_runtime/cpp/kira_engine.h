@@ -45,11 +45,11 @@ struct Position {
 
 // ─── Engine configuration ────────────────────────────────────────
 struct EngineConfig {
-    double initial_cash        = 100000.0;
-    int    square_off_hour     = 15;
-    int    square_off_minute   = 20;
-    bool   is_cnc              = false;   // MIS vs CNC
-    double leverage            = 1.0;
+    double      initial_cash        = 100000.0;
+    int         square_off_hour     = 15;
+    int         square_off_minute   = 20;
+    std::string trading_mode        = "MIS";
+    double      leverage            = 1.0;
 };
 
 // =================================================================
@@ -100,14 +100,14 @@ public:
     KiraEngine() = default;
 
     void configure(double initial_cash, int sq_hour, int sq_minute,
-                   bool is_cnc, double leverage) {
+                   const std::string& trading_mode, double leverage) {
         config.initial_cash      = initial_cash;
         config.square_off_hour   = sq_hour;
         config.square_off_minute = sq_minute;
-        config.is_cnc            = is_cnc;
+        config.trading_mode      = trading_mode;
         config.leverage          = leverage;
         cash_ = initial_cash;
-        cost_calc_ = TransactionCostCalculator(is_cnc);
+        cost_calc_ = TransactionCostCalculator(trading_mode);
     }
 
     // ── Symbol mapping ──
@@ -232,11 +232,11 @@ public:
 
         std::string action = (order_qty > 0) ? "BUY" : "SELL";
 
-        // Cap BUY to available cash
+        // Cap BUY to available buying power
         if (action == "BUY") {
-            double usable_cash = cash_ * 0.98;
-            double max_value = usable_cash / 1.001;
-            int max_qty = static_cast<int>(max_value / current_price);
+            double buying_power = calculate_portfolio_value() * config.leverage;
+            double usable_power = buying_power * 0.98; // 2% buffer for slippage/charges
+            int max_qty = static_cast<int>(usable_power / current_price);
             if (max_qty <= 0) return false;
             if (order_qty > max_qty) order_qty = max_qty;
         }
@@ -246,8 +246,9 @@ public:
             int qty_close_long = std::min(std::abs(order_qty), current_long);
             int qty_new_short = std::abs(order_qty) - qty_close_long;
             if (qty_new_short > 0) {
-                double usable_cash = cash_ * 0.98;
-                int max_short = static_cast<int>((usable_cash / 1.001) / current_price);
+                double buying_power = calculate_portfolio_value() * config.leverage;
+                double usable_power = buying_power * 0.98;
+                int max_short = static_cast<int>(usable_power / current_price);
                 if (max_short <= 0) {
                     order_qty = -qty_close_long;
                     if (order_qty == 0) return false;
@@ -286,7 +287,8 @@ public:
                 // Open/add to LONG
                 double charges = cost_calc_.calculate(turnover, "BUY");
                 double total_out = turnover + charges;
-                if (cash_ < total_out) return false;
+                double buying_power = calculate_portfolio_value() * config.leverage;
+                if (buying_power < total_out) return false;
                 cash_ -= total_out;
 
                 if (pos.qty > 0) {
@@ -320,7 +322,8 @@ public:
                 // Open SHORT
                 double charges = cost_calc_.calculate(turnover, "SELL");
                 double total_out = turnover + charges;
-                if (cash_ < total_out) return false;
+                double buying_power = calculate_portfolio_value() * config.leverage;
+                if (buying_power < total_out) return false;
                 cash_ -= total_out;
 
                 if (pos.qty < 0) {
@@ -410,7 +413,7 @@ public:
                 t.minute >= config.square_off_minute &&
                 !squared_off_today_) {
                 squared_off_today_ = true;
-                if (!config.is_cnc) {
+                if (config.trading_mode == "MIS") {
                     liquidate_all(t.timestamp_ms);
                 }
                 continue;  // Skip user callback for square-off tick

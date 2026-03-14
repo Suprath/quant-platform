@@ -292,6 +292,7 @@ export default function ProfessionalLiveDashboard() {
                                     <SelectContent className="bg-[#1a1a1e] border-slate-700 text-white">
                                         <SelectItem value="MIS" className="focus:bg-blue-500/20">Intraday (MIS)</SelectItem>
                                         <SelectItem value="CNC" className="focus:bg-blue-500/20">Delivery (CNC)</SelectItem>
+                                        <SelectItem value="OPTIONS" className="focus:bg-blue-500/20">Options</SelectItem>
                                     </SelectContent>
                                 </Select>
                             </div>
