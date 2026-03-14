@@ -48,6 +48,13 @@ class PortfolioManager(dict):
     def MarginRemaining(self):
         return self.Cash # Simplified for now
 
+    @property
+    def ActiveUniverse(self):
+        """Returns the list of symbols selected for the current trading day."""
+        if self.Engine:
+            return self.Engine.ActiveUniverse
+        return []
+
 class TimeRules:
     @staticmethod
     def At(hour, minute):

@@ -683,14 +683,30 @@ def run(symbol, start, end, initial_cash, speed="fast"):
     max_workers = min(len(universe_symbols), 16)
 
     for day_idx, date_str in enumerate(trading_dates):
+        # ── Dynamic Symbol Selection ──
+        # We fetch data for:
+        # A. Symbols in the user's static universe (if any)
+        # B. Symbols selected by the scanner today
+        # C. Symbols we currently hold in our portfolio (Ensure continuity for CNC exits)
+        held_symbols = engine.GetHeldSymbols()
+        active_symbols_list = list(universe_symbols) # Static/Initial List
+        
+        # Merge with held symbols
+        for sym in held_symbols:
+            if sym not in active_symbols_list:
+                active_symbols_list.append(sym)
+                
+        # Update worker count if needed
+        max_workers = min(len(active_symbols_list) or 1, 16)
+
         # Fetch this day's candles and noise signals for all symbols in parallel
         day_ticks = []
         day_noise = {}
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             # 1. Fetch Candles
-            candle_futures = {pool.submit(_fetch_candles_for_date, sym, date_str): sym for sym in universe_symbols}
+            candle_futures = {pool.submit(_fetch_candles_for_date, sym, date_str): sym for sym in active_symbols_list}
             # 2. Fetch Noise Signals (Phase 9)
-            noise_futures = {pool.submit(_fetch_noise_for_date, sym, date_str): sym for sym in universe_symbols}
+            noise_futures = {pool.submit(_fetch_noise_for_date, sym, date_str): sym for sym in active_symbols_list}
             
             for future in as_completed(candle_futures):
                 sym, candles = future.result()
@@ -710,6 +726,27 @@ def run(symbol, start, end, initial_cash, speed="fast"):
 
         # Inject Noise Cache (Phase 9)
         engine.SetNoiseData(day_noise)
+
+        # Inject Active Universe (Phase 12)
+        # If the user is using dynamic universe, scan results were saved to backtest_universe.
+        if engine.UniverseSettings:
+            try:
+                pg_conn = get_db_connection()
+                pg_cur = pg_conn.cursor()
+                pg_cur.execute("""
+                    SELECT symbol FROM backtest_universe 
+                    WHERE run_id = %s AND date = %s
+                """, (RUN_ID, date_str))
+                daily_symbols = [row[0] for row in pg_cur.fetchall()]
+                engine.SetActiveUniverse(daily_symbols)
+                pg_cur.close()
+                pg_conn.close()
+            except Exception as e:
+                logger.error(f"Failed to fetch daily universe: {e}")
+                engine.SetActiveUniverse([])
+        else:
+            # Default: Active universe is just everything we are subscribed to
+            engine.SetActiveUniverse(list(engine.SubscriptionManager.Subscriptions.keys()))
 
         # Sort this day's ticks chronologically
         day_ticks.sort(key=itemgetter('timestamp'))

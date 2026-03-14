@@ -63,6 +63,7 @@ class AlgorithmEngine:
         self.DailyReturns = []  # List of daily % returns
         self._options_expiries = {} # sym -> date
         self.NoiseData = {}         # sym -> confidence (updated daily in backtest)
+        self.ActiveUniverse = []    # List of symbols selected for the current trading day
         
         # Connect to DB
         conn = get_db_connection()
@@ -188,6 +189,19 @@ class AlgorithmEngine:
         self.NoiseData = noise_map
         if noise_map:
             logger.debug(f"🧠 Updated noise signals for {len(noise_map)} symbols")
+
+    def SetActiveUniverse(self, symbols):
+        """Set the active universe for the current trading day."""
+        self.ActiveUniverse = symbols
+        if symbols:
+            logger.debug(f"🌌 Active Universe set: {len(symbols)} symbols")
+
+    def GetHeldSymbols(self):
+        """Returns a list of symbols currently held in the portfolio."""
+        if not self.Algorithm or not self.Algorithm.Portfolio:
+            return []
+        return [sym for sym, hold in self.Algorithm.Portfolio.items() 
+                if sym not in ('Cash', 'TotalPortfolioValue') and hold.Invested]
         
     def _prefetch_expiries(self):
         """Pre-fetch expiry dates for all symbols in LocalData to avoid DB lookups in tick loop."""
