@@ -12,7 +12,7 @@ import threading
 import uvicorn
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
@@ -182,7 +182,7 @@ async def fetch_candle_chunk(session, symbol, unit, interval, to_date, from_date
 
 
 # --- Core Backfill Logic ---
-async def run_backfill(stocks, start_str, end_str, unit, interval, access_token):
+async def run_backfill(stocks, start_str, end_str, unit, interval, access_token, run_noise_filter=False):
     backfill_state["running"] = True
     backfill_state["total_stocks"] = len(stocks)
     backfill_state["finished"] = False
@@ -276,7 +276,32 @@ async def run_backfill(stocks, start_str, end_str, unit, interval, access_token)
     conn.close()
     backfill_state["running"] = False
     backfill_state["finished"] = True
-    add_log(f"🏁 Backfill complete! Total: {backfill_state['total_candles']} candles")
+    add_log(f"🏁 Backfill complete! Total: {backfill_state['total_candles']} candles. Noise Filter Toggle: {run_noise_filter}")
+
+    # Trigger Noise Filter for the backfilled range if requested
+    if run_noise_filter:
+        add_log(f"📡 Triggering KIRA Noise Filter for {len(stocks)} symbols...")
+        try:
+            noise_filter_url = "http://noise_filter:8000/generate"
+            import requests # Explicit import
+            for symbol, _ in stocks:
+                add_log(f"   Forwarding {symbol} to noise filter...")
+                resp = requests.post(
+                    noise_filter_url, 
+                    params={
+                        "symbol": symbol, 
+                        "start_date": start_str, 
+                        "end_date": end_str
+                    },
+                    timeout=10
+                )
+                if resp.status_code != 200:
+                    add_log(f"   ⚠️ Noise filter returned error for {symbol}: {resp.status_code} - {resp.text}")
+            add_log("✅ Finished triggering KIRA Noise Filter.")
+        except Exception as e:
+            add_log(f"❌ Failed to trigger Noise Filter: {e}")
+    else:
+        add_log("⏭️ Noise Filter trigger skipped (toggle off).")
 
 
 # --- API Endpoints ---
@@ -287,9 +312,10 @@ class BackfillRequest(BaseModel):
     stocks: Optional[List[str]] = None  # None = all
     interval: str = "1"
     unit: str = "minutes"
+    run_noise_filter: bool = False
 
 @app.post("/backfill/start")
-def start_backfill(request: BackfillRequest):
+def start_backfill(request: BackfillRequest, background_tasks: BackgroundTasks):
     if backfill_state["running"]:
         raise HTTPException(status_code=409, detail="Backfill already running")
 
@@ -298,38 +324,34 @@ def start_backfill(request: BackfillRequest):
         raise HTTPException(status_code=400, detail="UPSTOX_ACCESS_TOKEN not configured")
 
     reset_state()
-
     # Filter stocks dynamically handling both known Equities and raw F&O Tokens
     if request.stocks:
         requested_upper = [s.upper() for s in request.stocks]
         stocks = [(token, name) for token, name in STOCK_LIST if name in requested_upper or token.upper() in requested_upper]
         
-        # Add dynamic F&O tokens (e.g. NSE_FO|12345) that aren't in STOCK_LIST
-        # Create a set of already added tokens to prevent duplicates
         added_tokens = {t for t, _ in stocks}
-        
         for req_symbol in request.stocks:
             req_upper = req_symbol.upper()
             if "NSE_FO|" in req_upper or "BSE_FO|" in req_upper:
                 if req_symbol not in added_tokens:
-                    # Provide a fallback name (the token itself or just the ID)
                     stocks.append((req_symbol, req_symbol.split('|')[-1]))
                     added_tokens.add(req_symbol)
     else:
         stocks = STOCK_LIST
 
     if not stocks:
-        raise HTTPException(status_code=400, detail=f"No valid stocks found. input={request.stocks}, result={stocks}")
+        raise HTTPException(status_code=400, detail=f"No valid stocks found. input={request.stocks}")
 
-    # Run in background thread with its own event loop
-    def run_in_thread():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(run_backfill(stocks, request.start_date, request.end_date, request.unit, request.interval, access_token))
-        loop.close()
-
-    thread = threading.Thread(target=run_in_thread, daemon=True)
-    thread.start()
+    background_tasks.add_task(
+        run_backfill,
+        stocks, 
+        request.start_date, 
+        request.end_date, 
+        request.unit, 
+        request.interval, 
+        access_token,
+        request.run_noise_filter
+    )
 
     return {"status": "started", "total_stocks": len(stocks)}
 

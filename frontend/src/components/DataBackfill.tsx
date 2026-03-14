@@ -27,6 +27,7 @@ export function DataBackfill() {
     const [startDate, setStartDate] = useState('2025-01-01');
     const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
     const [status, setStatus] = useState<BackfillStatus | null>(null);
+    const [runNoiseFilter, setRunNoiseFilter] = useState(true);
     const [isStarting, setIsStarting] = useState(false);
     const [expanded, setExpanded] = useState(false);
 
@@ -69,7 +70,8 @@ export function DataBackfill() {
                     end_date: endDate,
                     stocks: null,  // all stocks
                     interval: "1",
-                    unit: "minutes"
+                    unit: "minutes",
+                    run_noise_filter: runNoiseFilter
                 }),
             });
             if (res.ok) {
@@ -126,6 +128,20 @@ export function DataBackfill() {
                                 <Label className="text-xs text-muted-foreground">End Date</Label>
                                 <Input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="w-40 h-8 text-sm" />
                             </div>
+
+                            <div className="flex items-center gap-2 pb-1">
+                                <input 
+                                    type="checkbox" 
+                                    id="noise-filter-toggle"
+                                    checked={runNoiseFilter}
+                                    onChange={(e) => setRunNoiseFilter(e.target.checked)}
+                                    className="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-blue-600 focus:ring-blue-500"
+                                />
+                                <Label htmlFor="noise-filter-toggle" className="text-xs cursor-pointer select-none">
+                                    Run KIRA Noise Filter
+                                </Label>
+                            </div>
+
                             <Button onClick={handleStart} disabled={isStarting} size="sm" className="h-8">
                                 {isStarting ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Download className="h-4 w-4 mr-1" />}
                                 {isStarting ? 'Starting...' : 'Download All Stocks'}

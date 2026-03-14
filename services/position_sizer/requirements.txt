@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+aiokafka
+pydantic>=2.0.0
+numpy
+pandas
+redis
+psycopg2-binary
+-e ../../kira-shared

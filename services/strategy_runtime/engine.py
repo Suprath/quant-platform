@@ -62,6 +62,7 @@ class AlgorithmEngine:
         self.EquityCurve = []   # List of {'timestamp': ts, 'equity': float}
         self.DailyReturns = []  # List of daily % returns
         self._options_expiries = {} # sym -> date
+        self.NoiseData = {}         # sym -> confidence (updated daily in backtest)
         
         # Connect to DB
         conn = get_db_connection()
@@ -181,6 +182,12 @@ class AlgorithmEngine:
         self._options_expiries = {}
         self._prefetch_expiries()
         logger.info(f"📁 Loaded {len(ticks)} ticks for Local Backtest")
+
+    def SetNoiseData(self, noise_map):
+        """Set pre-loaded noise signals for the current trading day."""
+        self.NoiseData = noise_map
+        if noise_map:
+            logger.debug(f"🧠 Updated noise signals for {len(noise_map)} symbols")
         
     def _prefetch_expiries(self):
         """Pre-fetch expiry dates for all symbols in LocalData to avoid DB lookups in tick loop."""

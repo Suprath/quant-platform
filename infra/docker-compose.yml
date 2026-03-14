@@ -246,6 +246,36 @@ services:
       - PYTHONUNBUFFERED=1
     restart: always
 
+  noise_filter:
+    build: 
+      context: ..
+      dockerfile: services/noise_filter/Dockerfile
+    container_name: noise_filter
+    depends_on:
+      - kafka
+      - redis
+    env_file:
+      - ../.env
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
+      - REDIS_HOST=redis_state
+    restart: always
+
+  position_sizer:
+    build:
+      context: ..
+      dockerfile: services/position_sizer/Dockerfile
+    container_name: position_sizer
+    depends_on:
+      - kafka
+      - redis
+    env_file:
+      - ../.env
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
+      - REDIS_HOST=redis_state
+    restart: always
+
 volumes:
   questdb_data:
   postgres_data:

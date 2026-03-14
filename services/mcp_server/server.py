@@ -42,21 +42,28 @@ async def get_kira_documentation() -> str:
    - `SMA(symbol, period)` / `EMA(symbol, period)` -> EX: `self.SMA("NSE_EQ|INE002A01018", 20)`
    - `Schedule.On(self.DateRules.EveryDay(), self.TimeRules.At(hour, minute), self.FuncName)`
    - `Debug(msg)` / `Log(msg)`
+   - `GetKiraConfidence(symbol: str)` -> Returns 0-100 score from Noise Filter.
+   - `GetKiraPositionSize(symbol: str, price: float, risk_pct: float)` -> Returns risk-adjusted qty.
 
-4. SYMBOL KEYS: 
+4. KIRA INTELLIGENCE:
+   - Use `self.GetKiraConfidence(symbol)` to filter out market noise before entry.
+   - Use `self.GetKiraPositionSize(symbol, price, 0.01)` to calculate sizes based on 1% portfolio risk.
+   - These methods route through the Unified API Gateway for robustness.
+
+5. SYMBOL KEYS: 
    - You MUST use the Upstox Instrument Key (Token) for all symbol arguments.
    - Use the `search_symbols` tool to find the correct token (e.g., `NSE_EQ|INE002A01018` for RELIANCE).
    - DO NOT use human-readable names like "RELIANCE" or placeholders like "AAPL".
 
-5. ONDATA / SLICE (`data`):
+6. ONDATA / SLICE (`data`):
    - Check if symbol exists: `if data.ContainsKey("NSE_EQ|INE002A01018"):`
    - Get price: `price = data["NSE_EQ|INE002A01018"].Price`
 
-6. INDICATORS:
+7. INDICATORS:
    - Must be initialized in `Initialize()`, e.g., `self.sma = self.SMA("NSE_EQ|INE002A01018", 14)`
    - Usage in `OnData`: `if self.sma.IsReady: value = self.sma.Current.Value`
 
-7. UNIVERSE SELECTION (DYNAMIC):
+8. UNIVERSE SELECTION (DYNAMIC):
    - Definition: `self.AddUniverse(self.CoarseSelectionFunction)` in `Initialize()`.
    - The function receives a list of `candidates` (dicts with `symbol` and `score`).
    - `score` is a combination of Relative Strength (RS) vs Nifty 50 and Volume.
@@ -69,18 +76,18 @@ async def get_kira_documentation() -> str:
          return [x['symbol'] for x in sorted_candidates[:3]]
      ```
 
-8. OPTIONS (F&O) TRADING:
+9. OPTIONS (F&O) TRADING:
    - Use `self.OptionChainProvider` to dynamically fetch option chains.
    - `expiries = self.OptionChainProvider.GetExpiries(underlying_symbol)` -> returns sorted list of `datetime.date` objects.
    - `chain = self.OptionChainProvider.GetOptionContractList(underlying_symbol, expiry_date)`
    - `chain` returns a list of dicts: `[{"instrument_token": "NSE_FO|123", "strike": 22000.0, "option_type": "CE", "lot_size": 25}]`
    - You MUST call `self.AddEquity(contract["instrument_token"])` before you can trade it.
 
-9. PORTFOLIO STATE (`self.Portfolio`):
+10. PORTFOLIO STATE (`self.Portfolio`):
    - Check holdings: `if self.Portfolio["NSE_EQ|INE002A01018"].Invested:`
    - Get total equity: `self.Portfolio.TotalPortfolioValue`
 
-10. BACKTEST WORKFLOW (LLM INSTRUCTIONS):
+11. BACKTEST WORKFLOW (LLM INSTRUCTIONS):
    - Step 1: Use `search_symbols` to get the correct instrument keys for your strategy.
    - Step 2: Write strategy using ISIN-based keys or AddUniverse for dynamic selection.
    - Step 3: Call `run_backtest`. It returns a `run_id`.
@@ -90,6 +97,32 @@ async def get_kira_documentation() -> str:
    - Step 7: if status is 'failed', call `get_backtest_logs` to debug.
    - NOTE: Backfills can take 30-60s due to Upstox Free Tier (1 req/s) rate limits. BE PATIENT.
 """
+
+@mcp.tool()
+async def get_kira_confidence(symbol: str) -> str:
+    """Get the live signal confidence for a stock from the KIRA Noise Filter.
+    
+    Args:
+        symbol: The instrument identifier, e.g. 'NSE_EQ|RELIANCE'
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{API_BASE_URL}/kira/noise-filter/confidence/{symbol}")
+            response.raise_for_status()
+            return json.dumps(response.json(), indent=2)
+        except Exception as e:
+            return f"Error getting KIRA confidence: {str(e)}"
+
+@mcp.tool()
+async def get_kira_sizer_health() -> str:
+    """Check the operational health of the KIRA Position Sizer service."""
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{API_BASE_URL}/kira/position-sizer/health")
+            response.raise_for_status()
+            return json.dumps(response.json(), indent=2)
+        except Exception as e:
+            return f"Error getting KIRA sizer health: {str(e)}"
 
 @mcp.tool()
 async def get_options_documentation() -> str:

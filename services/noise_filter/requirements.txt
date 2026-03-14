@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+aiohttp
+aiokafka
+pydantic>=2.0.0
+numpy
+pandas
+psycopg2-binary
+redis
+requests
+pybind11
+-e ../../kira-shared

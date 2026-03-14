@@ -8,6 +8,7 @@ import requests
 from pydantic import BaseModel
 from typing import Optional, Dict
 import json
+from datetime import datetime, timedelta
 from confluent_kafka import Producer
 load_dotenv()
 
@@ -1195,6 +1196,7 @@ class BackfillStartRequest(BaseModel):
     stocks: Optional[List[str]] = None
     interval: str = "1"
     unit: str = "minutes"
+    run_noise_filter: bool = False
 
 @app.post("/api/v1/backfill/start")
 def start_backfill(request: BackfillStartRequest):
@@ -1292,3 +1294,65 @@ def run_deep_scan(request: DeepScanRequest):
         raise HTTPException(status_code=504, detail="Deep Scan Timed Out. Try a shorter date range.")
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=503, detail=f"Edge Detector Unavailable: {e}")
+
+# --- KIRA MODULE PROXIES ---
+
+@app.get("/api/v1/kira/noise-filter/confidence/{symbol}")
+def get_kira_confidence(
+    symbol: str, 
+    timestamp: Optional[str] = Query(None, description="ISO timestamp for historical lookup"),
+    conn = Depends(get_qdb_conn)
+):
+    """Fetch KIRA confidence. Proxies to Live NF if no timestamp, else queries QuestDB."""
+    if not timestamp:
+        # Live Proxy
+        try:
+            response = requests.get(f"http://noise_filter:8000/confidence/{symbol}", timeout=2)
+            if response.status_code == 200:
+                return response.json()
+        except:
+            pass
+        return {"symbol": symbol, "confidence": 0}
+    
+    # Historical Lookup from QuestDB
+    try:
+        cur = conn.cursor()
+        # QuestDB Syntax: LATEST BY must come before WHERE or right after table
+        query = "SELECT confidence FROM noise_confidence LATEST BY symbol WHERE symbol = %s AND timestamp <= %s;"
+        cur.execute(query, (symbol, timestamp))
+        r = cur.fetchone()
+        
+        if r:
+            return {"symbol": symbol, "confidence": r[0], "source": "historical"}
+        
+        # JIT Trigger: If no data found, trigger generation for this day
+        # We assume the user wants the signals for the day surrounding this timestamp
+        try:
+            # Simple window: +/- 1 day from timestamp
+            ts_dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+            start_jit = (ts_dt - timedelta(days=1)).isoformat()
+            end_jit = (ts_dt + timedelta(days=1)).isoformat()
+            
+            requests.post(
+                "http://noise_filter:8000/generate",
+                params={"symbol": symbol, "start_date": start_jit, "end_date": end_jit},
+                timeout=1
+            )
+        except:
+            pass # Fail silently as JIT is background
+            
+        return {"symbol": symbol, "confidence": 0, "source": "jit_triggered"}
+        
+    except Exception as e:
+         raise HTTPException(status_code=500, detail=f"QuestDB Error: {e}")
+
+@app.get("/api/v1/kira/position-sizer/health")
+def get_kira_sizer_health():
+    """Proxy to KIRA Position Sizer Health"""
+    try:
+        response = requests.get("http://position_sizer:8000/health", timeout=2)
+        if response.status_code == 200:
+            return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Position Sizer Unavailable: {e}")

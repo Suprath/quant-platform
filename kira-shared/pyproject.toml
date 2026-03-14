@@ -1,0 +1,13 @@
+[project]
+name = "kira-shared"
+version = "1.0.0"
+description = "Shared library for KIRA platform"
+dependencies = [
+    "pydantic>=2.0.0",
+    "numpy",
+    "pandas"
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

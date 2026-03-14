@@ -76,6 +76,19 @@ KNOWN_STOCKS = {
 BACKFILL_DELAY_CHUNKS = 1.6   # seconds between API calls
 BACKFILL_DELAY_STOCKS = 3.2   # seconds between stocks
 
+# Global Symbol Mapping for Normalization (Ticker -> ISIN)
+# This ensures that when a user strategy asks for "RELIANCE", we check the DB for its ISIN equivalent.
+SYMBOL_MAP = {v: k for k, v in KNOWN_STOCKS.items()}
+# Special cases for raw NSE_EQ tickers
+for k, v in KNOWN_STOCKS.items():
+    if k.startswith("NSE_EQ|"):
+        ticker = k.split("|")[-1]
+        SYMBOL_MAP[f"NSE_EQ|{v}"] = k
+
+def normalize_symbol(sym):
+    """Maps ticker-based symbols to ISIN-based symbols if known."""
+    return SYMBOL_MAP.get(sym, sym)
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("BacktestRunner")
 
@@ -117,10 +130,11 @@ def find_missing_dates(symbols, start_date, end_date):
         return missing
 
     for sym in symbols:
+        db_sym = normalize_symbol(sym)
         # Query QuestDB for distinct dates with data using SAMPLE BY for speed
         query = f"""
         SELECT first(timestamp) FROM ohlc 
-        WHERE symbol = '{sym}' 
+        WHERE symbol = '{db_sym}' 
           AND timestamp >= '{start_date}T00:00:00.000000Z' 
           AND timestamp <= '{end_date}T23:59:59.999999Z'
         SAMPLE BY 1d
@@ -140,23 +154,25 @@ def find_missing_dates(symbols, start_date, end_date):
 
                 sym_missing = [d for d in expected_days if d not in existing_days]
 
-                # Use 75% threshold to account for NSE market holidays
-                # (weekdays that are NSE holidays will never have data)
+                # Use 70% threshold to account for NSE market holidays
                 coverage = len(existing_days) / len(expected_days) if expected_days else 0
-                if coverage >= 0.75:
-                    # Enough data present — skip this symbol (holidays account for the rest)
+                if coverage >= 0.70:
+                    # Enough data present — skip this symbol
                     logger.info(f"  ✅ {sym}: {len(existing_days)}/{len(expected_days)} days ({coverage*100:.0f}% coverage) — skipping backfill")
                     continue
-
+                
+                # If we have some data but not enough, only backfill actually missing days
                 if sym_missing:
+                    # Filter sym_missing: if it's already in QuestDB, don't re-backfill
                     missing[sym] = sym_missing
             else:
                  logger.warning(f"  ⚠️ QuestDB Query Failed for {sym}: {resp.status_code} - {resp.text}")
-                 missing[sym] = expected_days # Assume missing if query fails
+                 # Only assume missing if table doesn't exist yet
+                 if "table does not exist" in resp.text:
+                     missing[sym] = expected_days
 
         except Exception as e:
             logger.warning(f"  ⚠️ Could not check data for {sym}: {e}")
-            missing[sym] = expected_days  # Assume all missing if check fails
 
     return missing
 
@@ -589,6 +605,7 @@ def run(symbol, start, end, initial_cash, speed="fast"):
 
     def _fetch_candles_for_date(sym, date_str):
         """Fetch one symbol's candles for a single date from QuestDB."""
+        db_sym = normalize_symbol(sym)
         conn = get_qdb_conn()
         if not conn: return sym, []
         cur = conn.cursor()
@@ -602,11 +619,33 @@ def run(symbol, start, end, initial_cash, speed="fast"):
             WHERE symbol = %s AND timeframe = '1m'
               AND timestamp >= %s AND timestamp < %s
             ORDER BY timestamp ASC
-        """, (sym, start_ts, next_day))
+        """, (db_sym, start_ts, next_day))
         candles = cur.fetchall()
         cur.close()
         conn.close()
         return sym, candles
+
+    def _fetch_noise_for_date(sym, date_str):
+        """Fetch one symbol's latest noise confidence for a single date from QuestDB."""
+        db_sym = normalize_symbol(sym)
+        conn = get_qdb_conn()
+        if not conn: return sym, 0
+        cur = conn.cursor()
+        # We look for the latest signal on or before the trading day
+        start_ts = f"{date_str}T00:00:00.000000Z"
+        # Inclusive end of day
+        from datetime import datetime as dt3, timedelta as td3
+        end_ts = (dt3.strptime(date_str, "%Y-%m-%d") + td3(hours=23, minutes=59)).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+        
+        cur.execute("""
+            SELECT confidence FROM noise_confidence
+            WHERE symbol = %s AND timestamp <= %s
+            ORDER BY timestamp DESC LIMIT 1
+        """, (db_sym, end_ts))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return sym, row[0] if row else 0
 
     # Generate trading dates (skip weekends)
     start_dt = datetime.strptime(start_clean, "%Y-%m-%d")
@@ -644,11 +683,16 @@ def run(symbol, start, end, initial_cash, speed="fast"):
     max_workers = min(len(universe_symbols), 16)
 
     for day_idx, date_str in enumerate(trading_dates):
-        # Fetch this day's candles for all symbols in parallel
+        # Fetch this day's candles and noise signals for all symbols in parallel
         day_ticks = []
+        day_noise = {}
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_fetch_candles_for_date, sym, date_str): sym for sym in universe_symbols}
-            for future in as_completed(futures):
+            # 1. Fetch Candles
+            candle_futures = {pool.submit(_fetch_candles_for_date, sym, date_str): sym for sym in universe_symbols}
+            # 2. Fetch Noise Signals (Phase 9)
+            noise_futures = {pool.submit(_fetch_noise_for_date, sym, date_str): sym for sym in universe_symbols}
+            
+            for future in as_completed(candle_futures):
                 sym, candles = future.result()
                 if candles:
                     for c in candles:
@@ -656,9 +700,16 @@ def run(symbol, start, end, initial_cash, speed="fast"):
                         for t in ohlc_to_ticks(ts, o, h, l, c_price, v):
                             t['symbol'] = sym
                             day_ticks.append(t)
+            
+            for future in as_completed(noise_futures):
+                sym, confidence = future.result()
+                day_noise[sym] = confidence
 
         if not day_ticks:
             continue  # Holiday or no data
+
+        # Inject Noise Cache (Phase 9)
+        engine.SetNoiseData(day_noise)
 
         # Sort this day's ticks chronologically
         day_ticks.sort(key=itemgetter('timestamp'))

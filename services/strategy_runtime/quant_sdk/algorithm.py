@@ -321,6 +321,47 @@ class QCAlgorithm(ABC):
         if self.Engine:
             self.Engine.SetScannerFrequency(minutes)
 
+    # --- KIRA INTEGRATION HELPERS ---
+    def GetKiraConfidence(self, symbol):
+        """
+        Fetches signal confidence from KIRA. 
+        Automatically includes self.Time for backtest synchronization.
+        """
+        # --- PHASE 9: Memory-Efficient Chunked Reading ---
+        # If in backtest mode and NoiseData is pre-loaded by engine, use it (zero latency)
+        if self.Engine and self.Engine.BacktestMode:
+            if symbol in self.Engine.NoiseData:
+                return self.Engine.NoiseData[symbol]
+        
+        # Fallback to API Gateway (Live mode or if missing from cache)
+        import requests
+        try:
+            # Sync with current algorithm time to avoid lookahead bias
+            ts = self.Time.isoformat()
+            url = f"http://api_gateway:8000/api/v1/kira/noise-filter/confidence/{symbol}?timestamp={ts}"
+            resp = requests.get(url, timeout=2)
+            if resp.status_code == 200:
+                return resp.json().get("confidence", 0)
+        except Exception as e:
+            self.Debug(f"SDK KIRA Error (NF): {e}")
+        return 0
+
+    def GetKiraPositionSize(self, symbol, price, risk_pct=0.01):
+        """
+        Computes risk-adjusted quantity via KIRA Position Sizer Logic.
+        """
+        # Note: Currently uses local logic for sizing while Kafka flows are settling
+        try:
+            equity = self.Portfolio.TotalPortfolioValue
+            risk_amount = equity * risk_pct
+            # Standard 2% stop loss distance for CNC
+            stop_dist = price * 0.02
+            quantity = int(risk_amount / stop_dist) if stop_dist > 0 else 0
+            return quantity
+        except Exception as e:
+            self.Debug(f"SDK KIRA Error (PS): {e}")
+        return 0
+
 
     def Debug(self, message):
         """Send a debug message to the console/log."""
