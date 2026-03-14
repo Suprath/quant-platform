@@ -90,12 +90,16 @@ def sync_fo_instruments():
                 option_type = None
                 
             underlying = None
-            if segment in ('OPTIDX', 'FUTIDX', 'OPTSTK', 'FUTSTK'):
-                ts = row['tradingsymbol']
-                # Extract everything before the 2-digit year (e.g. 26) and 3-char Month
-                m = re.match(r"^([A-Z0-9\-&]+?)\d{2}[A-Z]{3}", ts)
-                if m:
-                    underlying = m.group(1)
+            segment_clean = segment.strip().upper()
+            if segment_clean in ('OPTIDX', 'FUTIDX', 'OPTSTK', 'FUTSTK', 'OPTCUR', 'FUTCUR'):
+                # Upstox 'name' column for derivatives contains the underlying ticker (e.g. NIFTY, SENSEX)
+                underlying = row.get('name', '').strip()
+                if not underlying:
+                    # Fallback to regex if name is empty
+                    ts = row.get('tradingsymbol', '')
+                    m = re.match(r"^([A-Z0-9\-&]+?)\d{2}[A-Z]{3}", ts)
+                    if m:
+                        underlying = m.group(1)
             
             lot_size = row.get('lot_size')
             lot_size_val = int(lot_size) if lot_size else 1

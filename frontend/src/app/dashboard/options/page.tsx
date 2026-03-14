@@ -477,19 +477,19 @@ export default function OptionsChainPage() {
                                                             {chain[strike].CE.oi > 0 ? chain[strike].CE.oi.toLocaleString() : '—'}
                                                         </TableCell>
                                                         <TableCell className="text-right text-purple-400/80">
-                                                            {chain[strike].CE.iv > 0 ? (chain[strike].CE.iv * 100).toFixed(1) : '—'}
+                                                            {chain[strike].CE.iv !== undefined ? (chain[strike].CE.iv * 100).toFixed(1) : '—'}
                                                         </TableCell>
                                                         <TableCell className="text-right text-slate-500">
-                                                            {chain[strike].CE.delta !== 0 ? chain[strike].CE.delta.toFixed(2) : '—'}
+                                                            {chain[strike].CE.delta !== undefined ? chain[strike].CE.delta.toFixed(2) : '—'}
                                                         </TableCell>
                                                         <TableCell className="text-right text-slate-500">
-                                                            {chain[strike].CE.gamma !== 0 ? chain[strike].CE.gamma.toFixed(4) : '—'}
+                                                            {chain[strike].CE.gamma !== undefined ? chain[strike].CE.gamma.toFixed(4) : '—'}
                                                         </TableCell>
                                                         <TableCell className="text-right text-slate-500">
-                                                            {chain[strike].CE.theta !== 0 ? chain[strike].CE.theta.toFixed(2) : '—'}
+                                                            {chain[strike].CE.theta !== undefined ? chain[strike].CE.theta.toFixed(2) : '—'}
                                                         </TableCell>
                                                         <TableCell className="text-right text-slate-500">
-                                                            {chain[strike].CE.vega !== 0 ? chain[strike].CE.vega.toFixed(2) : '—'}
+                                                            {chain[strike].CE.vega !== undefined ? chain[strike].CE.vega.toFixed(2) : '—'}
                                                         </TableCell>
                                                         <TableCell className="text-right text-emerald-400/60">
                                                             {chain[strike].CE.bid > 0 ? chain[strike].CE.bid.toFixed(2) : '—'}
@@ -519,19 +519,19 @@ export default function OptionsChainPage() {
                                                             {chain[strike].PE.ask > 0 ? chain[strike].PE.ask.toFixed(2) : '—'}
                                                         </TableCell>
                                                         <TableCell className="text-left text-purple-400/80">
-                                                            {chain[strike].PE.iv > 0 ? (chain[strike].PE.iv * 100).toFixed(1) : '—'}
+                                                            {chain[strike].PE.iv !== undefined ? (chain[strike].PE.iv * 100).toFixed(1) : '—'}
                                                         </TableCell>
                                                         <TableCell className="text-left text-slate-500">
-                                                            {chain[strike].PE.delta !== 0 ? chain[strike].PE.delta.toFixed(2) : '—'}
+                                                            {chain[strike].PE.delta !== undefined ? chain[strike].PE.delta.toFixed(2) : '—'}
                                                         </TableCell>
                                                         <TableCell className="text-left text-slate-500">
-                                                            {chain[strike].PE.gamma !== 0 ? chain[strike].PE.gamma.toFixed(4) : '—'}
+                                                            {chain[strike].PE.gamma !== undefined ? chain[strike].PE.gamma.toFixed(4) : '—'}
                                                         </TableCell>
                                                         <TableCell className="text-left text-slate-500">
-                                                            {chain[strike].PE.theta !== 0 ? chain[strike].PE.theta.toFixed(2) : '—'}
+                                                            {chain[strike].PE.theta !== undefined ? chain[strike].PE.theta.toFixed(2) : '—'}
                                                         </TableCell>
                                                         <TableCell className="text-left text-slate-500">
-                                                            {chain[strike].PE.vega !== 0 ? chain[strike].PE.vega.toFixed(2) : '—'}
+                                                            {chain[strike].PE.vega !== undefined ? chain[strike].PE.vega.toFixed(2) : '—'}
                                                         </TableCell>
                                                         <TableCell className="text-left text-slate-400">
                                                             {chain[strike].PE.volume > 0 ? chain[strike].PE.volume.toLocaleString() : '—'}

@@ -504,10 +504,30 @@ def prime_option_chain(
                             VALUES (now(), %s, %s, %s, %s)
                         """, (token, ltp, volume, oi))
                         total_synced += 1
-            else:
-                print(f"Warning: Snapshot fetch failed for chunk {i}: {resp.text}")
-                
-        conn_qdb.commit()
+                # Call Greeks API (Upstox v3)
+                greeks_url = f"https://api.upstox.com/v3/market-quote/option-greek?instrument_key={encoded_keys}"
+                greeks_resp = requests.get(greeks_url, headers=headers)
+                if greeks_resp.status_code == 200:
+                    greeks_data = greeks_resp.json().get('data', {})
+                    for key_alias, g in greeks_data.items():
+                        # Official V3 returns data indexed by instrument_key
+                        token = g.get('instrument_token') or key_alias
+                        if token:
+                            cur_qdb.execute("""
+                                INSERT INTO option_greeks (timestamp, symbol, iv, delta, gamma, theta, vega)
+                                VALUES (now(), %s, %s, %s, %s, %s, %s)
+                            """, (
+                                token, 
+                                float(g.get('iv', 0.0)), 
+                                float(g.get('delta', 0.0)), 
+                                float(g.get('gamma', 0.0)), 
+                                float(g.get('theta', 0.0)), 
+                                float(g.get('vega', 0.0))
+                            ))
+                else:
+                    print(f"Warning: Greeks fetch failed for chunk {i}: {greeks_resp.text}")
+
+                conn_qdb.commit()
         return {
             "status": "success", 
             "underlying": underlying, 

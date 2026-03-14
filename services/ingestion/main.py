@@ -4,6 +4,7 @@ import asyncio
 import websockets
 import time
 import logging
+import re
 from confluent_kafka import Producer, Consumer
 from dotenv import load_dotenv
 
@@ -304,8 +305,9 @@ async def connect_upstox_v3():
                                     debug_count += 1
                                     producer.produce('market.equity.ticks', key=key, value=json.dumps(tick))
                                     
-                                    # If Greeks were updated, produce to greeks topic
-                                    if 'greeks' in state:
+                                    # If Greeks were updated, produce to greeks topic ONLY for derivatives
+                                    DERIVATIVE_PREFIXES = ('NSE_FO|', 'BSE_FO|', 'NCD_FO|', 'MCX_FO|')
+                                    if 'greeks' in state and any(key.startswith(p) for p in DERIVATIVE_PREFIXES):
                                         greek_tick = {
                                             "symbol": key,
                                             "iv": state.get('iv', 0.0),
@@ -315,6 +317,10 @@ async def connect_upstox_v3():
                                             "vega": state['greeks']['vega'],
                                             "timestamp": tick['timestamp']
                                         }
+                                        # Diagnostic log for non-zero greeks to verify broker feed quality
+                                        if abs(greek_tick['delta']) > 0 or abs(greek_tick['theta']) > 0 or abs(greek_tick['gamma']) > 0:
+                                            logger.info(f"🔥 [GREEK_LIVE] {key}: D={greek_tick['delta']:.3f}, G={greek_tick['gamma']:.5f}, T={greek_tick['theta']:.3f}")
+
                                         producer.produce('market.option.greeks', key=key, value=json.dumps(greek_tick))
                                         # Clear greeks state after sending to avoid duplicate writes if no change
                                         del state['greeks']
