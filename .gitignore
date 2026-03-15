@@ -46,3 +46,6 @@ services/strategy_runtime/strategies/*.py
 
 # Context files
 context/
+
+# AI Agent folder
+.agent/

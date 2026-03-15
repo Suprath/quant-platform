@@ -10,3 +10,9 @@ aiohttp
 torch
 torchvision
 pybind11
+pytest
+pytest-mock
+redis
+pytest-asyncio
+pydantic
+aiokafka

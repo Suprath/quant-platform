@@ -8,6 +8,8 @@ try:
 except ImportError:
     pass
 
+from psycopg2 import pool
+
 logger = logging.getLogger("DB")
 
 DB_CONF = {
@@ -18,11 +20,26 @@ DB_CONF = {
     "database": "quant_platform"
 }
 
+_POOL = None
+
 def get_db_connection():
-    while True:
+    global _POOL
+    if _POOL is None:
         try:
-            conn = psycopg2.connect(**DB_CONF)
-            return conn
-        except Exception:
-            logger.warning("Postgres not ready, retrying...")
-            time.sleep(2)
+            _POOL = pool.ThreadedConnectionPool(1, 64, **DB_CONF)
+            logger.info("✅ Postgres Connection Pool Initialized")
+        except Exception as e:
+            logger.error(f"Failed to init PG Pool: {e}")
+            # Fallback to single connection if pool fails
+            return psycopg2.connect(**DB_CONF)
+    
+    return _POOL.getconn()
+
+def release_db_connection(conn):
+    if _POOL:
+        try:
+            _POOL.putconn(conn)
+        except pool.PoolError:
+            conn.close()
+    else:
+        conn.close()

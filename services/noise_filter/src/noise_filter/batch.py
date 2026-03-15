@@ -8,6 +8,7 @@ from datetime import datetime
 import psycopg2
 from kira_shared.logging.setup import setup_logging
 from kira_shared.redis.client import RedisClient
+from psycopg2 import pool
 
 setup_logging()
 logger = logging.getLogger("NoiseFilterBatch")
@@ -27,11 +28,20 @@ QDB_PORT = 8812
 QDB_USER = os.getenv("QUESTDB_USER", "admin")
 QDB_PASS = os.getenv("QUESTDB_PASSWORD", "quest")
 
-# Config
-QDB_HOST = os.getenv("QUESTDB_HOST", "questdb_tsdb")
-QDB_PORT = 8812
-QDB_USER = os.getenv("QUESTDB_USER", "admin")
-QDB_PASS = os.getenv("QUESTDB_PASSWORD", "quest")
+# Global Pool
+_QDB_POOL = None
+
+def get_qdb_pool():
+    global _QDB_POOL
+    if _QDB_POOL is None:
+        try:
+            _QDB_POOL = pool.ThreadedConnectionPool(1, 20, 
+                host=QDB_HOST, port=QDB_PORT, user=QDB_USER, password=QDB_PASS, database="qdb"
+            )
+            logger.info("✅ Noise Filter QuestDB Pool Initialized")
+        except Exception as e:
+            logger.error(f"Failed to init QuestDB Pool: {e}")
+    return _QDB_POOL
 
 async def process_historical_range(symbol: str, start_date: str, end_date: str, version: int):
     """
@@ -42,17 +52,32 @@ async def process_historical_range(symbol: str, start_date: str, end_date: str, 
     
     # 1. Fetch real OHLC data from QuestDB using a thread to avoid blocking loop
     def fetch_data():
-        conn = None
+        pool = get_qdb_pool()
+        if not pool:
+            # Fallback
+            conn = psycopg2.connect(host=QDB_HOST, port=QDB_PORT, user=QDB_USER, password=QDB_PASS, database="qdb")
+            try:
+                cur = conn.cursor()
+                ts_start = f"{start_date}T00:00:00.000000Z"
+                ts_end = f"{end_date}T23:59:59.999999Z"
+                cur.execute("""
+                    SELECT timestamp, close FROM ohlc 
+                    WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s 
+                    ORDER BY timestamp ASC
+                """, (symbol, ts_start, ts_end))
+                r = cur.fetchall()
+                cur.close()
+                return r
+            finally:
+                conn.close()
+
+        conn = pool.getconn()
         try:
-            conn = psycopg2.connect(
-                host=QDB_HOST, port=QDB_PORT, user=QDB_USER, password=QDB_PASS, database="qdb"
-            )
             cur = conn.cursor()
             ts_start = f"{start_date}T00:00:00.000000Z"
             ts_end = f"{end_date}T23:59:59.999999Z"
             cur.execute("""
-                SELECT timestamp, close 
-                FROM ohlc 
+                SELECT timestamp, close FROM ohlc 
                 WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s 
                 ORDER BY timestamp ASC
             """, (symbol, ts_start, ts_end))
@@ -60,7 +85,7 @@ async def process_historical_range(symbol: str, start_date: str, end_date: str, 
             cur.close()
             return r
         finally:
-            if conn: conn.close()
+            pool.putconn(conn)
 
     try:
         rows = await asyncio.to_thread(fetch_data)

@@ -11,7 +11,7 @@ from quant_sdk.data import Tick, Slice, FastSlice
 from quant_sdk.algorithm import Resolution, QCAlgorithm
 from paper_exchange import PaperExchange
 from schema import ensure_schema
-from db import get_db_connection, DB_CONF
+from db import get_db_connection, release_db_connection, DB_CONF
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
@@ -68,8 +68,10 @@ class AlgorithmEngine:
         
         # Connect to DB
         conn = get_db_connection()
-        ensure_schema(conn)
-        conn.close()
+        try:
+            ensure_schema(conn)
+        finally:
+            release_db_connection(conn)
         
         # Init Exchange
         self.Exchange = PaperExchange(DB_CONF, backtest_mode=self.BacktestMode, run_id=self.RunID, trading_mode=self.TradingMode, leverage=self.Leverage)
@@ -142,12 +144,14 @@ class AlgorithmEngine:
 
         try:
             conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT instrument_token, expiry FROM instruments WHERE instrument_token = ANY(%s)", (fo_symbols,))
-            for token, expiry in cur.fetchall():
-                self._options_expiries[token] = expiry
-            cur.close()
-            conn.close()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT instrument_token, expiry FROM instruments WHERE instrument_token = ANY(%s)", (fo_symbols,))
+                for token, expiry in cur.fetchall():
+                    self._options_expiries[token] = expiry
+                cur.close()
+            finally:
+                release_db_connection(conn)
             logger.info(f"📅 Pre-fetched expiries for {len(self._options_expiries)} F&O instruments")
         except Exception as e:
             logger.warning(f"⚠️ Could not fetch option expiries: {e}")
@@ -213,12 +217,15 @@ class AlgorithmEngine:
                 return
             
             conn = get_db_connection()
-            cur = conn.cursor()
-            query = "SELECT instrument_token, expiry FROM instruments WHERE instrument_token = ANY(%s) AND expiry IS NOT NULL"
-            cur.execute(query, (list(unique_symbols),))
-            for sym, exp in cur.fetchall():
-                self._options_expiries[sym] = exp
-            conn.close()
+            try:
+                cur = conn.cursor()
+                query = "SELECT instrument_token, expiry FROM instruments WHERE instrument_token = ANY(%s) AND expiry IS NOT NULL"
+                cur.execute(query, (list(unique_symbols),))
+                for sym, exp in cur.fetchall():
+                    self._options_expiries[sym] = exp
+                cur.close()
+            finally:
+                release_db_connection(conn)
             logger.info(f"📅 Pre-fetched expiries for {len(self._options_expiries)} F&O instruments")
         except Exception as e:
             logger.error(f"Failed to prefetch expiries: {e}")
@@ -298,12 +305,15 @@ class AlgorithmEngine:
                         if sym not in self._options_expiries:
                             try:
                                 conn = get_db_connection()
-                                cur = conn.cursor()
-                                cur.execute("SELECT expiry FROM instruments WHERE instrument_token = %s", (sym,))
-                                row = cur.fetchone()
-                                if row and row[0]:
-                                    self._options_expiries[sym] = row[0]
-                                conn.close()
+                                try:
+                                    cur = conn.cursor()
+                                    cur.execute("SELECT expiry FROM instruments WHERE instrument_token = %s", (sym,))
+                                    row = cur.fetchone()
+                                    if row and row[0]:
+                                        self._options_expiries[sym] = row[0]
+                                    cur.close()
+                                finally:
+                                    release_db_connection(conn)
                             except:
                                 pass
                         
@@ -743,8 +753,8 @@ class AlgorithmEngine:
 
         # ── Standard DB-backed sync (live mode or pre-session backtest) ──
         conn = self.Exchange._get_conn()
-        cur  = conn.cursor()
         try:
+            cur  = conn.cursor()
             table = "backtest_portfolios" if self.BacktestMode else "portfolios"
             if self.BacktestMode:
                 cur.execute(f"SELECT balance FROM {table} WHERE user_id=%s AND run_id=%s", ('default_user', self.RunID))
@@ -783,7 +793,7 @@ class AlgorithmEngine:
         except Exception as e:
             logger.error(f"SyncPortfolio Error: {e}")
         finally:
-            if conn: conn.close()
+            if conn: release_db_connection(conn)
 
     def SubmitOrder(self, symbol, quantity, order_type="MARKET"):
         """
@@ -886,23 +896,29 @@ class AlgorithmEngine:
                     if pnl_val is not None and trade_pnl != 0.0:
                         pnl_list.append(trade_pnl)
                         
-                    # Replicate Frontend's dynamic estimated brokerage math
-                    if price and quantity:
-                        turnover = float(price) * abs(int(quantity))
-                        flat = min(20.0, turnover * 0.0003)
-                        stt = turnover * 0.00025 if txn_type == 'SELL' else 0.0
-                        gst = flat * 0.18
-                        total_brokerage += (flat + stt + gst)
+                # Replicate Frontend's dynamic estimated brokerage math
+                # Use the last trade's info for a simple summary if needed, 
+                # but stats module usually does its own thing.
+                # However, our old logic had this:
+                if rows:
+                    for ts, pnl_val, price, quantity, txn_type in rows:
+                        if price and quantity:
+                            turnover = float(price) * abs(int(quantity))
+                            flat = min(20.0, turnover * 0.0003)
+                            stt = turnover * 0.00025 if txn_type == 'SELL' else 0.0
+                            gst = flat * 0.18
+                            total_brokerage += (flat + stt + gst)
             else:
                 equity_curve.append({'timestamp': datetime.now(), 'equity': initial_cap})
 
-            conn.close()
         except Exception as e:
             logger.error(f"Failed to reconstruct equity curve: {e}")
             # Fallback to sparse in-memory curve
             equity_curve = list(self.EquityCurve) if self.EquityCurve else [
                 {'timestamp': datetime.now(), 'equity': initial_cap}
             ]
+        finally:
+            if conn: release_db_connection(conn)
 
         logger.info(f"📈 Equity curve: {len(equity_curve)} points, PnL trades: {len(pnl_list)}")
 
@@ -995,10 +1011,11 @@ class AlgorithmEngine:
             ))
             
             conn.commit()
-            conn.close()
-            logger.info(f"📊 Statistics Saved: Sharpe={stats.get('sharpe_ratio')}, Return={stats.get('total_return')}%")
         except Exception as e:
             logger.error(f"Failed to save statistics: {e}")
+        finally:
+            if 'conn' in locals() and conn:
+                release_db_connection(conn)
 
     def SetHoldings(self, symbol, percentage):
         """
@@ -1181,13 +1198,15 @@ class AlgorithmEngine:
         realized_pnl = 0.0
         try:
             conn = self.Exchange._get_conn()
-            cur = conn.cursor()
-            cur.execute("SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM executed_orders WHERE pnl IS NOT NULL AND timestamp::date = CURRENT_DATE")
-            row = cur.fetchone()
-            if row:
-                total_trades = row[0]
-                realized_pnl = float(row[1])
-            conn.close()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM executed_orders WHERE pnl IS NOT NULL AND timestamp::date = CURRENT_DATE")
+                row = cur.fetchone()
+                if row:
+                    total_trades = row[0]
+                    realized_pnl = float(row[1])
+            finally:
+                release_db_connection(conn)
         except Exception as e:
             logger.warning(f"Could not fetch trade stats: {e}")
 

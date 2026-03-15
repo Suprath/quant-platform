@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
+from psycopg2 import pool
 
 load_dotenv()
 
@@ -88,17 +89,43 @@ def add_log(msg):
 
 
 # --- DB Helpers ---
+# --- Global Connection Pools ---
+_QDB_POOL = None
+_PG_POOL = None
+
 def get_qdb_conn():
+    global _QDB_POOL
     host = os.getenv("QUESTDB_HOST", "questdb_tsdb")
-    while True:
+    if _QDB_POOL is None:
         try:
+            _QDB_POOL = pool.ThreadedConnectionPool(1, 10, 
+                host=host, port=8812, user="admin", password="quest", database="qdb")
+            add_log("✅ Backfiller QuestDB Pool Initialized")
+        except Exception as e:
+            add_log(f"⚠️ QuestDB Pool Init Failed: {e}")
             return psycopg2.connect(host=host, port=8812, user="admin", password="quest", database="qdb")
-        except:
-            time.sleep(2)
+    return _QDB_POOL.getconn()
+
+def release_qdb_conn(conn):
+    if _QDB_POOL: _QDB_POOL.putconn(conn)
+    else: conn.close()
 
 def get_pg_conn():
+    global _PG_POOL
     host = os.getenv("POSTGRES_HOST", "postgres_metadata")
-    return psycopg2.connect(host=host, port=5432, user="admin", password="password123", database="quant_platform")
+    if _PG_POOL is None:
+        try:
+            _PG_POOL = pool.ThreadedConnectionPool(1, 10,
+                host=host, port=5432, user="admin", password="password123", database="quant_platform")
+            add_log("✅ Backfiller Postgres Pool Initialized")
+        except Exception as e:
+            add_log(f"⚠️ Postgres Pool Init Failed: {e}")
+            return psycopg2.connect(host=host, port=5432, user="admin", password="password123", database="quant_platform")
+    return _PG_POOL.getconn()
+
+def release_pg_conn(conn):
+    if _PG_POOL: _PG_POOL.putconn(conn)
+    else: conn.close()
 
 def ensure_instruments(stocks):
     try:
@@ -129,7 +156,7 @@ def ensure_instruments(stocks):
             """, (token, "NSE_EQ", "EQUITY", name, 1))
         conn.commit()
         cur.close()
-        conn.close()
+        release_pg_conn(conn)
     except Exception as e:
         add_log(f"⚠️ Instruments error: {e}")
 
@@ -249,7 +276,7 @@ async def run_backfill(stocks, start_str, end_str, unit, interval, access_token,
                     backfill_state["error"] = "Authentication failed"
                     backfill_state["running"] = False
                     cur.close()
-                    conn.close()
+                    release_qdb_conn(conn)
                     return
 
                 if candles:
@@ -273,7 +300,7 @@ async def run_backfill(stocks, start_str, end_str, unit, interval, access_token,
                 await asyncio.sleep(DELAY_BETWEEN_STOCKS)
 
     cur.close()
-    conn.close()
+    release_qdb_conn(conn)
     backfill_state["running"] = False
     backfill_state["finished"] = True
     add_log(f"🏁 Backfill complete! Total: {backfill_state['total_candles']} candles. Noise Filter Toggle: {run_noise_filter}")

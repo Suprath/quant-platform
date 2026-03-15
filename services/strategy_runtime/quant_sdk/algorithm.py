@@ -360,7 +360,7 @@ class QCAlgorithm(ABC):
             self.Debug(f"SDK KIRA Error (NF): {e}")
         return 0
 
-    def GetKiraPositionSize(self, symbol, price, risk_pct=0.01):
+    def GetKiraPositionSize(self, symbol, price, risk_pct=0.01, return_full=False):
         """
         Computes risk-adjusted quantity via KIRA Position Sizer Service.
         """
@@ -387,6 +387,8 @@ class QCAlgorithm(ABC):
             
             if resp.status_code == 200:
                 data = resp.json()
+                if return_full:
+                    return data
                 return data.get("shares", 0)
             else:
                 self.Debug(f"Position Sizer API Error: {resp.status_code} - {resp.text}")
@@ -395,7 +397,7 @@ class QCAlgorithm(ABC):
             self.Debug(f"SDK Position Sizer Error: {e}")
         
         # Fallback to zero to avoid unmanaged risk if service is down
-        return 0
+        return {} if return_full else 0
 
 
     def Debug(self, message):

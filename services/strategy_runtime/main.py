@@ -78,24 +78,26 @@ def run_live_thread(engine, strategy_name, capital):
     # Update DB Capital
     try:
         conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # 1. Get Portfolio ID
-        cur.execute("SELECT id FROM portfolios WHERE user_id='default_user'")
-        row = cur.fetchone()
-        
-        if row:
-            pid = row[0]
-            # 2. Clear old positions for a fresh start
-            cur.execute("DELETE FROM positions WHERE portfolio_id=%s", (pid,))
-            # 3. Reset Balance and Equity
-            cur.execute("UPDATE portfolios SET balance=%s, equity=%s WHERE id=%s", (capital, capital, pid))
-        else:
-            # Create new
-            cur.execute("INSERT INTO portfolios (user_id, balance, equity) VALUES ('default_user', %s, %s)", (capital, capital))
+        try:
+            cur = conn.cursor()
             
-        conn.commit()
-        conn.close()
+            # 1. Get Portfolio ID
+            cur.execute("SELECT id FROM portfolios WHERE user_id='default_user'")
+            row = cur.fetchone()
+            
+            if row:
+                pid = row[0]
+                # 2. Clear old positions for a fresh start
+                cur.execute("DELETE FROM positions WHERE portfolio_id=%s", (pid,))
+                # 3. Reset Balance and Equity
+                cur.execute("UPDATE portfolios SET balance=%s, equity=%s WHERE id=%s", (capital, capital, pid))
+            else:
+                # Create new
+                cur.execute("INSERT INTO portfolios (user_id, balance, equity) VALUES ('default_user', %s, %s)", (capital, capital))
+                
+            conn.commit()
+        finally:
+            release_db_connection(conn)
     except Exception as e:
         logger.error(f"Failed to set capital: {e}")
 
@@ -392,29 +394,31 @@ def get_live_trades():
     """Get today's executed trades for the live session."""
     try:
         conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT id, timestamp, symbol, transaction_type, quantity, price, pnl, status
-            FROM executed_orders 
-            WHERE timestamp::date = CURRENT_DATE
-            ORDER BY timestamp DESC
-            LIMIT 100
-        """)
-        rows = cur.fetchall()
-        trades = []
-        for r in rows:
-            trades.append({
-                "id": r[0],
-                "timestamp": str(r[1]),
-                "symbol": r[2],
-                "side": r[3],
-                "quantity": r[4],
-                "price": float(r[5]),
-                "pnl": float(r[6]) if r[6] else 0,
-                "status": r[7]
-            })
-        conn.close()
-        return {"trades": trades, "count": len(trades)}
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, timestamp, symbol, transaction_type, quantity, price, pnl, status
+                FROM executed_orders 
+                WHERE timestamp::date = CURRENT_DATE
+                ORDER BY timestamp DESC
+                LIMIT 100
+            """)
+            rows = cur.fetchall()
+            trades = []
+            for r in rows:
+                trades.append({
+                    "id": r[0],
+                    "timestamp": str(r[1]),
+                    "symbol": r[2],
+                    "side": r[3],
+                    "quantity": r[4],
+                    "price": float(r[5]),
+                    "pnl": float(r[6]) if r[6] else 0,
+                    "status": r[7]
+                })
+            return {"trades": trades, "count": len(trades)}
+        finally:
+            release_db_connection(conn)
     except Exception as e:
         logger.error(f"Failed to fetch live trades: {e}")
         return {"trades": [], "count": 0, "error": str(e)}
@@ -697,20 +701,22 @@ def _compute_and_save_stats(run_id: str):
         # ── Step 6: Ensure table exists — use a SEPARATE connection for DDL ────
         # (cannot toggle autocommit inside an open transaction)
         ddl_conn = get_db_connection()
-        ddl_conn.autocommit = True
-        ddl_cur = ddl_conn.cursor()
-        ddl_cur.execute("""
-            CREATE TABLE IF NOT EXISTS backtest_results (
-                run_id UUID PRIMARY KEY,
-                sharpe_ratio FLOAT,
-                max_drawdown FLOAT,
-                win_rate FLOAT,
-                total_return FLOAT,
-                stats_json JSONB,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        ddl_conn.close()
+        try:
+            ddl_conn.autocommit = True
+            ddl_cur = ddl_conn.cursor()
+            ddl_cur.execute("""
+                CREATE TABLE IF NOT EXISTS backtest_results (
+                    run_id UUID PRIMARY KEY,
+                    sharpe_ratio FLOAT,
+                    max_drawdown FLOAT,
+                    win_rate FLOAT,
+                    total_return FLOAT,
+                    stats_json JSONB,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+        finally:
+            release_db_connection(ddl_conn)
 
         # ── Step 7: Upsert computed stats ─────────────────────────────────────
         # Convert numpy floats → native Python floats before psycopg2 binding
@@ -753,7 +759,7 @@ def _compute_and_save_stats(run_id: str):
         try: conn.rollback()
         except Exception: pass
     finally:
-        try: conn.close()
+        try: release_db_connection(conn)
         except Exception: pass
 
 @app.post("/backtest")

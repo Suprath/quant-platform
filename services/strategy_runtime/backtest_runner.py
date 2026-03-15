@@ -8,7 +8,8 @@ import aiohttp
 import psycopg2
 from datetime import datetime, timedelta
 from engine import AlgorithmEngine
-from db import get_db_connection
+from db import get_db_connection, release_db_connection
+from psycopg2 import pool
 
 import requests
 import urllib.parse
@@ -77,17 +78,25 @@ BACKFILL_DELAY_CHUNKS = 1.6   # seconds between API calls
 BACKFILL_DELAY_STOCKS = 3.2   # seconds between stocks
 
 # Global Symbol Mapping for Normalization (Ticker -> ISIN)
-# This ensures that when a user strategy asks for "RELIANCE", we check the DB for its ISIN equivalent.
-SYMBOL_MAP = {v: k for k, v in KNOWN_STOCKS.items()}
-# Special cases for raw NSE_EQ tickers
+SYMBOL_MAP = {}
 for k, v in KNOWN_STOCKS.items():
-    if k.startswith("NSE_EQ|"):
-        ticker = k.split("|")[-1]
-        SYMBOL_MAP[f"NSE_EQ|{v}"] = k
+    prefix = k.split("|")[0] if "|" in k else "NSE_EQ"
+    # Map "NSE_EQ|RELIANCE" -> "NSE_EQ|INE..."
+    SYMBOL_MAP[f"{prefix}|{v}"] = k
+    SYMBOL_MAP[f"{prefix}|{v.upper()}"] = k
+    # Map bare "RELIANCE" -> "NSE_EQ|INE..."
+    SYMBOL_MAP[v] = k
+    SYMBOL_MAP[v.upper()] = k
+    # Keep original
+    SYMBOL_MAP[k] = k
 
 def normalize_symbol(sym):
     """Maps ticker-based symbols to ISIN-based symbols if known."""
-    return SYMBOL_MAP.get(sym, sym)
+    if not sym: return sym
+    return SYMBOL_MAP.get(sym, SYMBOL_MAP.get(sym.upper(), sym))
+
+# Cache for failed backfills to prevent retrying invalid symbols in the same run
+FAILED_BACKFILLS = set()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("BacktestRunner")
@@ -97,16 +106,37 @@ logger = logging.getLogger("BacktestRunner")
 # AUTO-BACKFILL: Detect & fill missing data before backtesting
 # ============================================================
 
+# Global QuestDB Pool to prevent ephemeral port exhaustion
+_QDB_POOL = None
+
 def get_qdb_conn():
-    """Get raw QuestDB connection for backfill writes."""
+    """Get raw QuestDB connection for backfill writes using pooling."""
+    global _QDB_POOL
     host = os.getenv("QUESTDB_HOST", "questdb_tsdb")
+    if _QDB_POOL is None:
+        try:
+            _QDB_POOL = pool.ThreadedConnectionPool(1, 48, # Increased capacity
+                host=host, port=8812, user="admin", password="quest", database="qdb")
+            logger.info("✅ QuestDB Connection Pool Initialized (8812/pg)")
+        except Exception as e:
+            logger.error(f"Failed to init QuestDB Pool: {e}")
+            return psycopg2.connect(host=host, port=8812, user="admin", password="quest", database="qdb")
+    
     try:
-        conn = psycopg2.connect(host=host, port=8812, user="admin", password="quest", database="qdb")
-        conn.autocommit = True
-        return conn
+        return _QDB_POOL.getconn()
     except Exception as e:
-        logger.error(f"Cannot connect to QuestDB: {e}")
-        return None
+        logger.warning(f"Failed to get pooled connection, using fallback: {e}")
+        return psycopg2.connect(host=host, port=8812, user="admin", password="quest", database="qdb")
+
+def release_qdb_conn(conn):
+    if _QDB_POOL:
+        try:
+            _QDB_POOL.putconn(conn)
+        except pool.PoolError:
+            # Not a pooled connection or already released
+            conn.close()
+    else:
+        conn.close()
 
 
 def find_missing_dates(symbols, start_date, end_date):
@@ -130,6 +160,9 @@ def find_missing_dates(symbols, start_date, end_date):
         return missing
 
     for sym in symbols:
+        if sym in FAILED_BACKFILLS:
+            continue
+            
         db_sym = normalize_symbol(sym)
         # Query QuestDB for distinct dates with data using SAMPLE BY for speed
         query = f"""
@@ -245,6 +278,11 @@ async def backfill_symbol(session, qdb_conn, symbol, missing_dates):
             if candles is None:  # Auth error
                 return -1
 
+            if not candles:
+                # If we get no data for a chunk, it might be a holiday OR an invalid symbol
+                # We don't mark as failed yet, wait for entire range
+                pass
+
             if candles:
                 cur = qdb_conn.cursor()
                 for c in candles:
@@ -259,6 +297,10 @@ async def backfill_symbol(session, qdb_conn, symbol, missing_dates):
 
             current_to = current_from - timedelta(days=1)
             await asyncio.sleep(BACKFILL_DELAY_CHUNKS)
+
+    if total_saved == 0:
+        logger.warning(f"  ⚠️ No data found locally or via API for {name}. Marking as skipped for this run.")
+        FAILED_BACKFILLS.add(symbol)
 
     return total_saved
 
@@ -296,25 +338,26 @@ async def auto_backfill(symbols, start_date, end_date):
         logger.error("❌ Cannot connect to QuestDB — skipping backfill")
         return
 
-    # Backfill each symbol
-    results = {}
-    async with aiohttp.ClientSession() as session:
-        for i, (sym, dates) in enumerate(missing.items()):
-            name = KNOWN_STOCKS.get(sym, sym)
-            logger.info(f"\n[{i+1}/{len(missing)}] Backfilling {name}...")
+    try:
+        # Backfill each symbol
+        results = {}
+        async with aiohttp.ClientSession() as session:
+            for i, (sym, dates) in enumerate(missing.items()):
+                name = KNOWN_STOCKS.get(sym, sym)
+                logger.info(f"\n[{i+1}/{len(missing)}] Backfilling {name}...")
 
-            count = await backfill_symbol(session, qdb_conn, sym, dates)
+                count = await backfill_symbol(session, qdb_conn, sym, dates)
 
-            if count == -1:
-                logger.error("❌ API auth failed — stopping backfill")
-                break
+                if count == -1:
+                    logger.error("❌ API auth failed — stopping backfill")
+                    break
 
-            results[name] = count
+                results[name] = count
 
-            if i < len(missing) - 1:
-                await asyncio.sleep(BACKFILL_DELAY_STOCKS)
-
-    qdb_conn.close()
+                if i < len(missing) - 1:
+                    await asyncio.sleep(BACKFILL_DELAY_STOCKS)
+    finally:
+        release_qdb_conn(qdb_conn)
 
     # Summary
     total = sum(results.values())
@@ -398,8 +441,8 @@ def scan_market(date_str, selection_func=None):
             top = sorted(scored, key=lambda x: x['score'], reverse=True)[:5]
         
         # Persist to Postgres
+        pg_conn = get_db_connection()
         try:
-             pg_conn = get_db_connection()
              pg_cur = pg_conn.cursor()
              
              for item in top:
@@ -411,10 +454,12 @@ def scan_market(date_str, selection_func=None):
              
              pg_conn.commit()
              pg_cur.close()
-             pg_conn.close()
              logger.info(f"💾 Saved {len(top)} scanned symbols to DB for {date_str}")
         except Exception as e:
              logger.error(f"Failed to save scanner results: {e}")
+        finally:
+             if pg_conn:
+                 release_db_connection(pg_conn)
 
         return [x['symbol'] for x in top]
         
@@ -426,42 +471,37 @@ def fetch_historical_data(symbol, start_date, end_date, timeframe='1m'):
     """Fetch OHLC candles from QuestDB"""
     conn = get_qdb_conn()
     if not conn: return []
-    cur = conn.cursor()
-    
-    query = """
-        SELECT timestamp, open, high, low, close, volume
-        FROM ohlc
-        WHERE symbol = %s
-          AND timeframe = %s
-          AND timestamp >= %s
-          AND timestamp < %s
-        ORDER BY timestamp ASC
-    """
-    
-    # Format dates to ISO for QuestDB
-    # If already formatted, this might be redundant but safe
+
     try:
+        # Format dates to ISO for QuestDB
         if 'T' not in start_date:
             start_date = f"{start_date}T00:00:00.000000Z"
         if 'T' not in end_date:
-            # Add +1 day to make end date inclusive (user expects Jan 9 to include Jan 9 data)
             from datetime import datetime as dt, timedelta
             end_dt = dt.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
             end_date = end_dt.strftime("%Y-%m-%dT00:00:00.000000Z")
-    except:
-        pass
-
-    # Use explicit cast or string literal approach if bind fails, 
-    # but let's try updating the params first.
-    # QuestDB via Postgres Wire often needs TIMESTAMP '...' literal or correct string.
-    
-    cur.execute(query, (symbol, timeframe, start_date, end_date))
-    candles = cur.fetchall()
-    cur.close()
-    conn.close()
-    
-    logger.info(f"📊 Loaded {len(candles)} candles for {symbol}")
-    return candles
+        
+        cur = conn.cursor()
+        query = """
+            SELECT timestamp, open, high, low, close, volume
+            FROM ohlc
+            WHERE symbol = %s
+              AND timeframe = %s
+              AND timestamp >= %s
+              AND timestamp < %s
+            ORDER BY timestamp ASC
+        """
+        cur.execute(query, (symbol, timeframe, start_date, end_date))
+        candles = cur.fetchall()
+        cur.close()
+        
+        logger.info(f"📊 Loaded {len(candles)} candles for {symbol}")
+        return candles
+    except Exception as e:
+        logger.error(f"Error fetching historical data: {e}")
+        return []
+    finally:
+        release_qdb_conn(conn)
 
 def ohlc_to_ticks(timestamp, open_price, high, low, close, volume):
     """
@@ -517,18 +557,20 @@ def run(symbol, start, end, initial_cash, speed="fast"):
     end_clean = end.split('T')[0] if 'T' in end else end
     
     # ===== STEP 1: Initialize Engine & Load Strategy =====
+    pg_conn = get_db_connection()
     try:
-        pg_conn = get_db_connection()
         pg_cur = pg_conn.cursor()
         pg_cur.execute(f"DELETE FROM backtest_portfolios WHERE run_id = %s", (RUN_ID,))
         pg_cur.execute(f"INSERT INTO backtest_portfolios (user_id, run_id, balance, equity) VALUES (%s, %s, %s, %s)", ('default_user', RUN_ID, initial_cash, initial_cash))
         pg_cur.execute("DELETE FROM backtest_positions WHERE portfolio_id IN (SELECT id FROM backtest_portfolios WHERE run_id = %s)", (RUN_ID,))
         pg_conn.commit()
         pg_cur.close()
-        pg_conn.close()
         logger.info(f"💰 Initialized Backtest Portfolio: ₹{initial_cash}")
     except Exception as e:
         logger.error(f"Failed to initialize backtest DB: {e}")
+    finally:
+        if pg_conn:
+            release_db_connection(pg_conn)
 
     engine = AlgorithmEngine(run_id=RUN_ID, backtest_mode=True, speed=speed, trading_mode=TRADING_MODE)
     
@@ -608,44 +650,42 @@ def run(symbol, start, end, initial_cash, speed="fast"):
         db_sym = normalize_symbol(sym)
         conn = get_qdb_conn()
         if not conn: return sym, []
-        cur = conn.cursor()
-        start_ts = f"{date_str}T00:00:00.000000Z"
-        # Next day for exclusive upper bound
-        from datetime import datetime as dt2, timedelta as td2
-        next_day = (dt2.strptime(date_str, "%Y-%m-%d") + td2(days=1)).strftime("%Y-%m-%dT00:00:00.000000Z")
-        cur.execute("""
-            SELECT timestamp, open, high, low, close, volume
-            FROM ohlc
-            WHERE symbol = %s AND timeframe = '1m'
-              AND timestamp >= %s AND timestamp < %s
-            ORDER BY timestamp ASC
-        """, (db_sym, start_ts, next_day))
-        candles = cur.fetchall()
-        cur.close()
-        conn.close()
-        return sym, candles
+        try:
+            cur = conn.cursor()
+            start_ts = f"{date_str}T00:00:00.000000Z"
+            from datetime import datetime as dt2, timedelta as td2
+            next_day = (dt2.strptime(date_str, "%Y-%m-%d") + td2(days=1)).strftime("%Y-%m-%dT00:00:00.000000Z")
+            cur.execute("""
+                SELECT timestamp, open, high, low, close, volume
+                FROM ohlc
+                WHERE symbol = %s AND timeframe = '1m'
+                  AND timestamp >= %s AND timestamp < %s
+                ORDER BY timestamp ASC
+            """, (db_sym, start_ts, next_day))
+            candles = cur.fetchall()
+            cur.close()
+            return sym, candles
+        finally:
+            release_qdb_conn(conn)
 
     def _fetch_noise_for_date(sym, date_str):
         """Fetch one symbol's latest noise confidence for a single date from QuestDB."""
         db_sym = normalize_symbol(sym)
         conn = get_qdb_conn()
         if not conn: return sym, 0
-        cur = conn.cursor()
-        # We look for the latest signal on or before the trading day
-        start_ts = f"{date_str}T00:00:00.000000Z"
-        # Inclusive end of day
-        from datetime import datetime as dt3, timedelta as td3
-        end_ts = (dt3.strptime(date_str, "%Y-%m-%d") + td3(hours=23, minutes=59)).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
-        
-        cur.execute("""
-            SELECT confidence FROM noise_confidence
-            WHERE symbol = %s AND timestamp <= %s
-            ORDER BY timestamp DESC LIMIT 1
-        """, (db_sym, end_ts))
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        return sym, row[0] if row else 0
+        try:
+            cur = conn.cursor()
+            end_ts = (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(hours=23, minutes=59)).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+            cur.execute("""
+                SELECT confidence FROM noise_confidence
+                WHERE symbol = %s AND timestamp <= %s
+                ORDER BY timestamp DESC LIMIT 1
+            """, (db_sym, end_ts))
+            row = cur.fetchone()
+            cur.close()
+            return sym, row[0] if row else 0
+        finally:
+            release_qdb_conn(conn)
 
     # Generate trading dates (skip weekends)
     start_dt = datetime.strptime(start_clean, "%Y-%m-%d")
@@ -733,14 +773,16 @@ def run(symbol, start, end, initial_cash, speed="fast"):
         if engine.UniverseEnabled:
             try:
                 pg_conn = get_db_connection()
-                pg_cur = pg_conn.cursor()
-                pg_cur.execute("""
-                    SELECT symbol FROM backtest_universe 
-                    WHERE run_id = %s AND date = %s
-                """, (RUN_ID, date_str))
-                daily_symbols = [row[0] for row in pg_cur.fetchall()]
-                pg_cur.close()
-                pg_conn.close()
+                try:
+                    pg_cur = pg_conn.cursor()
+                    pg_cur.execute("""
+                        SELECT symbol FROM backtest_universe 
+                        WHERE run_id = %s AND date = %s
+                    """, (RUN_ID, date_str))
+                    daily_symbols = [row[0] for row in pg_cur.fetchall()]
+                    pg_cur.close()
+                finally:
+                    release_db_connection(pg_conn)
             except Exception as e:
                 logger.error(f"Failed to fetch daily universe from DB: {e}")
         else:

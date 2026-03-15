@@ -3,6 +3,7 @@ import logging
 import psycopg2
 import psycopg2.extras
 from calculations import TransactionCostCalculator
+from db import get_db_connection, release_db_connection
 
 logger = logging.getLogger("PaperExchange")
 
@@ -60,7 +61,7 @@ class PaperExchange:
         import time
         self._bt_start_ts = time.time()
 
-        self._bt_conn = psycopg2.connect(**self.db_config)
+        self._bt_conn = get_db_connection()
         self._bt_conn.autocommit = False
         self._bt_cur  = self._bt_conn.cursor()
 
@@ -153,7 +154,9 @@ class PaperExchange:
             raise
         finally:
             if self._bt_cur:  self._bt_cur.close()
-            if self._bt_conn: self._bt_conn.close()
+            if self._bt_conn: 
+                self._bt_conn.rollback() # Ensure transaction is ended
+                release_db_connection(self._bt_conn)
             self._bt_cur = self._bt_conn = None
 
     # ──────────────────────────────────────────────────────────────────────
@@ -161,8 +164,8 @@ class PaperExchange:
     # ──────────────────────────────────────────────────────────────────────
 
     def _get_conn(self):
-        """Return a fresh connection (used for live mode and stats reading)."""
-        return psycopg2.connect(**self.db_config)
+        """Return a connection from the pool."""
+        return get_db_connection()
 
     def calculate_transaction_costs(self, turnover, side):
         return self._cost_calculator.calculate(turnover, side)
@@ -179,11 +182,13 @@ class PaperExchange:
         if self.backtest_mode:
             return self._bt_balance
         conn = self._get_conn()
-        cur  = conn.cursor()
-        cur.execute("SELECT balance FROM portfolios WHERE user_id=%s", (self.user_id,))
-        row = cur.fetchone()
-        conn.close()
-        return float(row[0]) if row else 0.0
+        try:
+            cur  = conn.cursor()
+            cur.execute("SELECT balance FROM portfolios WHERE user_id=%s", (self.user_id,))
+            row = cur.fetchone()
+            return float(row[0]) if row else 0.0
+        finally:
+            release_db_connection(conn)
 
     def get_positions(self):
         """Return positions dict (in-memory for backtest)."""
@@ -191,16 +196,18 @@ class PaperExchange:
             return {sym: s for sym, s in self._bt_positions.items() if s['qty'] != 0}
         # Live: read from DB
         conn = self._get_conn()
-        cur  = conn.cursor()
-        cur.execute(
-            """SELECT p.symbol, p.quantity, p.avg_price
-               FROM positions p JOIN portfolios pf ON p.portfolio_id = pf.id
-               WHERE pf.user_id=%s""",
-            (self.user_id,)
-        )
-        result = {row[0]: {'qty': int(row[1]), 'avg_price': float(row[2])} for row in cur.fetchall()}
-        conn.close()
-        return result
+        try:
+            cur  = conn.cursor()
+            cur.execute(
+                """SELECT p.symbol, p.quantity, p.avg_price
+                   FROM positions p JOIN portfolios pf ON p.portfolio_id = pf.id
+                   WHERE pf.user_id=%s""",
+                (self.user_id,)
+            )
+            result = {row[0]: {'qty': int(row[1]), 'avg_price': float(row[2])} for row in cur.fetchall()}
+            return result
+        finally:
+            release_db_connection(conn)
 
     # ──────────────────────────────────────────────────────────────────────
     # Order Execution

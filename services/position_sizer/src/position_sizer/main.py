@@ -25,6 +25,7 @@ logger = logging.getLogger("PositionSizer")
 
 import math
 import psycopg2
+from psycopg2 import pool
 from kira_shared.models.sizing import SizingRequest, SizingResult
 
 # C++ Core Integration
@@ -39,12 +40,23 @@ except ImportError:
 # QuestDB connection for ATR calculation
 QDB_HOST = os.getenv("QUESTDB_HOST", "questdb_tsdb")
 
+_QDB_POOL = None
+
 def get_qdb_conn():
-    try:
-        return psycopg2.connect(host=QDB_HOST, port=8812, user="admin", password="quest", database="qdb")
-    except Exception as e:
-        logger.error(f"Postgres/QuestDB Connection Error: {e}")
-        return None
+    global _QDB_POOL
+    if _QDB_POOL is None:
+        try:
+            _QDB_POOL = pool.ThreadedConnectionPool(1, 10,
+                host=QDB_HOST, port=8812, user="admin", password="quest", database="qdb")
+            logger.info("✅ Position Sizer QuestDB Pool Initialized")
+        except Exception as e:
+            logger.error(f"Failed to init QuestDB Pool: {e}")
+            return psycopg2.connect(host=QDB_HOST, port=8812, user="admin", password="quest", database="qdb")
+    return _QDB_POOL.getconn()
+
+def release_qdb_conn(conn):
+    if _QDB_POOL: _QDB_POOL.putconn(conn)
+    else: conn.close()
 
 def fetch_daily_ranges(symbol, timestamp):
     """Fetch last 14 days of high-low ranges from QuestDB."""
@@ -66,7 +78,8 @@ def fetch_daily_ranges(symbol, timestamp):
         logger.error(f"Error fetching daily ranges for {symbol}: {e}")
         return []
     finally:
-        conn.close()
+        if conn:
+            release_qdb_conn(conn)
 
 @app.get("/health")
 async def health():
