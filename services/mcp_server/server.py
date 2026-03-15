@@ -99,19 +99,48 @@ async def get_kira_documentation() -> str:
 """
 
 @mcp.tool()
-async def get_kira_confidence(symbol: str) -> str:
-    """Get the live signal confidence for a stock from the KIRA Noise Filter.
+async def get_market_quote(symbol: str) -> str:
+    """Fetch the latest price, volume, and open interest for a specific symbol.
     
     Args:
-        symbol: The instrument identifier, e.g. 'NSE_EQ|RELIANCE'
+        symbol: The instrument identifier, e.g. 'NSE_EQ|INE002A01018'
     """
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(f"{API_BASE_URL}/kira/noise-filter/confidence/{symbol}")
+            response = await client.get(f"{API_BASE_URL}/market/quote/{symbol}")
             response.raise_for_status()
             return json.dumps(response.json(), indent=2)
         except Exception as e:
-            return f"Error getting KIRA confidence: {str(e)}"
+            return f"Error getting quote: {str(e)}"
+
+@mcp.tool()
+async def get_market_greeks(symbol: str) -> str:
+    """Fetch the latest Option Greeks (Delta, Gamma, etc.) for a specific option symbol.
+    
+    Args:
+        symbol: The option instrument identifier, e.g. 'NSE_FO|62920'
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{API_BASE_URL}/market/greeks/{symbol}")
+            response.raise_for_status()
+            return json.dumps(response.json(), indent=2)
+        except Exception as e:
+            return f"Error getting greeks: {str(e)}"
+
+@mcp.tool()
+async def get_top_performers(limit: int = 10) -> str:
+    """Get the top performing stocks by % change from the last trading session."""
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{API_BASE_URL}/market/top-performers", params={"limit": limit})
+            response.raise_for_status()
+            return json.dumps(response.json(), indent=2)
+        except Exception as e:
+            return f"Error getting top performers: {str(e)}"
+
+@mcp.tool()
+async def get_kira_confidence(symbol: str) -> str:
 
 @mcp.tool()
 async def get_kira_sizer_health() -> str:
@@ -208,87 +237,55 @@ When running the backtest via the MCP `run_backtest` tool, ensure you set the `t
 """
 
 @mcp.tool()
-async def get_options_documentation() -> str:
-    """Get the specific KIRA Python framework rules for writing Options (F&O) strategies.
+async def start_live_trading(strategy_name: str, capital: float, trading_mode: str = "MIS") -> str:
+    """Start automated live trading for a specific strategy.
     
-    LLM CRITICAL INSTRUCTION: IF THE USER ASKS FOR AN OPTIONS STRATEGY, READ THIS FILE BEFORE CODING.
+    Args:
+        strategy_name: Name of the strategy to deploy
+        capital: Amount of capital to allocate
+        trading_mode: 'MIS' (Intraday) or 'CNC' (Delivery)
     """
-    return """
-# KIRA Options (F&O) Strategy API Reference
+    async with httpx.AsyncClient() as client:
+        payload = {"strategy_name": strategy_name, "capital": capital, "trading_mode": trading_mode}
+        try:
+            response = await client.post(f"{API_BASE_URL}/live/start", json=payload)
+            response.raise_for_status()
+            return f"Live trading started for {strategy_name}."
+        except Exception as e:
+            return f"Error starting live trading: {str(e)}"
 
-The KIRA engine supports full backtesting of NSE Options with accurate metrics and timezone handling.
+@mcp.tool()
+async def stop_live_trading() -> str:
+    """Stop the currently running live trading strategy."""
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(f"{API_BASE_URL}/live/stop")
+            response.raise_for_status()
+            return "Live trading stopped successfully."
+        except Exception as e:
+            return f"Error stopping live trading: {str(e)}"
 
-## 1. Subscribing to Underlying & Options
-Options strategies require subscribing to BOTH the underlying symbol and the specific option contracts.
+@mcp.tool()
+async def get_live_trading_status() -> str:
+    """Check if live trading is active and get basic stats."""
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{API_BASE_URL}/live/status")
+            response.raise_for_status()
+            return json.dumps(response.json(), indent=2)
+        except Exception as e:
+            return f"Error getting live status: {str(e)}"
 
-```python
-def Initialize(self):
-    self.SetStartDate(2026, 2, 25)
-    self.SetEndDate(2026, 3, 5)
-    self.SetCash(100000)
-    
-    # 1. Add Underlying
-    self.nifty = "NSE_INDEX|Nifty 50"
-    self.AddEquity(self.nifty)
-    
-    # 2. Add Specific Option Contract (Using Upstox Instrument Token)
-    # You MUST use the raw token (e.g. NSE_FO|62920) for AddEquity.
-    self.call_option = "NSE_FO|62920"
-    self.AddEquity(self.call_option)
-```
-
-## 2. Using OptionChainProvider (Dynamic Chain Discovery)
-Instead of hardcoding instrument tokens, use the `OptionChainProvider` to dynamically find strikes and expiries.
-
-```python
-def Initialize(self):
-    # Fetch valid expiries for NIFTY
-    self.expiries = self.OptionChainProvider.GetExpiries("NIFTY")
-    
-    # Fetch all contracts for the nearest expiry
-    nearest_expiry = self.expiries[0]
-    self.chain = self.OptionChainProvider.GetOptionContractList("NIFTY", nearest_expiry)
-    
-    # Example chain item:
-    # {"instrument_token": "NSE_FO|12345", "strike": 22000.0, "option_type": "CE", "lot_size": 25}
-    
-    # Find ATM Call
-    calls = [c for c in self.chain if c["option_type"] == "CE"]
-    # ... sort by strike distance to spot ...
-    
-    # YOU MUST CALL AddEquity ON THE TOKEN BEFORE TRADING IT!
-    self.AddEquity(selected_token)
-```
-
-## 3. Trading & Execution (OnData)
-Both the underlying and the option will arrive simultaneously in the `OnData` slice.
-
-```python
-def OnData(self, data):
-    # Ensure both data streams are present
-    if not data.ContainsKey(self.nifty) or not data.ContainsKey(self.call_option):
-        return
-        
-    nifty_price = data[self.nifty].Price
-    opt_price = data[self.call_option].Price
-    
-    if not self.Portfolio.Invested:
-        # Buy condition...
-        self.SetHoldings(self.call_option, 0.5) # Buy using 50% of portfolio value
-        
-    else:
-        holding = self.Portfolio[self.call_option]
-        # Target / Stop Loss Logic
-        if opt_price > holding.AveragePrice * 1.50:
-            self.Liquidate(self.call_option) # Exit position
-```
-
-## 4. Automatic Square-Off
-The KIRA Engine automatically detects expiring contracts and liquids them at 3:20 PM IST on the expiry day. You do not need to write manual expiration checks.
-
-## 5. Brokerage & Leverage
-When running the backtest via the MCP `run_backtest` tool, ensure you set the `trading_mode="OPTIONS"` argument to apply the correct F&O brokerage rules (Flat ₹20 + STT).
-"""
+@mcp.tool()
+async def get_live_trade_history(limit: int = 50) -> str:
+    """Get the execution history for the active live trading session."""
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{API_BASE_URL}/live/trades", params={"limit": limit})
+            response.raise_for_status()
+            return json.dumps(response.json(), indent=2)
+        except Exception as e:
+            return f"Error getting live trades: {str(e)}"
 
 @mcp.tool()
 async def list_strategies() -> str:
@@ -623,6 +620,66 @@ async def search_symbols(query: str = "") -> str:
             return json.dumps(stocks, indent=2)
         except Exception as e:
             return f"Error searching symbols: {str(e)}"
+
+@mcp.tool()
+async def get_backtest_universe(run_id: str) -> str:
+    """Fetch the dynamic universe selection results for a specific backtest.
+    
+    Args:
+        run_id: The UUID of the backtest
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{API_BASE_URL}/backtest/universe/{run_id}")
+            response.raise_for_status()
+            return json.dumps(response.json(), indent=2)
+        except Exception as e:
+            return f"Error getting universe: {str(e)}"
+
+@mcp.tool()
+async def run_deep_scan(symbols: list[str], start_date: str, end_date: str) -> str:
+    """Run a comprehensive Statistical Deep Scan on multiple symbols.
+    
+    Args:
+        symbols: List of instrument tokens
+        start_date: YYYY-MM-DD
+        end_date: YYYY-MM-DD
+    """
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        payload = {"symbols": symbols, "start_date": start_date, "end_date": end_date}
+        try:
+            response = await client.post(f"{API_BASE_URL}/edge/deep-scan", json=payload)
+            response.raise_for_status()
+            return json.dumps(response.json(), indent=2)
+        except Exception as e:
+            return f"Error running deep scan: {str(e)}"
+
+@mcp.tool()
+async def get_environment_config() -> str:
+    """Read the current environment configuration (.env variables)."""
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{API_BASE_URL}/config/env")
+            response.raise_for_status()
+            return json.dumps(response.json(), indent=2)
+        except Exception as e:
+            return f"Error getting config: {str(e)}"
+
+@mcp.tool()
+async def update_environment_config(env_vars: Dict[str, str]) -> str:
+    """Update environment variables in the KIRA platform .env file.
+    
+    Args:
+        env_vars: Dictionary of key-value pairs to update
+    """
+    async with httpx.AsyncClient() as client:
+        payload = {"env": env_vars}
+        try:
+            response = await client.post(f"{API_BASE_URL}/config/env", json=payload)
+            response.raise_for_status()
+            return "Environment variables updated successfully."
+        except Exception as e:
+            return f"Error updating config: {str(e)}"
 # Expose the ASGI app for Uvicorn
 if hasattr(mcp, "sse_app"):
     app = mcp.sse_app()
