@@ -751,6 +751,17 @@ def list_strategies():
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
 
+@app.delete("/api/v1/strategies/{name}")
+def delete_strategy(name: str):
+    """Proxy Deletion to Strategy Runtime"""
+    try:
+        response = requests.delete(f"http://strategy_runtime:8000/strategies/{name}", timeout=5)
+        if response.status_code == 200:
+             return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+
 @app.post("/api/v1/live/start")
 def start_live(request: LiveStartRequest):
     """Proxy to Strategy Runtime"""

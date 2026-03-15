@@ -315,6 +315,38 @@ def get_project(project_name: str):
     
     return {"project": project_name, "files": files}
 
+@app.delete("/strategies/{name}")
+def delete_strategy(name: str):
+    """Delete a strategy file or project directory."""
+    try:
+        # Sanitize name to prevent directory traversal
+        if ".." in name or "/" in name or "\\" in name:
+            raise HTTPException(status_code=400, detail="Invalid strategy name")
+            
+        # 1. Try deleting as a file
+        filepath = os.path.join("strategies", name)
+        if not filepath.endswith(".py"):
+            filepath_py = filepath + ".py"
+        else:
+            filepath_py = filepath
+            
+        if os.path.isfile(filepath_py):
+            os.remove(filepath_py)
+            return {"status": "deleted", "message": f"Strategy file {name} removed."}
+            
+        # 2. Try deleting as a project directory
+        project_dir = os.path.join("strategies", name)
+        if os.path.isdir(project_dir):
+            shutil.rmtree(project_dir)
+            return {"status": "deleted", "message": f"Strategy project {name} removed."}
+            
+        raise HTTPException(status_code=404, detail=f"Strategy '{name}' not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete strategy {name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/strategies/ide-projects")
 def get_all_ide_projects():
     """Bulk fetch all strategy projects and their files for the React IDE."""
