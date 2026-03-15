@@ -1224,7 +1224,7 @@ def start_backfill(request: BackfillStartRequest):
 def get_backfill_status():
     """Get backfill progress"""
     try:
-        response = requests.get("http://data_backfiller:8001/backfill/status", timeout=5)
+        response = requests.get("http://data_backfiller:8001/backfill/status", timeout=30)
         if response.status_code == 200:
             return response.json()
         raise HTTPException(status_code=response.status_code, detail=response.text)
@@ -1235,7 +1235,7 @@ def get_backfill_status():
 def get_backfill_stocks():
     """List available stocks for backfill"""
     try:
-        response = requests.get("http://data_backfiller:8001/backfill/stocks", timeout=5)
+        response = requests.get("http://data_backfiller:8001/backfill/stocks", timeout=30)
         if response.status_code == 200:
             return response.json()
         raise HTTPException(status_code=response.status_code, detail=response.text)

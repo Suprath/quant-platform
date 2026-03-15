@@ -30,28 +30,58 @@ DELAY_BETWEEN_CHUNKS = 1.6
 DELAY_BETWEEN_STOCKS = 3.2
 
 # Top Nifty 50 stocks
+# Multi-Exchange Stock Dictionary (Indices, NSE, BSE)
 STOCK_LIST = [
-    ("NSE_INDEX|Nifty 50", "NIFTY 50"),
-    ("NSE_INDEX|Nifty Bank", "BANK NIFTY"),
-    ("NSE_EQ|INE002A01018", "RELIANCE"),
-    ("NSE_EQ|INE040A01034", "HDFCBANK"),
-    ("NSE_EQ|INE467B01029", "TCS"),
-    ("NSE_EQ|INE009A01021", "INFY"),
-    ("NSE_EQ|INE090A01021", "ICICIBANK"),
-    ("NSE_EQ|INE062A01020", "SBIN"),
-    ("NSE_EQ|INE154A01025", "ITC"),
-    ("NSE_EQ|INE669E01016", "BAJFINANCE"),
-    ("NSE_EQ|INE030A01027", "HINDUNILVR"),
-    ("NSE_EQ|INE585B01010", "MARUTI"),
-    ("NSE_EQ|INE917I01010", "AXISBANK"),
-    ("NSE_EQ|INE021A01026", "ASIANPAINT"),
-    ("NSE_EQ|INE075A01022", "WIPRO"),
-    ("NSE_EQ|INE238A01034", "KOTAKBANK"),
-    ("NSE_EQ|INE397D01024", "BHARTIARTL"),
-    ("NSE_EQ|INE047A01021", "SUNPHARMA"),
-    ("NSE_EQ|INE326A01037", "ULTRACEMCO"),
-    ("NSE_EQ|INE101A01026", "HCLTECH"),
-    ("NSE_EQ|INE155A01022", "TATAMOTORS"),
+    # --- INDICES ---
+    ("NSE_INDEX|Nifty 50", "NIFTY 50 (NSE)"),
+    ("NSE_INDEX|Nifty Bank", "BANK NIFTY (NSE)"),
+    ("NSE_INDEX|Nifty Fin Service", "FINNIFTY (NSE)"),
+    ("BSE_INDEX|SENSEX", "SENSEX (BSE)"),
+
+    # --- NSE BLUECHIPS ---
+    ("NSE_EQ|INE002A01018", "RELIANCE (NSE)"),
+    ("NSE_EQ|INE467B01029", "TCS (NSE)"),
+    ("NSE_EQ|INE040A01034", "HDFCBANK (NSE)"),
+    ("NSE_EQ|INE009A01021", "INFY (NSE)"),
+    ("NSE_EQ|INE090A01021", "ICICIBANK (NSE)"),
+    ("NSE_EQ|INE155A01022", "TATAMOTORS (NSE)"),
+    ("NSE_EQ|INE081A01020", "TATASTEEL (NSE)"),
+    ("NSE_EQ|INE245A01021", "TATAPOWER (NSE)"),
+    ("NSE_EQ|INE192A01025", "TATACONSUM (NSE)"),
+    ("NSE_EQ|INE670A01012", "TATAELXSI (NSE)"),
+    ("NSE_EQ|INE092A01019", "TATACHEM (NSE)"),
+    ("NSE_EQ|INE151A01013", "TATACOMM (NSE)"),
+    ("NSE_EQ|INE062A01020", "SBIN (NSE)"),
+    ("NSE_EQ|INE154A01025", "ITC (NSE)"),
+    ("NSE_EQ|INE238A01034", "AXISBANK (NSE)"),
+    ("NSE_EQ|INE030A01027", "HINDUNILVR (NSE)"),
+    ("NSE_EQ|INE018A01030", "L&T (NSE)"),
+    ("NSE_EQ|INE423A01024", "ADANIENT (NSE)"),
+    ("NSE_EQ|INE742F01042", "ADANIPORTS (NSE)"),
+    ("NSE_EQ|INE044A01036", "SUNPHARMA (NSE)"),
+    ("NSE_EQ|INE326A01037", "ULTRACEMCO (NSE)"),
+    ("NSE_EQ|INE101A01026", "M&M (NSE)"),
+    ("NSE_EQ|INE208A01029", "ASHOKLEY (NSE)"),
+    ("NSE_EQ|INE121A01024", "CHOLAFIN (NSE)"),
+    ("NSE_EQ|INE053F01010", "IRFC (NSE)"),
+    ("NSE_EQ|INE280A01028", "TITAN (NSE)"),
+
+    # --- BSE BLUECHIPS ---
+    ("BSE_EQ|INE002A01018", "RELIANCE (BSE)"),
+    ("BSE_EQ|INE467B01029", "TCS (BSE)"),
+    ("BSE_EQ|INE040A01034", "HDFCBANK (BSE)"),
+    ("BSE_EQ|INE009A01021", "INFY (BSE)"),
+    ("BSE_EQ|INE081A01020", "TATASTEEL (BSE)"),
+    ("BSE_EQ|INE192A01025", "TATACONSUM (BSE)"),
+    ("BSE_EQ|INE245A01021", "TATAPOWER (BSE)"),
+    ("BSE_EQ|INE092A01019", "TATACHEM (BSE)"),
+    ("BSE_EQ|INE670A01012", "TATAELXSI (BSE)"),
+    ("BSE_EQ|INE151A01013", "TATACOMM (BSE)"),
+    ("BSE_EQ|INE142M01025", "TATATECH (BSE)"),
+    ("BSE_EQ|INE672A01026", "TATAINVEST (BSE)"),
+    ("BSE_EQ|INE062A01020", "SBIN (BSE)"),
+    ("BSE_EQ|INE154A01025", "ITC (BSE)"),
+    ("BSE_EQ|INE030A01027", "HINDUNILVR (BSE)"),
 ]
 
 # --- Global Progress State ---
@@ -163,14 +193,26 @@ def ensure_instruments(stocks):
 def ensure_schema(conn):
     try:
         cur = conn.cursor()
+        # Create tables for standard timeframes
+        timeframes = ['1m', '5m', '15m', '30m', '1h', '1d']
+        for tf in timeframes:
+            table_name = f"ohlc_{tf}"
+            cur.execute(f"""CREATE TABLE IF NOT EXISTS {table_name} (
+                timestamp TIMESTAMP, symbol SYMBOL, timeframe SYMBOL,
+                open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, volume LONG
+            ) TIMESTAMP(timestamp) PARTITION BY DAY;""")
+        
+        # Keep legacy 'ohlc' table for backwards compatibility
         cur.execute("""CREATE TABLE IF NOT EXISTS ohlc (
             timestamp TIMESTAMP, symbol SYMBOL, timeframe SYMBOL,
             open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, volume LONG
         ) TIMESTAMP(timestamp) PARTITION BY DAY;""")
+        
         conn.commit()
         cur.close()
     except Exception as e:
         conn.rollback()
+        add_log(f"⚠️ Schema Error: {e}")
 
 
 # --- API Fetch ---
@@ -195,16 +237,18 @@ async def fetch_candle_chunk(session, symbol, unit, interval, to_date, from_date
             else:
                 try:
                     error_data = await response.json()
-                    add_log(f"   ⚠️ API Error ({response.status}): {error_data}")
+                    # Upstox API V2 error structure check
+                    msg = error_data.get('errors', [{}])[0].get('message', 'Unknown API Error')
+                    add_log(f"   ⚠️ API Error ({response.status}) for {symbol}: {msg}")
                 except:
-                    add_log(f"   ⚠️ API Error: {response.status}")
+                    add_log(f"   ⚠️ API Error: {response.status} for {symbol}")
                 
-                # If resource not found (404), return empty list so loop continues
-                if response.status == 404:
+                # If resource not found (404) or bad request (400), return empty list so loop continues
+                if response.status in (400, 404):
                     return []
                 return None
     except Exception as e:
-        add_log(f"   Network error: {e}")
+        add_log(f"   Network error fetching {symbol}: {e}")
         return []
 
 
@@ -250,8 +294,9 @@ async def run_backfill(stocks, start_str, end_str, unit, interval, access_token,
                 
                 try:
                     timeframe_str = f"{interval}{unit[0]}"
+                    target_table = f"ohlc_{timeframe_str}"
                     query = f"""
-                        SELECT count(*) FROM ohlc 
+                        SELECT count(*) FROM {target_table} 
                         WHERE symbol = '{symbol}' 
                           AND timeframe = '{timeframe_str}'
                           AND timestamp >= to_timestamp('{check_from}', 'yyyy-MM-ddTHH:mm:ss.SSSUUUZ')
@@ -260,8 +305,14 @@ async def run_backfill(stocks, start_str, end_str, unit, interval, access_token,
                     cur.execute(query)
                     existing_count = cur.fetchone()[0]
                 except Exception as e:
-                    add_log(f"   ⚠️ DB count check failed: {e}")
-                    existing_count = 0
+                    # Fallback to legacy ohlc if target doesn't exist yet
+                    try:
+                        query = f"SELECT count(*) FROM ohlc WHERE symbol = '{symbol}' AND timeframe = '{timeframe_str}' AND timestamp >= to_timestamp('{check_from}', 'yyyy-MM-ddTHH:mm:ss.SSSUUUZ') AND timestamp < to_timestamp('{check_to}', 'yyyy-MM-ddTHH:mm:ss.SSSUUUZ')"
+                        cur.execute(query)
+                        existing_count = cur.fetchone()[0]
+                    except:
+                        add_log(f"   ⚠️ DB count check failed: {e}")
+                        existing_count = 0
 
                 if existing_count > 0:
                     add_log(f"   ⏭️ Skipping {from_s} → {to_s} (Found {existing_count} candles in DB)")
@@ -273,17 +324,19 @@ async def run_backfill(stocks, start_str, end_str, unit, interval, access_token,
                 candles = await fetch_candle_chunk(session, symbol, unit, interval, to_s, from_s, access_token)
 
                 if candles is None:
-                    backfill_state["error"] = "Authentication failed"
+                    backfill_state["error"] = f"API request failed for {name} (Auth or Server Error)"
                     backfill_state["running"] = False
                     cur.close()
                     release_qdb_conn(conn)
                     return
 
                 if candles:
+                    timeframe_str = f"{interval}{unit[0]}"
+                    target_table = f"ohlc_{timeframe_str}"
                     for c in candles:
-                        cur.execute("""INSERT INTO ohlc (timestamp, symbol, timeframe, open, high, low, close, volume)
+                        cur.execute(f"""INSERT INTO {target_table} (timestamp, symbol, timeframe, open, high, low, close, volume)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                            (c[0], symbol, f"{interval}{unit[0]}", c[1], c[2], c[3], c[4], c[5]))
+                            (c[0], symbol, timeframe_str, c[1], c[2], c[3], c[4], c[5]))
                     conn.commit()
                     stock_candles += len(candles)
 

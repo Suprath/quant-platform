@@ -165,8 +165,10 @@ def find_missing_dates(symbols, start_date, end_date):
             
         db_sym = normalize_symbol(sym)
         # Query QuestDB for distinct dates with data using SAMPLE BY for speed
+        # For simplicity, we assume 1m is the baseline for check, or use as requested
+        target_table = "ohlc_1m"
         query = f"""
-        SELECT first(timestamp) FROM ohlc 
+        SELECT first(timestamp) FROM {target_table} 
         WHERE symbol = '{db_sym}' 
           AND timestamp >= '{start_date}T00:00:00.000000Z' 
           AND timestamp <= '{end_date}T23:59:59.999999Z'
@@ -287,7 +289,7 @@ async def backfill_symbol(session, qdb_conn, symbol, missing_dates):
                 cur = qdb_conn.cursor()
                 for c in candles:
                     cur.execute("""
-                        INSERT INTO ohlc (timestamp, symbol, timeframe, open, high, low, close, volume)
+                        INSERT INTO ohlc_1m (timestamp, symbol, timeframe, open, high, low, close, volume)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """, (c[0], symbol, "1m", c[1], c[2], c[3], c[4], c[5]))
                 qdb_conn.commit()
@@ -392,7 +394,7 @@ def scan_market(date_str, selection_func=None):
     """
     try:
         # 1. Get Nifty 50 Performance (Reference)
-        nifty_query = f"SELECT first(open), last(close) FROM ohlc WHERE symbol = 'NSE_INDEX|Nifty 50' AND timestamp >= '{date_str}T03:45:00.000000Z' AND timestamp <= '{date_str}T04:00:00.000000Z'"
+        nifty_query = f"SELECT first(open), last(close) FROM ohlc_1m WHERE symbol = 'NSE_INDEX|Nifty 50' AND timestamp >= '{date_str}T03:45:00.000000Z' AND timestamp <= '{date_str}T04:00:00.000000Z'"
         nifty_perf = 0.0
         resp = requests.get(f"{QUESTDB_URL}/exec?query={urllib.parse.quote(nifty_query)}")
         if resp.status_code == 200:
@@ -403,7 +405,7 @@ def scan_market(date_str, selection_func=None):
         # 2. Scan Stocks
         query = f"""
         SELECT symbol, first(open), last(close), max(high) - min(low), sum(volume)
-        FROM ohlc WHERE timestamp >= '{date_str}T03:45:00.000000Z' AND timestamp <= '{date_str}T04:00:00.000000Z'
+        FROM ohlc_1m WHERE timestamp >= '{date_str}T03:45:00.000000Z' AND timestamp <= '{date_str}T04:00:00.000000Z'
         AND symbol != 'NSE_INDEX|Nifty 50'
         GROUP BY symbol
         """
@@ -481,10 +483,11 @@ def fetch_historical_data(symbol, start_date, end_date, timeframe='1m'):
             end_dt = dt.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
             end_date = end_dt.strftime("%Y-%m-%dT00:00:00.000000Z")
         
+        target_table = f"ohlc_{timeframe}"
         cur = conn.cursor()
-        query = """
+        query = f"""
             SELECT timestamp, open, high, low, close, volume
-            FROM ohlc
+            FROM {target_table}
             WHERE symbol = %s
               AND timeframe = %s
               AND timestamp >= %s
@@ -655,13 +658,14 @@ def run(symbol, start, end, initial_cash, speed="fast"):
             start_ts = f"{date_str}T00:00:00.000000Z"
             from datetime import datetime as dt2, timedelta as td2
             next_day = (dt2.strptime(date_str, "%Y-%m-%d") + td2(days=1)).strftime("%Y-%m-%dT00:00:00.000000Z")
-            cur.execute("""
+            target_table = f"ohlc_{timeframe}"
+            cur.execute(f"""
                 SELECT timestamp, open, high, low, close, volume
-                FROM ohlc
-                WHERE symbol = %s AND timeframe = '1m'
+                FROM {target_table}
+                WHERE symbol = %s AND timeframe = %s
                   AND timestamp >= %s AND timestamp < %s
                 ORDER BY timestamp ASC
-            """, (db_sym, start_ts, next_day))
+            """, (db_sym, timeframe, start_ts, next_day))
             candles = cur.fetchall()
             cur.close()
             return sym, candles
