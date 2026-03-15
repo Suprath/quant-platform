@@ -222,6 +222,35 @@ class TestCAGR:
     def test_zero_capital(self):
         assert compute_cagr(0, 100_000, 252) == 0.0
 
+class TestReturnSeriesEdgeCases:
+    def test_duplicate_timestamps(self):
+        """Verify that duplicate timestamps don't crash return building."""
+        from calculations import _build_returns
+        ts = datetime(2024,1,1)
+        curve = [
+            {"timestamp": ts, "equity": 100000},
+            {"timestamp": ts, "equity": 101000},
+            {"timestamp": ts + timedelta(seconds=1), "equity": 102000}
+        ]
+        returns, fact = _build_returns(curve, 100000)
+        # Should deduplicate and return valid series
+        assert len(returns) >= 1
+        assert not returns.index.duplicated().any()
+
+    def test_short_duration_annualization(self):
+        """Verify annualization factor for very short periods."""
+        from calculations import _build_returns
+        ts = datetime(2024,1,1)
+        # 2 points separated by 1 second
+        curve = [
+            {"timestamp": ts, "equity": 100000},
+            {"timestamp": ts + timedelta(seconds=1), "equity": 101000}
+        ]
+        returns, fact = _build_returns(curve, 100000)
+        # 1 sec interval -> 6.25h / 1s = 22500 ticks per day
+        # Fact = 22500 * 252 = 5,670,000
+        assert fact > 1_000_000
+
 
 # ────────────────────────────────────────────────────────────
 # CALMAR RATIO

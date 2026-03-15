@@ -92,16 +92,22 @@ class RelativeStrengthIndex(IndicatorBase):
             self._avg_loss += loss / self.Period
             
             if self.Samples == self.Period + 1:
-                rs = (self._avg_gain / self._avg_loss) if self._avg_loss != 0 else 100.0
-                self.Value = 100.0 - (100.0 / (1.0 + rs))
+                if self._avg_loss == 0:
+                    self.Value = 100.0
+                else:
+                    rs = self._avg_gain / self._avg_loss
+                    self.Value = 100.0 - (100.0 / (1.0 + rs))
                 self.IsReady = True
         else:
             # Wilder's Smoothing
             self._avg_gain = ((self._avg_gain * (self.Period - 1)) + gain) / self.Period
             self._avg_loss = ((self._avg_loss * (self.Period - 1)) + loss) / self.Period
             
-            rs = (self._avg_gain / self._avg_loss) if self._avg_loss != 0 else 100.0
-            self.Value = 100.0 - (100.0 / (1.0 + rs))
+            if self._avg_loss == 0:
+                self.Value = 100.0
+            else:
+                rs = self._avg_gain / self._avg_loss
+                self.Value = 100.0 - (100.0 / (1.0 + rs))
             self.IsReady = True
 
         self._prev_price = value

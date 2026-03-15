@@ -126,6 +126,7 @@ services:
       - ../.env
     volumes:
       - ../services/strategy_runtime:/app
+      - ../strategies:/app/strategies
       - ../tests:/app/tests
       - ../kira-shared:/kira-shared
       - ../services/position_sizer/src:/position_sizer

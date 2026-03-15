@@ -23,26 +23,11 @@ docker-compose.override.yml
 *.log
 **/logs/
 
-# Backtest Artifacts (generated at runtime — user strategies)
-**/strategies/backtest_*/
-**/strategies/backtest_*.py
-**/strategies/__pycache__/
+# AI Agent folder
+.agent/
 
-# User Created Quant Strategies (Ignore by default)
-services/strategy_runtime/strategies/*/
-services/strategy_runtime/strategies/*.py
-
-# Re-include core built-in strategies
-!services/strategy_runtime/strategies/__init__.py
-!services/strategy_runtime/strategies/demo_algo.py
-!services/strategy_runtime/strategies/demo_strategy.py
-!services/strategy_runtime/strategies/mean_reversion.py
-!services/strategy_runtime/strategies/momentum.py
-!services/strategy_runtime/strategies/momentum_scanner.py
-!services/strategy_runtime/strategies/momentum_pro.py
-!services/strategy_runtime/strategies/orb.py
-!services/strategy_runtime/strategies/demo_strategy/
-!services/strategy_runtime/strategies/mean_reversion/
+# Strategies (Private/Local)
+/strategies/
 
 # Context files
 context/
