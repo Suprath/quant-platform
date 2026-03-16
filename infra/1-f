@@ -1,0 +1,160 @@
+INFO:BacktestRunner:🚀 Starting Backtest Runner: 99999999-9999-9999-9999-999999999999 for strategies.kira_integrated_strategy.KiraIntegratedStrategy
+INFO:BacktestRunner:🚀 Starting Backtest Runner: 99999999-9999-9999-9999-999999999999 for strategies.kira_integrated_strategy.KiraIntegratedStrategy
+INFO:DB:✅ Postgres Connection Pool Initialized
+INFO:DB:✅ Postgres Connection Pool Initialized
+INFO:BacktestRunner:💰 Initialized Backtest Portfolio: ₹100000.0
+INFO:BacktestRunner:💰 Initialized Backtest Portfolio: ₹100000.0
+INFO:StrategySchema:✅ Strategy Runtime Schema Verified.
+INFO:StrategySchema:✅ Strategy Runtime Schema Verified.
+INFO:AlgorithmEngine:🧩 Loaded Algorithm: KiraIntegratedStrategy from /app/strategies/kira_integrated_strategy/kira_integrated_strategy.py
+INFO:AlgorithmEngine:🧩 Loaded Algorithm: KiraIntegratedStrategy from /app/strategies/kira_integrated_strategy/kira_integrated_strategy.py
+INFO:AlgorithmEngine:⚙️ Initializing Algorithm...
+INFO:AlgorithmEngine:💰 Account capital set to ₹1,000,000.00 (Backtest)
+INFO:AlgorithmEngine:⚙️ Initializing Algorithm...
+INFO:AlgorithmEngine:💰 Account capital set to ₹1,000,000.00 (Backtest)
+INFO:AlgorithmEngine:✅ Subscribed to NSE_EQ|RELIANCE (Resolution.Tick)
+INFO:AlgorithmEngine:✅ Subscribed to NSE_EQ|TCS (Resolution.Tick)
+INFO:AlgorithmEngine:✅ Subscribed to NSE_EQ|INFY (Resolution.Tick)
+INFO:AlgorithmEngine:🌌 Universe Selection Registered
+INFO:AlgorithmEngine:✅ Subscribed to NSE_EQ|RELIANCE (Resolution.Tick)
+INFO:AlgorithmEngine:✅ Subscribed to NSE_EQ|TCS (Resolution.Tick)
+INFO:AlgorithmEngine:✅ Subscribed to NSE_EQ|INFY (Resolution.Tick)
+INFO:AlgorithmEngine:🌌 Universe Selection Registered
+INFO:AlgorithmEngine:✅ Subscribed to NSE_INDEX|Nifty 50 (Resolution.Tick)
+INFO:UserAlgorithm:LOG: KIRA Elite Compounding Strategy Initialized. (Focused Top 2 Selection)
+INFO:AlgorithmEngine:✅ Subscribed to NSE_INDEX|Nifty 50 (Resolution.Tick)
+INFO:UserAlgorithm:LOG: KIRA Elite Compounding Strategy Initialized. (Focused Top 2 Selection)
+INFO:AlgorithmEngine:📡 Subscribed to Kafka Topic: market.enriched.ticks.99999999-9999-9999-9999-999999999999
+INFO:BacktestRunner:📡 Checking initial symbols for backfill...
+INFO:AlgorithmEngine:📡 Subscribed to Kafka Topic: market.enriched.ticks.99999999-9999-9999-9999-999999999999
+INFO:BacktestRunner:📡 Checking initial symbols for backfill...
+INFO:BacktestRunner:============================================================
+INFO:BacktestRunner:🔍 AUTO-BACKFILL: Checking for missing data...
+INFO:BacktestRunner:   Symbols: 4 | Range: 2024-01-01 → 2024-01-07
+INFO:BacktestRunner:============================================================
+INFO:BacktestRunner:============================================================
+INFO:BacktestRunner:🔍 AUTO-BACKFILL: Checking for missing data...
+INFO:BacktestRunner:   Symbols: 4 | Range: 2024-01-01 → 2024-01-07
+INFO:BacktestRunner:============================================================
+INFO:BacktestRunner:  ✅ NSE_EQ|INE009A01021: 5/5 days (100% coverage) — skipping backfill
+INFO:BacktestRunner:  ✅ NSE_EQ|INE009A01021: 5/5 days (100% coverage) — skipping backfill
+INFO:BacktestRunner:  ✅ NSE_INDEX|Nifty 50: 5/5 days (100% coverage) — skipping backfill
+INFO:BacktestRunner:  ✅ NSE_INDEX|Nifty 50: 5/5 days (100% coverage) — skipping backfill
+INFO:BacktestRunner:  ✅ NSE_EQ|INE002A01018: 5/5 days (100% coverage) — skipping backfill
+INFO:BacktestRunner:  ✅ NSE_EQ|INE002A01018: 5/5 days (100% coverage) — skipping backfill
+INFO:BacktestRunner:  ✅ NSE_EQ|INE467B01029: 5/5 days (100% coverage) — skipping backfill
+INFO:BacktestRunner:✅ All data present — no backfill needed!
+INFO:BacktestRunner:  ✅ NSE_EQ|INE467B01029: 5/5 days (100% coverage) — skipping backfill
+INFO:BacktestRunner:✅ All data present — no backfill needed!
+INFO:BacktestRunner:🌌 Dynamic Universe Requested. Scanning each trading day...
+INFO:BacktestRunner:🌌 Dynamic Universe Requested. Scanning each trading day...
+INFO:UserAlgorithm:LOG: 🌌 Elite Universe: 3 stocks (Leaders: 3, Top 2 Scanner: 0)
+INFO:BacktestRunner:💾 Saved 0 scanned symbols to DB for 2024-01-01
+INFO:UserAlgorithm:LOG: 🌌 Elite Universe: 3 stocks (Leaders: 3, Top 2 Scanner: 0)
+INFO:BacktestRunner:💾 Saved 0 scanned symbols to DB for 2024-01-01
+INFO:UserAlgorithm:LOG: 🌌 Elite Universe: 4 stocks (Leaders: 3, Top 2 Scanner: 1)
+INFO:UserAlgorithm:LOG: 🌌 Elite Universe: 4 stocks (Leaders: 3, Top 2 Scanner: 1)
+INFO:BacktestRunner:💾 Saved 1 scanned symbols to DB for 2024-01-02
+INFO:BacktestRunner:🌌 Day 2024-01-02: Scanned 1 stocks
+INFO:BacktestRunner:💾 Saved 1 scanned symbols to DB for 2024-01-02
+INFO:BacktestRunner:🌌 Day 2024-01-02: Scanned 1 stocks
+INFO:UserAlgorithm:LOG: 🌌 Elite Universe: 4 stocks (Leaders: 3, Top 2 Scanner: 1)
+INFO:UserAlgorithm:LOG: 🌌 Elite Universe: 4 stocks (Leaders: 3, Top 2 Scanner: 1)
+INFO:BacktestRunner:💾 Saved 1 scanned symbols to DB for 2024-01-03
+INFO:BacktestRunner:🌌 Day 2024-01-03: Scanned 1 stocks
+INFO:BacktestRunner:💾 Saved 1 scanned symbols to DB for 2024-01-03
+INFO:BacktestRunner:🌌 Day 2024-01-03: Scanned 1 stocks
+INFO:UserAlgorithm:LOG: 🌌 Elite Universe: 3 stocks (Leaders: 3, Top 2 Scanner: 0)
+INFO:BacktestRunner:💾 Saved 0 scanned symbols to DB for 2024-01-04
+INFO:UserAlgorithm:LOG: 🌌 Elite Universe: 3 stocks (Leaders: 3, Top 2 Scanner: 0)
+INFO:BacktestRunner:💾 Saved 0 scanned symbols to DB for 2024-01-04
+INFO:UserAlgorithm:LOG: 🌌 Elite Universe: 3 stocks (Leaders: 3, Top 2 Scanner: 0)
+INFO:BacktestRunner:💾 Saved 0 scanned symbols to DB for 2024-01-05
+INFO:UserAlgorithm:LOG: 🌌 Elite Universe: 3 stocks (Leaders: 3, Top 2 Scanner: 0)
+INFO:BacktestRunner:💾 Saved 0 scanned symbols to DB for 2024-01-05
+INFO:BacktestRunner:📡 Backfilling 1 symbols discovered by scanner...
+INFO:BacktestRunner:📡 Backfilling 1 symbols discovered by scanner...
+INFO:BacktestRunner:============================================================
+INFO:BacktestRunner:============================================================
+INFO:BacktestRunner:🔍 AUTO-BACKFILL: Checking for missing data...
+INFO:BacktestRunner:🔍 AUTO-BACKFILL: Checking for missing data...
+INFO:BacktestRunner:   Symbols: 1 | Range: 2024-01-01 → 2024-01-07
+INFO:BacktestRunner:   Symbols: 1 | Range: 2024-01-01 → 2024-01-07
+INFO:BacktestRunner:============================================================
+INFO:BacktestRunner:============================================================
+INFO:BacktestRunner:  ✅ NSE_EQ|INE002A01018: 5/5 days (100% coverage) — skipping backfill
+INFO:BacktestRunner:✅ All data present — no backfill needed!
+INFO:BacktestRunner:  ✅ NSE_EQ|INE002A01018: 5/5 days (100% coverage) — skipping backfill
+INFO:BacktestRunner:✅ All data present — no backfill needed!
+INFO:BacktestRunner:📅 Streaming backtest: 5 trading days, 5 symbols
+INFO:BacktestRunner:📅 Streaming backtest: 5 trading days, 5 symbols
+INFO:PaperExchange:⚡ Backtest session opened — Balance: ₹100,000.00, Existing positions: 0
+INFO:PaperExchange:⚡ Backtest session opened — Balance: ₹100,000.00, Existing positions: 0
+INFO:BacktestRunner:✅ QuestDB Connection Pool Initialized (8812/pg)
+INFO:BacktestRunner:✅ QuestDB Connection Pool Initialized (8812/pg)
+INFO:BacktestRunner:✅ QuestDB Connection Pool Initialized (8812/pg)
+INFO:BacktestRunner:✅ QuestDB Connection Pool Initialized (8812/pg)
+INFO:BacktestRunner:✅ QuestDB Connection Pool Initialized (8812/pg)
+INFO:BacktestRunner:✅ QuestDB Connection Pool Initialized (8812/pg)
+INFO:BacktestRunner:✅ QuestDB Connection Pool Initialized (8812/pg)
+INFO:BacktestRunner:✅ QuestDB Connection Pool Initialized (8812/pg)
+ERROR:BacktestRunner:Failed to init QuestDB Pool: trying to put unkeyed connection
+ERROR:BacktestRunner:Failed to init QuestDB Pool: trying to put unkeyed connection
+INFO:BacktestRunner:✅ QuestDB Connection Pool Initialized (8812/pg)
+INFO:BacktestRunner:✅ QuestDB Connection Pool Initialized (8812/pg)
+ERROR:BacktestRunner:Failed to init QuestDB Pool: trying to put unkeyed connection
+ERROR:BacktestRunner:Failed to init QuestDB Pool: trying to put unkeyed connection
+ERROR:BacktestRunner:Failed to init QuestDB Pool: trying to put unkeyed connection
+ERROR:BacktestRunner:Failed to init QuestDB Pool: trying to put unkeyed connection
+ERROR:BacktestRunner:Failed to init QuestDB Pool: trying to put unkeyed connection
+ERROR:BacktestRunner:Failed to init QuestDB Pool: trying to put unkeyed connection
+INFO:AlgorithmEngine:📅 Pre-fetched expiries for 0 F&O instruments
+INFO:AlgorithmEngine:📁 Loaded 4500 ticks for Local Backtest
+INFO:AlgorithmEngine:📅 Pre-fetched expiries for 0 F&O instruments
+INFO:AlgorithmEngine:📁 Loaded 4500 ticks for Local Backtest
+INFO:AlgorithmEngine:⚡ SPEED_FINAL: avg=2,495,949 max=2,495,949 ticks/sec | Total: 4,500 ticks in 0.00s
+INFO:AlgorithmEngine:⚡ SPEED_FINAL: avg=2,495,949 max=2,495,949 ticks/sec | Total: 4,500 ticks in 0.00s
+INFO:AlgorithmEngine:📅 Pre-fetched expiries for 0 F&O instruments
+INFO:AlgorithmEngine:📁 Loaded 4500 ticks for Local Backtest
+INFO:AlgorithmEngine:📅 Pre-fetched expiries for 0 F&O instruments
+INFO:AlgorithmEngine:📁 Loaded 4500 ticks for Local Backtest
+INFO:AlgorithmEngine:⚡ SPEED_FINAL: avg=2,452,809 max=2,452,809 ticks/sec | Total: 4,500 ticks in 0.00s
+INFO:AlgorithmEngine:⚡ SPEED_FINAL: avg=2,452,809 max=2,452,809 ticks/sec | Total: 4,500 ticks in 0.00s
+INFO:AlgorithmEngine:📅 Pre-fetched expiries for 0 F&O instruments
+INFO:AlgorithmEngine:📁 Loaded 4500 ticks for Local Backtest
+INFO:AlgorithmEngine:📅 Pre-fetched expiries for 0 F&O instruments
+INFO:AlgorithmEngine:📁 Loaded 4500 ticks for Local Backtest
+INFO:AlgorithmEngine:⚡ SPEED_FINAL: avg=2,286,693 max=2,286,693 ticks/sec | Total: 4,500 ticks in 0.00s
+INFO:AlgorithmEngine:⚡ SPEED_FINAL: avg=2,286,693 max=2,286,693 ticks/sec | Total: 4,500 ticks in 0.00s
+INFO:AlgorithmEngine:📅 Pre-fetched expiries for 0 F&O instruments
+INFO:AlgorithmEngine:📁 Loaded 4500 ticks for Local Backtest
+INFO:AlgorithmEngine:📅 Pre-fetched expiries for 0 F&O instruments
+INFO:AlgorithmEngine:📁 Loaded 4500 ticks for Local Backtest
+INFO:AlgorithmEngine:⚡ SPEED_FINAL: avg=1,037,852 max=1,037,852 ticks/sec | Total: 4,500 ticks in 0.00s
+INFO:AlgorithmEngine:⚡ SPEED_FINAL: avg=1,037,852 max=1,037,852 ticks/sec | Total: 4,500 ticks in 0.00s
+INFO:AlgorithmEngine:📅 Pre-fetched expiries for 0 F&O instruments
+INFO:AlgorithmEngine:📁 Loaded 4500 ticks for Local Backtest
+INFO:AlgorithmEngine:📅 Pre-fetched expiries for 0 F&O instruments
+INFO:AlgorithmEngine:📁 Loaded 4500 ticks for Local Backtest
+INFO:AlgorithmEngine:⚡ SPEED_FINAL: avg=1,869,305 max=1,869,305 ticks/sec | Total: 4,500 ticks in 0.00s
+INFO:BacktestRunner:📊 Day 5/5 done | 22,500 ticks in 0.1s (170,178 tps)
+INFO:BacktestRunner:⚡ Streaming tick loop done: 22,500 ticks in 0.13s = 170,151 ticks/sec
+INFO:BacktestRunner:⏱️ Streaming Complete. Auto-liquidating open positions...
+INFO:PaperExchange:💾 Flushing session — 0 trades, 22,500 ticks, 168,407 ticks/sec
+INFO:AlgorithmEngine:⚡ SPEED_FINAL: avg=1,869,305 max=1,869,305 ticks/sec | Total: 4,500 ticks in 0.00s
+INFO:BacktestRunner:📊 Day 5/5 done | 22,500 ticks in 0.1s (170,178 tps)
+INFO:BacktestRunner:⚡ Streaming tick loop done: 22,500 ticks in 0.13s = 170,151 ticks/sec
+INFO:BacktestRunner:⏱️ Streaming Complete. Auto-liquidating open positions...
+INFO:PaperExchange:💾 Flushing session — 0 trades, 22,500 ticks, 168,407 ticks/sec
+INFO:PaperExchange:✅ Session flushed — Final balance: ₹100,000.00
+INFO:PaperExchange:✅ Session flushed — Final balance: ₹100,000.00
+INFO:BacktestRunner:✅ Streaming backtest complete.
+INFO:BacktestRunner:✅ Streaming backtest complete.
+INFO:AlgorithmEngine:📈 Equity curve: 1 points, PnL trades: 0
+INFO:AlgorithmEngine:📈 Equity curve: 1 points, PnL trades: 0
+INFO:Calculations:⚡ Statistics computed via C++ fast path
+INFO:AlgorithmEngine:📉 Equity curve: 6 → 6 points (downsampled)
+INFO:Calculations:⚡ Statistics computed via C++ fast path
+INFO:AlgorithmEngine:📉 Equity curve: 6 → 6 points (downsampled)
+INFO:BacktestRunner:🏁 Backtest Runner Finished.
+INFO:BacktestRunner:🏁 Backtest Runner Finished.

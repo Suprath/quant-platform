@@ -362,7 +362,24 @@ export default function IdePage() {
         setIsCreateFileOpen(false);
     };
 
-    const handleDeleteFile = (projectId: string, fileId: string) => {
+    const handleDeleteFile = async (projectId: string, fileId: string) => {
+        const proj = projects.find(p => p.id === projectId);
+        const file = proj?.files.find(f => f.id === fileId);
+
+        if (proj && file) {
+            try {
+                const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+                const res = await fetch(`${API_URL}/api/v1/strategies/project/${proj.name}/file/${file.name}`, {
+                    method: 'DELETE'
+                });
+                if (!res.ok) {
+                    console.error("Failed to delete file from backend");
+                }
+            } catch (e) {
+                console.error("Error deleting file:", e);
+            }
+        }
+
         const updated = projects.map(p =>
             p.id === projectId ? { ...p, files: p.files.filter(f => f.id !== fileId) } : p
         );
@@ -371,14 +388,29 @@ export default function IdePage() {
         // Close tab if open
         setOpenTabs(prev => prev.filter(t => !(t.projectId === projectId && t.fileId === fileId)));
         if (activeFileId === fileId) {
-            const proj = updated.find(p => p.id === projectId);
-            if (proj && proj.files.length > 0) {
-                setActiveFileId(proj.files[0].id);
+            const currentProj = updated.find(p => p.id === projectId);
+            if (currentProj && currentProj.files.length > 0) {
+                setActiveFileId(currentProj.files[0].id);
             }
         }
     };
 
-    const handleDeleteProject = (projectId: string) => {
+    const handleDeleteProject = async (projectId: string) => {
+        const proj = projects.find(p => p.id === projectId);
+        if (proj) {
+            try {
+                const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+                const res = await fetch(`${API_URL}/api/v1/strategies/${proj.name}`, {
+                    method: 'DELETE'
+                });
+                if (!res.ok) {
+                    console.error("Failed to delete project from backend");
+                }
+            } catch (e) {
+                console.error("Error deleting project:", e);
+            }
+        }
+
         const updated = projects.filter(p => p.id !== projectId);
         setProjects(updated);
         saveToStorage(updated);

@@ -1,0 +1,80 @@
+INFO:BacktestRunner:🚀 Starting Backtest Runner: 88888888-8888-8888-8888-888888888888 for strategies.kira_integrated_strategy.KiraIntegratedStrategy
+INFO:DB:✅ Postgres Connection Pool Initialized
+INFO:BacktestRunner:💰 Initialized Backtest Portfolio: ₹100000.0
+INFO:StrategySchema:✅ Strategy Runtime Schema Verified.
+INFO:AlgorithmEngine:🧩 Loaded Algorithm: KiraIntegratedStrategy
+INFO:AlgorithmEngine:⚙️ Initializing Algorithm...
+INFO:AlgorithmEngine:💰 Account capital set to ₹1,000,000.00 (Backtest)
+INFO:AlgorithmEngine:✅ Subscribed to NSE_EQ|RELIANCE (Resolution.Tick)
+INFO:AlgorithmEngine:✅ Subscribed to NSE_EQ|TCS (Resolution.Tick)
+INFO:AlgorithmEngine:✅ Subscribed to NSE_EQ|INFY (Resolution.Tick)
+INFO:AlgorithmEngine:🌌 Universe Selection Registered
+INFO:AlgorithmEngine:✅ Subscribed to NSE_INDEX|Nifty 50 (Resolution.Tick)
+INFO:UserAlgorithm:LOG: KIRA Elite Compounding Strategy Initialized. (Focused Top 2 Selection)
+INFO:AlgorithmEngine:📡 Subscribed to Kafka Topic: market.enriched.ticks.88888888-8888-8888-8888-888888888888
+INFO:BacktestRunner:📡 Checking initial symbols for backfill...
+INFO:BacktestRunner:============================================================
+INFO:BacktestRunner:🔍 AUTO-BACKFILL: Checking for missing data...
+INFO:BacktestRunner:   Symbols: 4 | Range: 2024-01-01 → 2024-01-07
+INFO:BacktestRunner:============================================================
+INFO:BacktestRunner:  ✅ NSE_INDEX|Nifty 50: 5/5 days (100% coverage) — skipping backfill
+INFO:BacktestRunner:  ✅ NSE_EQ|INE009A01021: 5/5 days (100% coverage) — skipping backfill
+INFO:BacktestRunner:  ✅ NSE_EQ|INE467B01029: 5/5 days (100% coverage) — skipping backfill
+INFO:BacktestRunner:  ✅ NSE_EQ|INE002A01018: 5/5 days (100% coverage) — skipping backfill
+INFO:BacktestRunner:✅ All data present — no backfill needed!
+INFO:BacktestRunner:🌌 Dynamic Universe Requested. Scanning each trading day...
+INFO:UserAlgorithm:LOG: 🌌 Elite Universe: 3 stocks (Leaders: 3, Top 2 Scanner: 0)
+INFO:BacktestRunner:💾 Saved 0 scanned symbols to DB for 2024-01-01
+INFO:UserAlgorithm:LOG: 🌌 Elite Universe: 4 stocks (Leaders: 3, Top 2 Scanner: 1)
+INFO:BacktestRunner:💾 Saved 1 scanned symbols to DB for 2024-01-02
+INFO:BacktestRunner:🌌 Day 2024-01-02: Scanned 1 stocks
+INFO:UserAlgorithm:LOG: 🌌 Elite Universe: 4 stocks (Leaders: 3, Top 2 Scanner: 1)
+INFO:BacktestRunner:💾 Saved 1 scanned symbols to DB for 2024-01-03
+INFO:BacktestRunner:🌌 Day 2024-01-03: Scanned 1 stocks
+INFO:UserAlgorithm:LOG: 🌌 Elite Universe: 3 stocks (Leaders: 3, Top 2 Scanner: 0)
+INFO:BacktestRunner:💾 Saved 0 scanned symbols to DB for 2024-01-04
+INFO:UserAlgorithm:LOG: 🌌 Elite Universe: 3 stocks (Leaders: 3, Top 2 Scanner: 0)
+INFO:BacktestRunner:💾 Saved 0 scanned symbols to DB for 2024-01-05
+INFO:BacktestRunner:📡 Backfilling 1 symbols discovered by scanner...
+INFO:BacktestRunner:============================================================
+INFO:BacktestRunner:🔍 AUTO-BACKFILL: Checking for missing data...
+INFO:BacktestRunner:   Symbols: 1 | Range: 2024-01-01 → 2024-01-07
+INFO:BacktestRunner:============================================================
+INFO:BacktestRunner:  ✅ NSE_EQ|INE002A01018: 5/5 days (100% coverage) — skipping backfill
+INFO:BacktestRunner:✅ All data present — no backfill needed!
+INFO:BacktestRunner:📅 Streaming backtest: 5 trading days, 5 symbols
+INFO:PaperExchange:⚡ Backtest session opened — Balance: ₹100,000.00, Existing positions: 0
+INFO:BacktestRunner:✅ QuestDB Connection Pool Initialized (8812/pg)
+INFO:BacktestRunner:✅ QuestDB Connection Pool Initialized (8812/pg)
+INFO:BacktestRunner:✅ QuestDB Connection Pool Initialized (8812/pg)
+INFO:BacktestRunner:✅ QuestDB Connection Pool Initialized (8812/pg)
+INFO:BacktestRunner:✅ QuestDB Connection Pool Initialized (8812/pg)
+ERROR:BacktestRunner:Failed to init QuestDB Pool: trying to put unkeyed connection
+ERROR:BacktestRunner:Failed to init QuestDB Pool: trying to put unkeyed connection
+ERROR:BacktestRunner:Failed to init QuestDB Pool: trying to put unkeyed connection
+ERROR:BacktestRunner:Failed to init QuestDB Pool: trying to put unkeyed connection
+INFO:AlgorithmEngine:📅 Pre-fetched expiries for 0 F&O instruments
+INFO:AlgorithmEngine:📁 Loaded 4500 ticks for Local Backtest
+INFO:AlgorithmEngine:⚡ SPEED_FINAL: avg=2,513,231 max=2,513,231 ticks/sec | Total: 4,500 ticks in 0.00s
+INFO:AlgorithmEngine:📅 Pre-fetched expiries for 0 F&O instruments
+INFO:AlgorithmEngine:📁 Loaded 4500 ticks for Local Backtest
+INFO:AlgorithmEngine:⚡ SPEED_FINAL: avg=974,211 max=974,211 ticks/sec | Total: 4,500 ticks in 0.00s
+INFO:AlgorithmEngine:📅 Pre-fetched expiries for 0 F&O instruments
+INFO:AlgorithmEngine:📁 Loaded 4500 ticks for Local Backtest
+INFO:AlgorithmEngine:⚡ SPEED_FINAL: avg=2,102,994 max=2,102,994 ticks/sec | Total: 4,500 ticks in 0.00s
+INFO:AlgorithmEngine:📅 Pre-fetched expiries for 0 F&O instruments
+INFO:AlgorithmEngine:📁 Loaded 4500 ticks for Local Backtest
+INFO:AlgorithmEngine:⚡ SPEED_FINAL: avg=1,032,119 max=1,032,119 ticks/sec | Total: 4,500 ticks in 0.00s
+INFO:AlgorithmEngine:📅 Pre-fetched expiries for 0 F&O instruments
+INFO:AlgorithmEngine:📁 Loaded 4500 ticks for Local Backtest
+INFO:AlgorithmEngine:⚡ SPEED_FINAL: avg=2,432,577 max=2,432,577 ticks/sec | Total: 4,500 ticks in 0.00s
+INFO:BacktestRunner:📊 Day 5/5 done | 22,500 ticks in 0.2s (139,827 tps)
+INFO:BacktestRunner:⚡ Streaming tick loop done: 22,500 ticks in 0.16s = 139,810 ticks/sec
+INFO:BacktestRunner:⏱️ Streaming Complete. Auto-liquidating open positions...
+INFO:PaperExchange:💾 Flushing session — 0 trades, 22,500 ticks, 138,885 ticks/sec
+INFO:PaperExchange:✅ Session flushed — Final balance: ₹100,000.00
+INFO:BacktestRunner:✅ Streaming backtest complete.
+INFO:AlgorithmEngine:📈 Equity curve: 1 points, PnL trades: 0
+INFO:Calculations:⚡ Statistics computed via C++ fast path
+INFO:AlgorithmEngine:📉 Equity curve: 6 → 6 points (downsampled)
+INFO:BacktestRunner:🏁 Backtest Runner Finished.

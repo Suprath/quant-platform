@@ -23,7 +23,9 @@ services:
     restart: always
 
   ingestor:
-    build: ../services/ingestion
+    build:
+      context: ..
+      dockerfile: services/ingestion/Dockerfile
     container_name: upstox_ingestor
     depends_on:
       - kafka # REMOVED: condition: service_healthy
@@ -99,7 +101,9 @@ services:
     restart: always
 
   feature_engine:
-    build: ../services/feature_engine
+    build:
+      context: ..
+      dockerfile: services/feature_engine/Dockerfile
     container_name: feature_engine
     depends_on:
       - kafka
@@ -121,7 +125,7 @@ services:
       - PYTHONUNBUFFERED=1
       - PYTHONOPTIMIZE=1 # Disable debug assertions for speed
       - KIRA_CPP_ENGINE=${KIRA_CPP_ENGINE:-true}
-      - PYTHONPATH=/app:/kira-shared/src:/position_sizer:/noise_filter
+      - PYTHONPATH=/app:/kira-shared/src:/position_sizer:/noise_filter:/kira_til
     env_file:
       - ../.env
     volumes:
@@ -131,6 +135,7 @@ services:
       - ../kira-shared:/kira-shared
       - ../services/position_sizer/src:/position_sizer
       - ../services/noise_filter/src:/noise_filter
+      - ../services/kira_til/src:/kira_til
     restart: always
     deploy:
       resources:
@@ -280,6 +285,25 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
       - REDIS_HOST=redis_state
+    restart: always
+
+  kira_til:
+    build:
+      context: ..
+      dockerfile: services/kira_til/Dockerfile
+    container_name: kira_til
+    depends_on:
+      - kafka
+      - redis
+      - postgres
+    env_file:
+      - ../.env
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
+      - REDIS_HOST=redis_state
+      - POSTGRES_HOST=postgres_metadata
+    ports:
+      - "8003:8000"
     restart: always
 
 volumes:

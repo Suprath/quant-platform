@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from engine import AlgorithmEngine
 from db import get_db_connection, release_db_connection
 from psycopg2 import pool
+import threading
 
 import requests
 import urllib.parse
@@ -24,7 +25,10 @@ TRADING_MODE = os.getenv('TRADING_MODE', 'MIS')
 UPSTOX_ACCESS_TOKEN = os.getenv('UPSTOX_ACCESS_TOKEN', '')
 UPSTOX_API_BASE = "https://api.upstox.com/v2/historical-candle"
 
-# Known stocks for backfill (ISIN -> Name mapping)
+# NSE
+_QDB_POOL = None
+_QDB_LOCK = threading.Lock()
+
 KNOWN_STOCKS = {
     # Indices
     "NSE_INDEX|Nifty 50": "NIFTY 50",
@@ -79,6 +83,9 @@ BACKFILL_DELAY_STOCKS = 3.2   # seconds between stocks
 
 # Global Symbol Mapping for Normalization (Ticker -> ISIN)
 SYMBOL_MAP = {}
+# Create a reverse map too (ISIN -> Ticker) for display
+ISIN_TO_TICKER = {}
+
 for k, v in KNOWN_STOCKS.items():
     prefix = k.split("|")[0] if "|" in k else "NSE_EQ"
     # Map "NSE_EQ|RELIANCE" -> "NSE_EQ|INE..."
@@ -89,6 +96,7 @@ for k, v in KNOWN_STOCKS.items():
     SYMBOL_MAP[v.upper()] = k
     # Keep original
     SYMBOL_MAP[k] = k
+    ISIN_TO_TICKER[k] = v
 
 def normalize_symbol(sym):
     """Maps ticker-based symbols to ISIN-based symbols if known."""
@@ -97,6 +105,7 @@ def normalize_symbol(sym):
 
 # Cache for failed backfills to prevent retrying invalid symbols in the same run
 FAILED_BACKFILLS = set()
+# Persistent Table for empty dates? For now, we'll just deduplicate.
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("BacktestRunner")
@@ -109,18 +118,43 @@ logger = logging.getLogger("BacktestRunner")
 # Global QuestDB Pool to prevent ephemeral port exhaustion
 _QDB_POOL = None
 
+def ensure_backfill_tables(conn):
+    """Ensure persistence tables for backfill tracking exist."""
+    try:
+        cur = conn.cursor()
+        # Table to track dates that have been checked but returned no data (holidays/invalid)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS backfill_failures (
+                timestamp TIMESTAMP,
+                symbol SYMBOL,
+                date_str SYMBOL
+            ) TIMESTAMP(timestamp) PARTITION BY YEAR;
+        """)
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        logger.warning(f"Failed to ensure backfill_failures table: {e}")
+
 def get_qdb_conn():
     """Get raw QuestDB connection for backfill writes using pooling."""
     global _QDB_POOL
     host = os.getenv("QUESTDB_HOST", "questdb_tsdb")
     if _QDB_POOL is None:
-        try:
-            _QDB_POOL = pool.ThreadedConnectionPool(1, 48, # Increased capacity
-                host=host, port=8812, user="admin", password="quest", database="qdb")
-            logger.info("✅ QuestDB Connection Pool Initialized (8812/pg)")
-        except Exception as e:
-            logger.error(f"Failed to init QuestDB Pool: {e}")
-            return psycopg2.connect(host=host, port=8812, user="admin", password="quest", database="qdb")
+        with _QDB_LOCK:
+            if _QDB_POOL is None:
+                try:
+                    _QDB_POOL = pool.ThreadedConnectionPool(1, 48, # Increased capacity
+                        host=host, port=8812, user="admin", password="quest", database="qdb")
+                    logger.info("✅ QuestDB Connection Pool Initialized (8812/pg)")
+                    
+                    # Run one-time schema check
+                    conn = _QDB_POOL.getconn()
+                    ensure_backfill_tables(conn)
+                    _QDB_POOL.putconn(conn)
+                    
+                except Exception as e:
+                    logger.error(f"Failed to init QuestDB Pool: {e}")
+                    return psycopg2.connect(host=host, port=8812, user="admin", password="quest", database="qdb")
     
     try:
         return _QDB_POOL.getconn()
@@ -159,14 +193,19 @@ def find_missing_dates(symbols, start_date, end_date):
     if not expected_days:
         return missing
 
-    for sym in symbols:
+    # Deduplicate symbols by normalizing first
+    canonical_symbols = set()
+    for s in symbols:
+        canonical_symbols.add(normalize_symbol(s))
+
+    for sym in canonical_symbols:
         if sym in FAILED_BACKFILLS:
             continue
             
-        db_sym = normalize_symbol(sym)
+        db_sym = sym  # Already normalized
         # Query QuestDB for distinct dates with data using SAMPLE BY for speed
-        # For simplicity, we assume 1m is the baseline for check, or use as requested
-        target_table = "ohlc_1m"
+        # Use 'ohlc' as the primary source of truth across all timeframes
+        target_table = "ohlc"
         query = f"""
         SELECT first(timestamp) FROM {target_table} 
         WHERE symbol = '{db_sym}' 
@@ -187,7 +226,18 @@ def find_missing_dates(symbols, start_date, end_date):
                         day_str = str(row[0])[:10]
                         existing_days.add(day_str)
 
+                # Query QuestDB for already known failures to avoid retrying holidays
                 sym_missing = [d for d in expected_days if d not in existing_days]
+                if sym_missing:
+                    try:
+                        failure_query = f"SELECT date_str FROM backfill_failures WHERE symbol = '{db_sym}'"
+                        f_encoded = urllib.parse.urlencode({"query": failure_query})
+                        f_resp = requests.get(f"{QUESTDB_URL}/exec?{f_encoded}", timeout=5)
+                        if f_resp.status_code == 200:
+                            known_failures = {str(row[0]) for row in f_resp.json().get('dataset', [])}
+                            sym_missing = [d for d in sym_missing if d not in known_failures]
+                    except:
+                        pass # Ignore failure check errors
 
                 # Use 70% threshold to account for NSE market holidays
                 coverage = len(existing_days) / len(expected_days) if expected_days else 0
@@ -198,7 +248,6 @@ def find_missing_dates(symbols, start_date, end_date):
                 
                 # If we have some data but not enough, only backfill actually missing days
                 if sym_missing:
-                    # Filter sym_missing: if it's already in QuestDB, don't re-backfill
                     missing[sym] = sym_missing
             else:
                  logger.warning(f"  ⚠️ QuestDB Query Failed for {sym}: {resp.status_code} - {resp.text}")
@@ -243,10 +292,8 @@ async def fetch_candle_chunk(session, symbol, to_date, from_date):
 
 async def backfill_symbol(session, qdb_conn, symbol, missing_dates):
     """Backfill missing dates for a single symbol."""
-    if not missing_dates:
-        return 0
-
-    name = KNOWN_STOCKS.get(symbol, symbol)
+    canonical_sym = normalize_symbol(symbol)
+    name = ISIN_TO_TICKER.get(canonical_sym, symbol)
     total_saved = 0
 
     # Group consecutive missing dates into date ranges
@@ -282,16 +329,26 @@ async def backfill_symbol(session, qdb_conn, symbol, missing_dates):
 
             if not candles:
                 # If we get no data for a chunk, it might be a holiday OR an invalid symbol
-                # We don't mark as failed yet, wait for entire range
-                pass
+                # Record as failures so we don't retry every time
+                cur = qdb_conn.cursor()
+                temp_dt = current_from
+                while temp_dt <= current_to:
+                    cur.execute("""
+                        INSERT INTO backfill_failures (timestamp, symbol, date_str)
+                        VALUES (now(), %s, %s)
+                    """, (canonical_sym, temp_dt.strftime('%Y-%m-%d')))
+                    temp_dt += timedelta(days=1)
+                qdb_conn.commit()
+                cur.close()
 
             if candles:
                 cur = qdb_conn.cursor()
-                for c in candles:
-                    cur.execute("""
-                        INSERT INTO ohlc_1m (timestamp, symbol, timeframe, open, high, low, close, volume)
+                # Save to both legacy 'ohlc' and 'ohlc_1m' for consistency
+                for table in ["ohlc", "ohlc_1m"]:
+                    cur.execute(f"""
+                        INSERT INTO {table} (timestamp, symbol, timeframe, open, high, low, close, volume)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (c[0], symbol, "1m", c[1], c[2], c[3], c[4], c[5]))
+                    """, (c[0], canonical_sym, "1m", c[1], c[2], c[3], c[4], c[5]))
                 qdb_conn.commit()
                 cur.close()
                 total_saved += len(candles)
@@ -650,6 +707,7 @@ def run(symbol, start, end, initial_cash, speed="fast"):
 
     def _fetch_candles_for_date(sym, date_str):
         """Fetch one symbol's candles for a single date from QuestDB."""
+        timeframe = '1m' # Default for streaming backtest
         db_sym = normalize_symbol(sym)
         conn = get_qdb_conn()
         if not conn: return sym, []
@@ -793,8 +851,9 @@ def run(symbol, start, end, initial_cash, speed="fast"):
             daily_symbols = list(engine.SubscriptionManager.Subscriptions.keys())
 
         # 2. ALSO include symbols we currently hold (Continuity for exits/re-entries)
+        # AND include initial static symbols (Leaders) to ensure they are always processed
         held_symbols = engine.GetHeldSymbols()
-        final_universe = list(set(daily_symbols + held_symbols))
+        final_universe = list(set(daily_symbols + held_symbols + list(initial_symbols)))
         
         if len(held_symbols) > 0:
             added = [s for s in held_symbols if s not in daily_symbols]

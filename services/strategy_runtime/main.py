@@ -333,18 +333,41 @@ def delete_strategy(name: str):
         if os.path.isfile(filepath_py):
             os.remove(filepath_py)
             return {"status": "deleted", "message": f"Strategy file {name} removed."}
-            
         # 2. Try deleting as a project directory
         project_dir = os.path.join("strategies", name)
         if os.path.isdir(project_dir):
             shutil.rmtree(project_dir)
-            return {"status": "deleted", "message": f"Strategy project {name} removed."}
+            return {"status": "deleted", "message": f"Project directory {name} and all its contents removed."}
             
-        raise HTTPException(status_code=404, detail=f"Strategy '{name}' not found")
+        raise HTTPException(status_code=404, detail=f"Strategy '{name}' not found as file or project.")
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to delete strategy {name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/strategies/project/{project_name}/file/{filename}")
+def delete_project_file(project_name: str, filename: str):
+    """Delete a specific file within a project directory."""
+    try:
+        # Sanitize to prevent directory traversal
+        if ".." in project_name or "/" in project_name or "\\" in project_name:
+            raise HTTPException(status_code=400, detail="Invalid project name")
+        if ".." in filename or "/" in filename or "\\" in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+
+        project_dir = os.path.join("strategies", project_name)
+        if not os.path.isdir(project_dir):
+            raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found.")
+
+        filepath = os.path.join(project_dir, filename)
+        if not os.path.isfile(filepath):
+            raise HTTPException(status_code=404, detail=f"File '{filename}' not found in project '{project_name}'.")
+
+        os.remove(filepath)
+        return {"status": "deleted", "message": f"File {filename} removed from project {project_name}."}
+    except Exception as e:
+        logger.error(f"Failed to delete file {filename} from project {project_name}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/strategies/ide-projects")

@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+Traceback (most recent call last):
+  File "/Users/suprathps/code/KIRA/services/strategy_runtime/backtest_runner.py", line 10, in <module>
+    from engine import AlgorithmEngine
+  File "/Users/suprathps/code/KIRA/services/strategy_runtime/backtest_runner.py", line 10, in <module>
+    from engine import AlgorithmEngine
+  File "/Users/suprathps/code/KIRA/services/strategy_runtime/engine.py", line 8, in <module>
+    from kira_shared import timesync
+ModuleNotFoundError: No module named 'kira_shared'
+  File "/Users/suprathps/code/KIRA/services/strategy_runtime/engine.py", line 8, in <module>
+    from kira_shared import timesync
+ModuleNotFoundError: No module named 'kira_shared'

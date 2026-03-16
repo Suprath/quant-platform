@@ -5,6 +5,7 @@ import logging
 from confluent_kafka import Consumer, Producer
 from confluent_kafka.admin import AdminClient, NewTopic
 from dotenv import load_dotenv
+from kira_shared import timesync
 
 load_dotenv()
 
@@ -112,7 +113,7 @@ class QuantProcessor:
             "spread": spread,
             "obi": obi,
             "aggressor": aggressor,
-            "timestamp": tick.get('timestamp', int(time.time()*1000))
+            "timestamp": tick.get('timestamp', int(timesync.now_ist().timestamp()*1000))
         }
 
 def ensure_topics():

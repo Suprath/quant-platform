@@ -10,6 +10,8 @@ except ImportError:
 
 from psycopg2 import pool
 
+import threading
+
 logger = logging.getLogger("DB")
 
 DB_CONF = {
@@ -21,17 +23,20 @@ DB_CONF = {
 }
 
 _POOL = None
+_DB_LOCK = threading.Lock()
 
 def get_db_connection():
     global _POOL
     if _POOL is None:
-        try:
-            _POOL = pool.ThreadedConnectionPool(1, 64, **DB_CONF)
-            logger.info("✅ Postgres Connection Pool Initialized")
-        except Exception as e:
-            logger.error(f"Failed to init PG Pool: {e}")
-            # Fallback to single connection if pool fails
-            return psycopg2.connect(**DB_CONF)
+        with _DB_LOCK:
+            if _POOL is None:
+                try:
+                    _POOL = pool.ThreadedConnectionPool(1, 64, **DB_CONF)
+                    logger.info("✅ Postgres Connection Pool Initialized")
+                except Exception as e:
+                    logger.error(f"Failed to init PG Pool: {e}")
+                    # Fallback to single connection if pool fails
+                    return psycopg2.connect(**DB_CONF)
     
     return _POOL.getconn()
 

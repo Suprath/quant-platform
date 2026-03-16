@@ -753,9 +753,23 @@ def list_strategies():
 
 @app.delete("/api/v1/strategies/{name}")
 def delete_strategy(name: str):
-    """Proxy Deletion to Strategy Runtime"""
+    """Proxy Deletion to Strategy Runtime (Single File or Full Project)"""
     try:
         response = requests.delete(f"http://strategy_runtime:8000/strategies/{name}", timeout=5)
+        if response.status_code == 200:
+             return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+
+@app.delete("/api/v1/strategies/project/{project_name}/file/{filename}")
+def delete_project_file_proxy(project_name: str, filename: str):
+    """Proxy Deletion of a specific project file to Strategy Runtime"""
+    try:
+        response = requests.delete(
+            f"http://strategy_runtime:8000/strategies/project/{project_name}/file/{filename}",
+            timeout=5
+        )
         if response.status_code == 200:
              return response.json()
         raise HTTPException(status_code=response.status_code, detail=response.text)
@@ -1378,3 +1392,49 @@ def get_kira_position_size(request: dict):
         raise HTTPException(status_code=response.status_code, detail=response.text)
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=503, detail=f"Position Sizer Unavailable: {e}")
+
+# --- KIRA TIL PROXIES ---
+
+@app.get("/api/v1/kira/til/health")
+def get_kira_til_health():
+    """Proxy to KIRA TIL Health"""
+    try:
+        response = requests.get("http://kira_til:8000/health", timeout=2)
+        if response.status_code == 200:
+            return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"TIL Unavailable: {e}")
+
+@app.post("/api/v1/kira/til/process")
+def process_til_features(request: dict):
+    """Proxy to KIRA TIL Integrated Pipeline"""
+    try:
+        response = requests.post("http://kira_til:8000/process_features", json=request, timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"TIL Integrated Pipeline Unavailable: {e}")
+
+@app.post("/api/v1/kira/til/validate")
+def validate_til_portfolio(request: dict):
+    """Proxy to KIRA TIL Portfolio Validation"""
+    try:
+        response = requests.post("http://kira_til:8000/portfolio/validate", json=request, timeout=2)
+        if response.status_code == 200:
+            return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"TIL Portfolio Engine Unavailable: {e}")
+
+@app.get("/api/v1/kira/til/portfolio/state")
+def get_til_portfolio_state():
+    """Proxy to KIRA TIL Portfolio State"""
+    try:
+        response = requests.get("http://kira_til:8000/portfolio/state", timeout=2)
+        if response.status_code == 200:
+            return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"TIL Portfolio Engine Unavailable: {e}")

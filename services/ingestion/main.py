@@ -7,6 +7,7 @@ import logging
 import re
 from confluent_kafka import Producer, Consumer
 from dotenv import load_dotenv
+from kira_shared import timesync
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -24,7 +25,7 @@ async def connect_upstox_v3():
 
     # Kafka Setup
     producer = Producer({'bootstrap.servers': KAFKA_SERVER})
-    unique_group_id = f"ingestor-subs-{int(time.time())}"
+    unique_group_id = f"ingestor-subs-{int(timesync.now_ist().timestamp())}"
     subscription_consumer = Consumer({
         'bootstrap.servers': KAFKA_SERVER,
         'group.id': unique_group_id,
@@ -34,7 +35,7 @@ async def connect_upstox_v3():
     
     scanner_consumer = Consumer({
         'bootstrap.servers': KAFKA_SERVER,
-        'group.id': f"ingestor-scanner-{int(time.time())}",
+        'group.id': f"ingestor-scanner-{int(timesync.now_ist().timestamp())}",
         'auto.offset.reset': 'latest'
     })
     scanner_consumer.subscribe(['scanner.suggestions'])
@@ -296,7 +297,7 @@ async def connect_upstox_v3():
                                         "oi": state['oi'], 
                                         "cp": state['cp'],
                                         "depth": state['depth'],
-                                        "timestamp": int(time.time() * 1000)
+                                        "timestamp": int(timesync.now_ist().timestamp() * 1000)
                                     }
                                     
                                     if debug_count % 100 == 0:

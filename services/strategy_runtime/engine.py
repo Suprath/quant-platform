@@ -5,7 +5,7 @@ import importlib
 import time
 from datetime import datetime, timezone, timedelta
 import calculations
-import timesync
+from kira_shared import timesync
 from confluent_kafka import Consumer
 from quant_sdk.data import Tick, Slice, FastSlice
 from quant_sdk.algorithm import Resolution, QCAlgorithm

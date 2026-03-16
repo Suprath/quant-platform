@@ -399,6 +399,65 @@ class QCAlgorithm(ABC):
         # Fallback to zero to avoid unmanaged risk if service is down
         return {} if return_full else 0
 
+    def GetKiraThesis(self, symbol, current_features=None):
+        """
+        Fetches the classified mechanism and thesis for a symbol.
+        """
+        import requests
+        try:
+            # If we don't have features passed, we just query the latest via TIL process
+            # In a real strategy loop, features would come from OnData
+            payload = {
+                "features_batch": {symbol: current_features.dict()} if current_features else {},
+                "market_context": {} # Would need real context here
+            }
+            url = "http://api_gateway:8000/api/v1/kira/til/process"
+            resp = requests.post(url, json=payload, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                decisions = data.get("decisions", [])
+                for d in decisions:
+                    if d["symbol"] == symbol:
+                        return d.get("thesis", "No thesis found")
+        except Exception as e:
+            self.Debug(f"SDK TIL Error (Thesis): {e}")
+        return "Thesis unavailable"
+
+    def ValidateKiraPortfolio(self, symbol, direction, qty, price, stop_loss, sector="UNKNOWN"):
+        """
+        Validates a potential trade against Portfolio Engine risk limits.
+        """
+        import requests
+        try:
+            payload = {
+                "symbol": symbol,
+                "direction": direction,
+                "qty": qty,
+                "entry_price": price,
+                "stop_loss": stop_loss,
+                "sector": sector
+            }
+            url = "http://api_gateway:8000/api/v1/kira/til/validate"
+            resp = requests.post(url, json=payload, timeout=2)
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception as e:
+            self.Debug(f"SDK TIL Error (Portfolio): {e}")
+        return {"approved": False, "reason": "TIL Service Error"}
+
+    def GetKiraPortfolioState(self):
+        """
+        Returns the current real-time state of the TIL Portfolio Engine.
+        """
+        import requests
+        try:
+            url = "http://api_gateway:8000/api/v1/kira/til/portfolio/state"
+            resp = requests.get(url, timeout=2)
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception as e:
+            self.Debug(f"SDK TIL Error (PortfolioState): {e}")
+        return {}
 
     def Debug(self, message):
         """Send a debug message to the console/log."""
