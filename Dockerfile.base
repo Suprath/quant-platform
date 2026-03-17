@@ -1,0 +1,41 @@
+FROM python:3.11-slim
+
+# Prevent python from writing pyc files and buffering stdout/stderr
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+WORKDIR /app
+
+# 1. Install system dependencies required for building wheels and runtime
+# We keep both dev and runtime libs in the base to simplify child Dockerfiles,
+# but we could split if size becomes an issue.
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+    librdkafka-dev \
+    python3-dev \
+    gcc \
+    g++ \
+    libpq5 \
+    librdkafka1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Pre-install heavy and common Python dependencies
+# Installing these here ensures they are cached once for ALL services.
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+    fastapi \
+    uvicorn \
+    requests \
+    aiohttp \
+    pydantic>=2.0.0 \
+    confluent-kafka \
+    psycopg2-binary \
+    python-dotenv \
+    pandas \
+    numpy \
+    redis \
+    pybind11
+
+# 3. Pre-install kira-shared if needed, but usually we install it as editable in dev
+# For now, this base just has the heavy lifting dependencies.

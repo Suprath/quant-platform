@@ -1,14 +1,10 @@
-FROM python:3.11-slim
+FROM kira-python-base
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y build-essential librdkafka-dev && rm -rf /var/lib/apt/lists/*
-
+# Copy kira-shared (provided in build context)
 COPY kira-shared/ /kira-shared/
 RUN pip install -e /kira-shared
-
-COPY services/position_sizer/requirements.txt .
-RUN pip install pybind11 && pip install -r requirements.txt
 
 COPY services/position_sizer/ .
 RUN python setup.py install

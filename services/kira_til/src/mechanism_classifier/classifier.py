@@ -1,11 +1,14 @@
 import asyncio
 import time
+import logging
 from typing import List, Optional
 from .models import ClassifiedSignal, MechanismResult, Thesis
 from .mechanisms.m1_accumulation import AccumulationMechanism
 from .thesis_generator import ThesisGenerator
 from ..signal_generator.strategies.base_strategy import RawSignal
 from kira_shared.models.market import FeatureVector, MarketContext
+
+logger = logging.getLogger("MechanismClassifier")
 
 class MechanismClassifier:
     """
@@ -41,6 +44,7 @@ class MechanismClassifier:
         present = [r for r in results if r.is_present]
         
         if not present:
+            logger.info(f"Signal {signal.symbol} discarded: No mechanism found (Max Conf: {max([r.confidence for r in results] or [0]):.2f})")
             return ClassifiedSignal(
                 signal_id=      signal.signal_id,
                 symbol=         signal.symbol,

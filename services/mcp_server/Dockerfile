@@ -1,17 +1,14 @@
-FROM python:3.11-slim
+FROM kira-python-base
 
 WORKDIR /app
 
-# Install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir uvicorn starlette
+# Install service-specific dependencies
+RUN pip install --no-cache-dir mcp[cli] httpx docker
 
-# Copy server code
-COPY server.py .
+# Copy kira-shared (provided in build context)
+COPY kira-shared /app/kira-shared
+RUN pip install -e /app/kira-shared
 
-# Expose SSE port
-EXPOSE 8080
+COPY services/mcp_server/ /app/
 
-# Run Uvicorn to serve the FastMCP app
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "server.py"]

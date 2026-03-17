@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { ServiceHealth } from "@/components/ServiceHealth";
 import { TopPerformersTable } from "@/components/dashboard/TopPerformersTable";
-import { Code, Terminal, Book, Settings, Activity, Zap, Shield, TrendingUp, Layers } from 'lucide-react';
+import { Code, Terminal, Book, Settings, Activity, Zap, Shield, Layers } from 'lucide-react';
 
 const fadeIn = {
   hidden: { opacity: 0, y: 20 },
@@ -41,6 +41,11 @@ export default function DashboardPage() {
         </div>
 
         <div className="flex items-center gap-2 md:gap-4 ml-auto">
+          <Link href="/dashboard/vektor" className="hidden lg:block">
+            <Button variant="ghost" className="hover:bg-orange-500/10 text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 transition-colors">
+              <Terminal className="mr-2 h-4 w-4" /> Vektor Terminal
+            </Button>
+          </Link>
           <Link href="/ide" className="hidden lg:block">
             <Button variant="ghost" className="hover:bg-primary/10 transition-colors">
               <Code className="mr-2 h-4 w-4" /> Strategy IDE
@@ -98,14 +103,14 @@ export default function DashboardPage() {
               Build, backtest, and deploy high-frequency quantitative strategies at lightning speed. Powered by Vectorized Pandas, Fast API, and Next.js.
             </motion.p>
             <motion.div variants={fadeIn} className="flex flex-wrap justify-center gap-4 pt-4 px-4">
-              <Link href="/ide" className="w-full sm:w-auto">
-                <Button size="lg" className="w-full h-12 px-8 font-semibold shadow-lg shadow-primary/20 hover:scale-105 transition-transform text-md">
-                  Launch Strategy IDE <Code className="ml-2 h-5 w-5" />
+              <Link href="/dashboard/vektor" className="w-full sm:w-auto">
+                <Button size="lg" className="w-full h-12 px-8 font-semibold shadow-lg bg-orange-600 hover:bg-orange-700 text-white hover:scale-105 transition-transform text-md">
+                   Vektor Terminal <Terminal className="ml-2 h-5 w-5" />
                 </Button>
               </Link>
-              <Link href="/dashboard/edge" className="w-full sm:w-auto">
-                <Button size="lg" variant="secondary" className="w-full h-12 px-8 font-semibold hover:scale-105 transition-transform border border-border shadow-sm text-md">
-                  Deploy Edge Scanner <TrendingUp className="ml-2 h-5 w-5 text-purple-500" />
+              <Link href="/ide" className="w-full sm:w-auto">
+                <Button size="lg" variant="outline" className="w-full h-12 px-8 font-semibold border-border hover:scale-105 transition-transform text-md">
+                  Launch Strategy IDE <Code className="ml-2 h-5 w-5" />
                 </Button>
               </Link>
             </motion.div>

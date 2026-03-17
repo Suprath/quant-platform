@@ -141,6 +141,14 @@ async def get_top_performers(limit: int = 10) -> str:
 
 @mcp.tool()
 async def get_kira_confidence(symbol: str) -> str:
+    """Get the noise filter confidence score for a symbol (0-100)."""
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{API_BASE_URL}/kira/noise-filter/confidence/{symbol}")
+            response.raise_for_status()
+            return json.dumps(response.json(), indent=2)
+        except Exception as e:
+            return f"Error getting confidence: {str(e)}"
 
 @mcp.tool()
 async def get_kira_sizer_health() -> str:

@@ -204,8 +204,8 @@ export default function BacktestResultPage() {
         );
     }
 
-    const formatCurrency = (v: number) => `₹${Math.abs(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
-    const formatPct = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+    const formatCurrency = (amount: number) => `₹${Math.abs(amount).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+    const formatPct = (percent: number) => `${percent >= 0 ? '+' : ''}${percent.toFixed(2)}%`;
 
     const formatSymbol = (symbolInput: string, nameInput: string) => {
         const rawSymbol = symbolInput ? symbolInput.replace(/^(NSE_FO|NSE_EQ|BSE_EQ|BFO)\|/, '') : '';
@@ -446,9 +446,13 @@ export default function BacktestResultPage() {
                             <Tooltip
                                 contentStyle={{ backgroundColor: '#111', border: '1px solid #333', borderRadius: '8px' }}
                                 itemStyle={{ color: '#fff' }}
-                                formatter={(value: number | string | undefined) => {
-                                    const num = typeof value === 'number' ? value : 0;
-                                    return [`₹${num.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`, 'Equity'];
+                                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                                formatter={(value: any) => {
+                                    const num = Number(value) || 0;
+                                    return [
+                                        `₹${num.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`,
+                                        'Equity'
+                                    ] as [string, string];
                                 }}
                             />
                             <Area

@@ -12,6 +12,7 @@ from quant_sdk.algorithm import Resolution, QCAlgorithm
 from paper_exchange import PaperExchange
 from schema import ensure_schema
 from db import get_db_connection, release_db_connection, DB_CONF
+from kira_shared.kafka.schemas import KafkaEnvelope
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
@@ -709,8 +710,16 @@ class AlgorithmEngine:
                     logger.error(f"Kafka Error: {msg.error()}")
                     continue
 
-                data = json.loads(msg.value().decode('utf-8'))
-                self.ProcessTick(data)
+                try:
+                    envelope = KafkaEnvelope.from_bytes(msg.value())
+                    self.ProcessTick(envelope.payload)
+                except Exception as e:
+                    # Fallback for old bare JSON if necessary, or just log error
+                    try:
+                        data = json.loads(msg.value().decode('utf-8'))
+                        self.ProcessTick(data)
+                    except:
+                        logger.error(f"Failed to parse Kafka message: {e}")
 
         except KeyboardInterrupt:
             logger.info("🛑 Stopping Engine...")

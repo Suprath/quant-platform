@@ -1,4 +1,14 @@
 services:
+  # SHARED BASE IMAGE (Builds once, used by all Python services)
+  base-python:
+    build:
+      context: ..
+      dockerfile: Dockerfile.base
+    image: kira-python-base
+    # This service doesn't need to run, it just facilitates the build
+    entrypoint: ["echo", "Base image built"]
+    restart: "no"
+
   # LAYER 2: MESSAGE BUS (The "Heart" of the system)
   kafka:
     image: apache/kafka:latest
@@ -31,8 +41,10 @@ services:
       - kafka # REMOVED: condition: service_healthy
     environment:
       - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app:/kira-shared/src
     volumes:
       - ../services/ingestion:/app
+      - ../kira-shared:/kira-shared
     env_file:
       - ../.env
     restart: always
@@ -89,7 +101,9 @@ services:
     restart: always
 
   persistor:
-    build: ../services/persistor
+    build:
+      context: ..
+      dockerfile: services/persistor/Dockerfile
     container_name: market_persistor
     depends_on:
       - kafka
@@ -109,14 +123,18 @@ services:
       - kafka
     environment:
       - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app:/kira-shared/src
     env_file:
       - ../.env
     volumes:
       - ../services/feature_engine:/app
+      - ../kira-shared:/kira-shared
     restart: always
 
   strategy_runtime:
-    build: ../services/strategy_runtime
+    build:
+      context: ..
+      dockerfile: services/strategy_runtime/Dockerfile
     container_name: strategy_runtime
     depends_on:
       - kafka
@@ -147,11 +165,16 @@ services:
           memory: 2G
 
   api_gateway:
-    build: ../services/api_gateway
+    build:
+      context: ..
+      dockerfile: services/api_gateway/Dockerfile
     container_name: api_gateway
     volumes:
       - ../services/api_gateway:/app
       - ../.env:/app/.env:ro
+      - ../kira-shared:/kira-shared
+    environment:
+      - PYTHONPATH=/app:/kira-shared/src
     depends_on:
       - postgres
       - questdb
@@ -160,7 +183,9 @@ services:
     restart: always
 
   backfiller:
-    build: ../services/backfiller
+    build:
+      context: ..
+      dockerfile: services/backfiller/Dockerfile
     container_name: data_backfiller
     depends_on:
       - questdb
@@ -171,7 +196,9 @@ services:
       - "8001:8001"
 
   edge_detector:
-    build: ../services/edge_detector
+    build:
+      context: ..
+      dockerfile: services/edge_detector/Dockerfile
     container_name: edge_detector
     depends_on:
       - questdb
@@ -184,19 +211,28 @@ services:
     restart: always
 
   scanner:
-    build: ../services/scanner
+    build:
+      context: ..
+      dockerfile: services/scanner/Dockerfile
     container_name: market_scanner
+    command: python main.py --live
     depends_on:
       - kafka
       - postgres
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app:/kira-shared/src
     env_file:
       - ../.env
     volumes:
       - ../services/scanner:/app
+      - ../kira-shared:/kira-shared
     restart: always
 
   optimizer:
-    build: ../services/optimizer
+    build:
+      context: ..
+      dockerfile: services/optimizer/Dockerfile
     container_name: param_optimizer
     depends_on:
       - postgres
@@ -211,7 +247,9 @@ services:
     profiles: [ "optimize" ] # Only start when explicitly requested
 
   doctor:
-    build: ../services/system_doctor
+    build:
+      context: ..
+      dockerfile: services/system_doctor/Dockerfile
     container_name: system_doctor
     depends_on:
       - postgres
@@ -220,7 +258,9 @@ services:
       - api_gateway
 
   historical_replayer:
-    build: ../services/historical_replayer
+    build:
+      context: ..
+      dockerfile: services/historical_replayer/Dockerfile
     container_name: historical_replayer
     depends_on:
       - kafka
@@ -229,6 +269,9 @@ services:
       - ../.env
     volumes:
       - ../services/historical_replayer:/app
+      - ../kira-shared:/kira-shared
+    environment:
+      - PYTHONPATH=/app:/kira-shared/src
     profiles: [ "replay" ] # Only start when explicitly requested
 
   frontend:
@@ -244,7 +287,9 @@ services:
     restart: always
 
   mcp_server:
-    build: ../services/mcp_server
+    build:
+      context: ..
+      dockerfile: services/mcp_server/Dockerfile
     container_name: mcp_server
     depends_on:
       - api_gateway
@@ -252,9 +297,11 @@ services:
       - "8005:8080"
     volumes:
       - ../services/mcp_server:/app
+      - ../kira-shared:/kira-shared
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app:/kira-shared/src
     restart: always
 
   noise_filter:
@@ -270,6 +317,10 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
       - REDIS_HOST=redis_state
+      - PYTHONPATH=/app:/kira-shared/src
+    volumes:
+      - ../services/noise_filter:/app
+      - ../kira-shared:/kira-shared
     restart: always
 
   position_sizer:
@@ -285,6 +336,10 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
       - REDIS_HOST=redis_state
+      - PYTHONPATH=/app:/kira-shared/src
+    volumes:
+      - ../services/position_sizer:/app
+      - ../kira-shared:/kira-shared
     restart: always
 
   kira_til:
@@ -302,6 +357,11 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
       - REDIS_HOST=redis_state
       - POSTGRES_HOST=postgres_metadata
+      - TIL_BACKTEST_MODE=false
+      - PYTHONPATH=/app:/kira-shared/src
+    volumes:
+      - ../services/kira_til:/app
+      - ../kira-shared:/kira-shared
     ports:
       - "8003:8000"
     restart: always

@@ -13,4 +13,12 @@ setup(
     version="1.0.0",
     ext_modules=ext_modules,
     cmdclass={"build_ext": build_ext},
+    install_requires=[
+        "fastapi",
+        "uvicorn",
+        "pydantic",
+        "aiokafka",
+        "redis",
+        "aiohttp"
+    ],
 )

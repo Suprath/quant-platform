@@ -10,6 +10,7 @@ from typing import Optional, Dict
 import json
 from datetime import datetime, timedelta
 from confluent_kafka import Producer
+from kira_shared.kafka.schemas import KafkaEnvelope
 load_dotenv()
 
 app = FastAPI(
@@ -37,6 +38,12 @@ import time
 
 # Kafka Producer for dynamic subscriptions
 producer = Producer({'bootstrap.servers': os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka_bus:9092')})
+
+# Global Requests Session for pooling
+_http_session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=100)
+_http_session.mount("http://", adapter)
+_http_session.mount("https://", adapter)
 
 @app.on_event("startup")
 def startup_db_pools():
@@ -588,7 +595,12 @@ def sync_option_data(
         if tokens:
             # 3. Inform Ingestor via Kafka
             msg = {"method": "sub", "mode": "full", "instrumentKeys": tokens}
-            producer.produce('ingestor.subscriptions', key=underlying, value=json.dumps(msg))
+            envelope = KafkaEnvelope(
+                event_type="ingestor.subscription",
+                source="api_gateway",
+                payload=msg
+            )
+            producer.produce('ingestor.subscriptions', key=underlying, value=envelope.to_bytes())
             producer.flush()
             
         return {
@@ -906,27 +918,50 @@ class BacktestRequest(BaseModel):
     initial_cash: float
     strategy_name: str = "CustomStrategy"
     project_files: Optional[Dict[str, str]] = None
+    timeframe: Optional[str] = "5m"
     speed: Optional[str] = "fast"
     trading_mode: str = "MIS" # MIS or CNC
 
 @app.post("/api/v1/backtest/run")
 def run_backtest(request: BacktestRequest):
-    """Trigger a backtest on the Strategy Runtime"""
+    """Trigger a backtest. Routes to kira_til for integrated KIRA strategies."""
     try:
-        # Forward to Strategy Runtime Service
-        # Assuming strategy_runtime is exposing port 8000
-        # Check if code is provided to execute or if it's a pre-loaded strategy
+        # Check if it's a KIRA strategy or if we should default to kira_til
+        target_url = "http://kira_til:8000/api/v1/til/backtest"
+        
+        # Map Singular symbol to Plural symbols list for kira_til
+        req_data = request.dict()
+        if "symbol" in req_data and "symbols" not in req_data:
+            req_data["symbols"] = [req_data["symbol"]]
+        
+        # Map initial_cash to initial_capital if needed
+        if "initial_cash" in req_data:
+            req_data["initial_capital"] = req_data["initial_cash"]
+
+        # If strategy_name suggests traditional, we could route elsewhere, 
+        # but for now, we point to the optimized kira_til engine.
         response = requests.post(
-            "http://strategy_runtime:8000/backtest",
-            json=request.dict(),
+            target_url,
+            json=req_data,
             timeout=10 
         )
         if response.status_code == 200:
              return response.json()
         else:
-             raise HTTPException(status_code=response.status_code, detail=response.text)
+             # Fallback to strategy_runtime if kira_til fails or doesn't handle this type
+             response = requests.post(
+                "http://strategy_runtime:8000/backtest",
+                json=request.dict(),
+                timeout=10
+             )
+             return response.json()
     except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+        # Try strategy_runtime fallback on connection error too
+        try:
+            response = requests.post("http://strategy_runtime:8000/backtest", json=request.dict(), timeout=10)
+            return response.json()
+        except:
+            raise HTTPException(status_code=503, detail=f"Backtest Services Unavailable: {e}")
 
 @app.post("/api/v1/backtest/stop/{run_id}")
 def stop_backtest(run_id: str):
@@ -971,15 +1006,14 @@ def get_backtest_stats(run_id: str, conn = Depends(get_pg_conn)):
             SELECT stats_json FROM backtest_results WHERE run_id = %s;
         """, (run_id,))
         row = cur.fetchone()
-        if row and row[0]:
-            stats = row[0]
-            # Only return precomputed stats if they contain full metrics.
-            # cagr is None on old broken rows — those should fall through to fallback.
-            has_full_stats = (
-                stats.get('cagr') is not None and
-                stats.get('sharpe_ratio') is not None
-            )
-            if has_full_stats:
+            # Fallback to local computation if stats are missing or incomplete
+            # But if we have net_profit, it's a TIL run, so we can use it.
+            if stats.get('net_profit') is not None:
+                # Add camelCase mapping for the frontend runner
+                stats['sharpeRatio'] = stats.get('sharpe_ratio', 0.0)
+                stats['totalTrades'] = stats.get('total_trades', 0)
+                stats['winRate'] = stats.get('win_rate', "0.0%")
+                stats['maxDrawdown'] = stats.get('max_drawdown', "0.0%")
                 return stats
 
         # ── Fallback: compute stats from trade data directly ──
@@ -1079,31 +1113,63 @@ def get_backtest_universe(run_id: str, conn = Depends(get_pg_conn)):
 
 @app.get("/api/v1/backtest/logs/{run_id}")
 def get_backtest_logs(run_id: str):
-    """Fetch logs from Strategy Runtime"""
+    """Fetch logs from TIL engine or strategy runtime."""
     try:
-        response = requests.get(
-            f"http://strategy_runtime:8000/backtest/logs/{run_id}",
-            timeout=5
-        )
+        # Try kira_til first (new integrated engine)
+        response = requests.get(f"http://kira_til:8000/api/v1/backtest/logs/{run_id}", timeout=5)
+        if response.status_code == 200:
+            return response.json()
+            
+        # Fallback to strategy_runtime
+        response = requests.get(f"http://strategy_runtime:8000/backtest/logs/{run_id}", timeout=5)
         if response.status_code == 200:
              return response.json()
         raise HTTPException(status_code=response.status_code, detail=response.text)
     except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+        raise HTTPException(status_code=503, detail=f"Backtest Log Service Unavailable: {e}")
 
 @app.get("/api/v1/backtest/status/{run_id}")
 def get_backtest_status(run_id: str):
-    """Proxy status request to Strategy Runtime"""
+    """Proxy status request to TIL engine or strategy runtime."""
     try:
-        response = requests.get(
-            f"http://strategy_runtime:8000/backtest/status/{run_id}",
-            timeout=5
-        )
+        response = requests.get(f"http://kira_til:8000/api/v1/til/backtest/status", timeout=5)
+        # Note: kira_til's status is currently global/latest. 
+        # If run_id matches current, return it.
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("run_id") == run_id or data.get("running"):
+                return data
+
+        response = requests.get(f"http://strategy_runtime:8000/backtest/status/{run_id}", timeout=5)
         if response.status_code == 200:
              return response.json()
         raise HTTPException(status_code=response.status_code, detail=response.text)
     except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"Strategy Runtime Unavailable: {e}")
+        raise HTTPException(status_code=503, detail=f"Backtest Status Service Unavailable: {e}")
+
+@app.get("/api/v1/backtest/performance/snapshots/{run_id}")
+def get_backtest_performance_snapshots(run_id: str, conn = Depends(get_pg_conn)):
+    """High-fidelity equity and heat snapshots for the chart."""
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT snapshot_time, heat_pct, factor_banking, factor_it, factor_energy, factor_fmcg, full_json
+            FROM portfolio_snapshots
+            WHERE run_id = %s
+            ORDER BY snapshot_time ASC;
+        """, (run_id,))
+        rows = cur.fetchall()
+        return [
+            {
+                "time": r[0],
+                "heat": r[1],
+                "exposure": {"BANKING": r[2], "IT": r[3], "ENERGY": r[4], "FMCG": r[5]},
+                "equity": json.loads(r[6]).get("total_equity") if r[6] else 0
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- BACKTEST HISTORY ---
 
@@ -1415,26 +1481,71 @@ def process_til_features(request: dict):
             return response.json()
         raise HTTPException(status_code=response.status_code, detail=response.text)
     except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"TIL Integrated Pipeline Unavailable: {e}")
-
-@app.post("/api/v1/kira/til/validate")
+        raise HTTPException(status_code=503, detail=f"TIL Integrated Pipeline e Unavailable: {e}")@app.post("/api/v1/kira/til/validate")
 def validate_til_portfolio(request: dict):
     """Proxy to KIRA TIL Portfolio Validation"""
     try:
-        response = requests.post("http://kira_til:8000/portfolio/validate", json=request, timeout=2)
+        response = _http_session.post("http://kira_til:8000/portfolio/validate", json=request, timeout=2)
         if response.status_code == 200:
             return response.json()
         raise HTTPException(status_code=response.status_code, detail=response.text)
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         raise HTTPException(status_code=503, detail=f"TIL Portfolio Engine Unavailable: {e}")
+
+@app.get("/api/v1/til/portfolio")
+def get_til_portfolio_v1():
+    """Integrated Portfolio State V1"""
+    try:
+        response = _http_session.get("http://kira_til:8000/api/v1/til/portfolio", timeout=5)
+        if response.status_code == 200:
+            return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"TIL Unavailable: {e}")
+
+@app.get("/api/v1/til/performance")
+def get_til_performance_v1(run_id: Optional[str] = None):
+    """Integrated Performance Metrics V1"""
+    try:
+        params = {}
+        if run_id:
+            params["run_id"] = run_id
+        response = _http_session.get("http://kira_til:8000/api/v1/til/performance", params=params, timeout=5)
+        if response.status_code == 200:
+             return response.json()
+        return {"points": [], "summary": {}}
+    except Exception as e:
+        return {"points": [], "summary": {}}
+
+@app.post("/api/v1/til/backtest")
+def trigger_til_backtest_v1(request: dict):
+    """Trigger TIL Backtest Simulation"""
+    try:
+        response = _http_session.post("http://kira_til:8000/api/v1/til/backtest", json=request, timeout=5)
+        if response.status_code == 200:
+            return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"TIL Unavailable: {e}")
+
+@app.get("/api/v1/til/backtest/status")
+def get_til_backtest_status_v1():
+    """Proxy TIL Backtest Status"""
+    try:
+        response = _http_session.get("http://kira_til:8000/api/v1/til/backtest/status", timeout=5)
+        if response.status_code == 200:
+            return response.json()
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"TIL Status Unavailable: {e}")
 
 @app.get("/api/v1/kira/til/portfolio/state")
 def get_til_portfolio_state():
     """Proxy to KIRA TIL Portfolio State"""
     try:
-        response = requests.get("http://kira_til:8000/portfolio/state", timeout=2)
+        response = _http_session.get("http://kira_til:8000/api/v1/til/portfolio", timeout=2)
         if response.status_code == 200:
             return response.json()
         raise HTTPException(status_code=response.status_code, detail=response.text)
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         raise HTTPException(status_code=503, detail=f"TIL Portfolio Engine Unavailable: {e}")

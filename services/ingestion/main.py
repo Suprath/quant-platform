@@ -8,6 +8,7 @@ import re
 from confluent_kafka import Producer, Consumer
 from dotenv import load_dotenv
 from kira_shared import timesync
+from kira_shared.kafka.schemas import KafkaEnvelope
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -304,7 +305,13 @@ async def connect_upstox_v3():
                                         logger.info(f"📈 TICK {key}: {tick['ltp']} | Depth: {len(tick['depth']['buy'])} levels")
                                     
                                     debug_count += 1
-                                    producer.produce('market.equity.ticks', key=key, value=json.dumps(tick))
+                                    
+                                    envelope = KafkaEnvelope(
+                                        event_type="market.tick",
+                                        source="upstox_ingestor",
+                                        payload=tick
+                                    )
+                                    producer.produce('market.equity.ticks', key=key, value=envelope.to_bytes())
                                     
                                     # If Greeks were updated, produce to greeks topic ONLY for derivatives
                                     DERIVATIVE_PREFIXES = ('NSE_FO|', 'BSE_FO|', 'NCD_FO|', 'MCX_FO|')
@@ -322,7 +329,12 @@ async def connect_upstox_v3():
                                         if abs(greek_tick['delta']) > 0 or abs(greek_tick['theta']) > 0 or abs(greek_tick['gamma']) > 0:
                                             logger.info(f"🔥 [GREEK_LIVE] {key}: D={greek_tick['delta']:.3f}, G={greek_tick['gamma']:.5f}, T={greek_tick['theta']:.3f}")
 
-                                        producer.produce('market.option.greeks', key=key, value=json.dumps(greek_tick))
+                                        envelope = KafkaEnvelope(
+                                            event_type="market.greeks",
+                                            source="upstox_ingestor",
+                                            payload=greek_tick
+                                        )
+                                        producer.produce('market.option.greeks', key=key, value=envelope.to_bytes())
                                         # Clear greeks state after sending to avoid duplicate writes if no change
                                         del state['greeks']
                          

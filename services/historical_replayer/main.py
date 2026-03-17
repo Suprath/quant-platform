@@ -7,6 +7,7 @@ from datetime import datetime
 from confluent_kafka import Producer
 from dotenv import load_dotenv
 import argparse
+from kira_shared.kafka.schemas import KafkaEnvelope
 
 load_dotenv()
 
@@ -134,7 +135,12 @@ def replay_data(symbol, start_date, end_date, speed_multiplier=1, timeframe='1m'
         
         for tick in ticks:
             tick['symbol'] = symbol
-            producer.produce(topic_name, key=symbol, value=json.dumps(tick))
+            envelope = KafkaEnvelope(
+                event_type="market.tick",
+                source="historical_replayer",
+                payload=tick
+            )
+            producer.produce(topic_name, key=symbol, value=envelope.to_bytes())
             tick_count += 1
             
             if tick_count % 100 == 0:

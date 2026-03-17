@@ -14,6 +14,7 @@ class PriceBar(BaseModel):
 class FeatureVector(BaseModel):
     symbol:             str
     timestamp:          datetime
+    close:              float
     adx:                float
     adx_slope_5d:       float
     hurst:              float
