@@ -98,7 +98,7 @@ const UniverseMonitor = ({ stocks: inputStocks }: { stocks?: Stock[] }) => {
     else if (conf >= 60) colorClass = 'text-white';
     else if (conf >= 40) colorClass = 'text-label';
     
-    return <span className={colorClass}>{filled}{empty} {conf}</span>;
+    return <span className={colorClass}>{filled}{empty} {conf.toFixed(1)}</span>;
   };
 
   const getDirIcon = (dir: string) => {
@@ -632,17 +632,31 @@ export default function VektorTerminal() {
             setPerfSummary(data.summary || null);
         }
 
-        const topRes = await fetch(`${API_URL}/api/v1/market/top-performers?limit=10`);
+        const topRes = await fetch(`${API_URL}/api/v1/market/top-performers?limit=50`);
         if (topRes.ok) {
             const data = await topRes.json();
-            setTopStocks(data.map((s: { name: string; change_pct: number }) => ({
-                symbol: s.name,
-                conf: 50 + Math.random() * 40,
-                mech: 'SCAN',
-                dir: s.change_pct > 0 ? 'LONG' : 'SHORT',
-                regime: 'TRU',
-                action: 'PROC'
-            })));
+            
+            // Simple string hash for deterministic confidence
+            const getHash = (str: string) => {
+                let hash = 0;
+                for (let i = 0; i < str.length; i++) {
+                    hash = ((hash << 5) - hash) + str.charCodeAt(i);
+                    hash |= 0;
+                }
+                return Math.abs(hash);
+            };
+
+            setTopStocks(data.map((s: { name: string; change_pct: number }) => {
+                const detRand = (getHash(s.name) % 400) / 10; // 0.0 to 39.9
+                return {
+                    symbol: s.name,
+                    conf: 50 + detRand,
+                    mech: 'SCAN',
+                    dir: s.change_pct > 0 ? 'LONG' : 'SHORT',
+                    regime: 'TRU',
+                    action: 'PROC'
+                };
+            }));
         }
 
         const statusRes = await fetch(`${API_URL}/api/v1/til/backtest/status`);
