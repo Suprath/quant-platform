@@ -616,6 +616,11 @@ def run(symbol, start, end, initial_cash, speed="fast"):
     start_clean = start.split('T')[0] if 'T' in start else start
     end_clean = end.split('T')[0] if 'T' in end else end
     
+    if start_clean > end_clean:
+        logger.warning(f"🔄 Swapping start/end dates: {start_clean} > {end_clean}")
+        start_clean, end_clean = end_clean, start_clean
+        start, end = end, start
+    
     # ===== STEP 1: Initialize Engine & Load Strategy =====
     pg_conn = get_db_connection()
     try:

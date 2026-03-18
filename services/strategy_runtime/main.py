@@ -8,7 +8,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict
 from engine import AlgorithmEngine
-from db import get_db_connection
+from db import get_db_connection, release_db_connection
 import glob
 import shutil
 import json
@@ -701,7 +701,52 @@ def _compute_and_save_stats(run_id: str):
         rows = cur.fetchall()
 
         if not rows:
-            logger.warning(f"⚠️ No trades found for {run_id}, cannot compute stats.")
+            logger.warning(f"⚠️ No trades found for {run_id}, cannot compute stats. Saving zero-stats.")
+            
+            # Step 1: Ensure table exists
+            ddl_conn = get_db_connection()
+            try:
+                ddl_conn.autocommit = True
+                ddl_cur = ddl_conn.cursor()
+                ddl_cur.execute("""
+                    CREATE TABLE IF NOT EXISTS backtest_results (
+                        run_id UUID PRIMARY KEY,
+                        sharpe_ratio FLOAT,
+                        max_drawdown FLOAT,
+                        win_rate FLOAT,
+                        total_return FLOAT,
+                        stats_json JSONB,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """)
+            finally:
+                release_db_connection(ddl_conn)
+
+            # Step 2: Insert zeroed stats
+            zero_stats = {
+                "total_return": 0.0,
+                "max_drawdown": 0.0,
+                "sharpe_ratio": 0.0,
+                "win_rate": 0,
+                "gross_profit": 0.0,
+                "gross_loss": 0.0,
+                "net_profit": 0.0,
+                "total_trades": 0,
+                "expectancy": 0.0,
+                "profit_factor": 0.0,
+                "cagr": 0.0
+            }
+            cur.execute("""
+                INSERT INTO backtest_results (run_id, sharpe_ratio, max_drawdown, win_rate, total_return, stats_json)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (run_id) DO UPDATE SET
+                    sharpe_ratio = EXCLUDED.sharpe_ratio,
+                    max_drawdown = EXCLUDED.max_drawdown,
+                    win_rate     = EXCLUDED.win_rate,
+                    total_return = EXCLUDED.total_return,
+                    stats_json   = EXCLUDED.stats_json
+            """, (run_id, 0.0, 0.0, 0.0, 0.0, json.dumps(zero_stats)))
+            conn.commit()
             return
 
         def _to_dt(val) -> datetime:
@@ -878,7 +923,7 @@ def stop_backtest(run_id: str):
                 process.wait(timeout=3)
             except:
                 process.kill()
-            del active_processes[run_id]
+            active_processes.pop(run_id, None)
             logger.info(f"🛑 Stopped backtest run {run_id} by user request.")
             
             # Append to log

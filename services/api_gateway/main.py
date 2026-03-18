@@ -1006,8 +1006,10 @@ def get_backtest_stats(run_id: str, conn = Depends(get_pg_conn)):
             SELECT stats_json FROM backtest_results WHERE run_id = %s;
         """, (run_id,))
         row = cur.fetchone()
-            # Fallback to local computation if stats are missing or incomplete
-            # But if we have net_profit, it's a TIL run, so we can use it.
+        if row:
+            stats = row[0]
+            if isinstance(stats, str):
+                stats = json.loads(stats)
             if stats.get('net_profit') is not None:
                 # Add camelCase mapping for the frontend runner
                 stats['sharpeRatio'] = stats.get('sharpe_ratio', 0.0)
