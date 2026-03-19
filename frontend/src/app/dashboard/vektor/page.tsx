@@ -19,17 +19,7 @@ interface NFState {
   trend: 'UP_UP' | 'UP' | 'STABLE' | 'DOWN' | 'DOWN_DOWN';
 }
 
-interface Position {
-  symbol: string;
-  mech: string;
-  entry: number;
-  curr: number;
-  pnl: number;
-  r: number;
-  mae: number;
-  days: number;
-  stat: 'OK' | 'INV' | 'EXIT';
-}
+
 
 interface FunnelStage {
   name: string;
@@ -64,6 +54,12 @@ interface PerformanceSummary {
   current_equity: number;
   win_rate: number;
   profit_factor: number;
+  net_profit?: number;
+  total_trades?: number;
+  sharpe_ratio?: number;
+  cagr?: number;
+  expectancy?: number;
+  brokerage?: number;
 }
 
 interface PerformanceData {
@@ -375,12 +371,6 @@ const SignalPipelineFunnel = () => {
 };
 
 const OpenPositions = ({ positions }: { positions?: BackendPosition[] }) => {
-  const [mockPositions] = useState<Position[]>([
-    { symbol: 'HDFCB', mech: 'ACCUM', entry: 1842.00, curr: 1891.50, pnl: 2.7, r: 0.8, mae: 0.3, days: 4, stat: 'OK' },
-    { symbol: 'AXISNK', mech: 'SQUZE', entry: 1124.00, curr: 1156.20, pnl: 2.9, r: 1.2, mae: 0.1, days: 2, stat: 'OK' },
-    { symbol: 'TCS',    mech: 'CASC',  entry: 3821.00, curr: 3798.40, pnl: -0.6, r: -0.3, mae: 0.6, days: 1, stat: 'INV' },
-  ]);
-
   const displayPositions = positions && positions.length > 0 ? positions.map(p => ({
     symbol: p.symbol,
     mech: p.mechanism || 'TIL',
@@ -391,7 +381,7 @@ const OpenPositions = ({ positions }: { positions?: BackendPosition[] }) => {
     mae: 0,
     days: 0,
     stat: 'OK'
-  })) : mockPositions;
+  })) : [];
 
   return (
     <div className="terminal-panel h-[340px]">
@@ -431,7 +421,7 @@ const OpenPositions = ({ positions }: { positions?: BackendPosition[] }) => {
         </table>
       </div>
       <div className="px-2 py-1 text-[10px] text-dim border-t border-primary">
-        TOTAL RISK: ₹12,400 (0.58%)  │  SECTOR: BNK 48% IT 31% ENR 21%
+        {displayPositions.length > 0 ? `TOTAL POSITIONS: ${displayPositions.length}` : 'NO OPEN POSITIONS'}
       </div>
     </div>
   );
@@ -441,38 +431,58 @@ const EquityCurve = ({ data }: { data?: PerformancePoint[] }) => {
     const hasData = data && data.length > 1;
 
     // Convert data to points for SVG polylines: x (0-100), y (0-50)
-    // Simplified mapping for the SVG viz
-    const points = hasData ? data.map((pt, i) => {
-        const x = (i / (data.length - 1)) * 100;
-        // Map equity to 0-50 (simplified)
-        const minEquity = Math.min(...data.map(d => d.equity));
-        const maxEquity = Math.max(...data.map(d => d.equity));
-        const range = maxEquity - minEquity || 1;
-        const y = 50 - ((pt.equity - minEquity) / range * 40 + 5);
-        return `${x},${y}`;
-    }).join(' ') : "0,48 10,42 20,45 30,35 40,38 50,30 60,32 70,20 80,25 90,15 100,5";
+    let points = "";
+    if (hasData) {
+        points = data.map((pt, i) => {
+            const x = (i / (data.length - 1)) * 100;
+            const minEquity = Math.min(...data.map(d => d.equity));
+            const maxEquity = Math.max(...data.map(d => d.equity));
+            const range = maxEquity - minEquity || 1;
+            const y = 50 - ((pt.equity - minEquity) / range * 40 + 5);
+            return `${x},${y}`;
+        }).join(' ');
+    }
+
+    const pathD = hasData ? `M 0 50 L ${points} L 100 50 Z` : "";
 
     return (
         <div className="terminal-panel h-64">
-            <PanelHeader title="EQUITY CURVE" right={`LAST: ₹${hasData ? data[data.length-1].equity.toLocaleString() : '21,40,234'}`} />
+            <PanelHeader title="EQUITY CURVE" right={`LAST: ₹${hasData ? data[data.length-1].equity.toLocaleString() : '--'}`} />
             <div className="panel-content flex items-center justify-center">
-                <div className="w-full h-full relative border-l border-b border-[#333] m-4">
-                    <svg className="w-full h-full" viewBox="0 0 100 50" preserveAspectRatio="none">
-                        <polyline
-                            fill="none"
-                            stroke="var(--text-positive)"
-                            strokeWidth="0.5"
-                            points={points}
-                        />
-                        <line x1="0" y1="40" x2="100" y2="40" stroke="#111" strokeWidth="0.2" />
-                        <line x1="0" y1="30" x2="100" y2="30" stroke="#111" strokeWidth="0.2" />
-                        <line x1="0" y1="20" x2="100" y2="20" stroke="#111" strokeWidth="0.2" />
-                    </svg>
-                    <div className="absolute bottom-[-15px] left-0 text-[8px] text-dim">JAN</div>
-                    <div className="absolute bottom-[-15px] left-1/4 text-[8px] text-dim">FEB</div>
-                    <div className="absolute bottom-[-15px] left-1/2 text-[8px] text-dim">MAR</div>
-                    <div className="absolute bottom-[-15px] left-3/4 text-[8px] text-dim">APR</div>
-                </div>
+                {!hasData ? (
+                    <div className="text-center text-dim text-[11px]">
+                        <p className="mb-2">NO EQUITY DATA AVAILABLE</p>
+                        <p className="text-[9px]">Run a backtest to populate the equity curve.</p>
+                    </div>
+                ) : (
+                    <div className="w-full h-full relative border-l border-b border-[#333] m-4">
+                        <svg className="w-full h-full" viewBox="0 0 100 50" preserveAspectRatio="none">
+                            <defs>
+                                <linearGradient id="equityGrad" x1="0" x2="0" y1="0" y2="1">
+                                    <stop offset="0%" stopColor="var(--text-positive)" stopOpacity="0.3" />
+                                    <stop offset="100%" stopColor="var(--text-positive)" stopOpacity="0.0" />
+                                </linearGradient>
+                            </defs>
+                            <path d={pathD} fill="url(#equityGrad)" />
+                            <polyline
+                                fill="none"
+                                stroke="var(--text-positive)"
+                                strokeWidth="0.5"
+                                points={points}
+                                strokeLinejoin="round"
+                                strokeLinecap="round"
+                            />
+                            <line x1="0" y1="40" x2="100" y2="40" stroke="#222" strokeWidth="0.2" strokeDasharray="1,1" />
+                            <line x1="0" y1="30" x2="100" y2="30" stroke="#222" strokeWidth="0.2" strokeDasharray="1,1" />
+                            <line x1="0" y1="20" x2="100" y2="20" stroke="#222" strokeWidth="0.2" strokeDasharray="1,1" />
+                            <line x1="0" y1="10" x2="100" y2="10" stroke="#222" strokeWidth="0.2" strokeDasharray="1,1" />
+                        </svg>
+                        <div className="absolute bottom-[-15px] left-0 text-[8px] text-dim">START</div>
+                        <div className="absolute bottom-[-15px] left-1/4 text-[8px] text-dim"></div>
+                        <div className="absolute bottom-[-15px] left-1/2 text-[8px] text-dim">MID</div>
+                        <div className="absolute bottom-[-15px] right-0 text-[8px] text-dim">END</div>
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -481,12 +491,18 @@ const EquityCurve = ({ data }: { data?: PerformancePoint[] }) => {
 const PerformanceSummaryPanel = ({ summary }: { summary?: PerformanceSummary }) => {
     if (!summary) return null;
     return (
-        <div className="grid grid-cols-4 gap-2 mb-1">
+        <div className="grid grid-cols-5 gap-2 mb-2">
             {[
                 { label: 'TOTAL P&L', value: `${summary.total_pnl_pct}%`, color: summary.total_pnl_pct >= 0 ? 'text-positive' : 'text-negative' },
+                { label: 'NET PROFIT', value: `₹${summary.net_profit?.toLocaleString() || 0}`, color: (summary.net_profit || 0) >= 0 ? 'text-positive' : 'text-negative' },
+                { label: 'CALC BROKERAGE', value: `₹${summary.brokerage?.toLocaleString() || 0}`, color: 'text-warning' },
+                { label: 'SHARPE RATIO', value: summary.sharpe_ratio?.toFixed(2) || '0.00', color: (summary.sharpe_ratio || 0) >= 1 ? 'text-positive' : 'text-white' },
                 { label: 'MAX DRAWDOWN', value: `${summary.max_drawdown_pct}%`, color: 'text-negative' },
-                { label: 'WIN RATE', value: `${summary.win_rate}%`, color: 'text-info' },
+                { label: 'CAGR', value: `${summary.cagr || 0}%`, color: 'text-info' },
+                { label: 'WIN RATE', value: `${summary.win_rate}%`, color: 'text-white' },
+                { label: 'EXPECTANCY', value: `₹${summary.expectancy?.toLocaleString() || 0}`, color: 'text-white' },
                 { label: 'PROFIT FACTOR', value: summary.profit_factor, color: 'text-white' },
+                { label: 'TOTAL TRADES', value: summary.total_trades || 0, color: 'text-white' },
             ].map((stat, i) => (
                 <div key={i} className="terminal-panel p-2 flex flex-col items-center justify-center">
                     <span className="text-[9px] text-label">{stat.label}</span>
@@ -500,27 +516,11 @@ const PerformanceSummaryPanel = ({ summary }: { summary?: PerformanceSummary }) 
 const MechanismPerformance = () => {
     return (
         <div className="terminal-panel h-64">
-             <PanelHeader title="MECHANISM PERFORMANCE" right="30D WINDOW" />
-             <div className="panel-content px-2 py-2">
-                {[
-                    { name: 'ACCUM', win: 65, r: 1.84 },
-                    { name: 'MOMEN', win: 58, r: 1.42 },
-                    { name: 'SQUZE', win: 42, r: 2.15 },
-                    { name: 'CASC',  win: 71, r: 0.95 },
-                ].map((m, i) => (
-                    <div key={i} className="mb-3">
-                        <div className="flex justify-between text-[11px] mb-1">
-                            <span className="text-info">{m.name}</span>
-                            <span className="text-white">{m.win}% <span className="text-dim">|</span> {m.r}R</span>
-                        </div>
-                        <div className="w-full h-1 bg-[#111]">
-                            <div className="h-full bg-positive" style={{ width: `${m.win}%` }} />
-                        </div>
-                    </div>
-                ))}
-                <div className="mt-4 text-[10px] text-label">
-                    STRONGEST: SQUEEZE (Risk/Reward)<br/>
-                    WEAKEST: CASCADE (Expectancy)
+             <PanelHeader title="MECHANISM PERFORMANCE" right="LIVE DATA" />
+             <div className="panel-content px-2 py-2 flex items-center justify-center h-full">
+                <div className="text-center text-dim text-[11px]">
+                    <p className="mb-2">NO MECHANISM DATA AVAILABLE</p>
+                    <p className="text-[9px]">Run a backtest with trades to populate mechanism statistics.</p>
                 </div>
              </div>
         </div>
@@ -528,26 +528,20 @@ const MechanismPerformance = () => {
 };
 
 const ActivityLog = () => {
-    const logs = [
-        { time: '02:45:12', msg: 'HEARTBEAT: ALL SERVICES NOMINAL', type: 'info' },
-        { time: '02:48:05', msg: 'REDIS: PERSISTED 1,420 STATE OBJECTS', type: 'info' },
-        { time: '02:51:22', msg: 'KAFKA: CONSUMER GROUP REBALANCED', type: 'warn' },
-        { time: '02:55:41', msg: 'SCANNER: DISCOVERED 4 NEW SIGNALS', type: 'positive' },
-        { time: '03:01:05', msg: 'BACKTEST: ENGINE STARTED (2026-03-15)', type: 'info' },
-    ];
+    const now = new Date();
+    const fmt = (offset: number) => {
+        const d = new Date(now.getTime() - offset * 60000);
+        return d.toLocaleTimeString('en-IN', { hour12: false });
+    };
 
     return (
         <div className="terminal-panel h-[340px]">
             <PanelHeader title="TERMINAL ACTIVITY LOG" right="SYS_MESSAGES" />
             <div className="panel-content font-mono text-[10px] leading-relaxed">
-                {logs.map((l, i) => (
-                    <div key={i} className="flex gap-2 mb-1">
-                        <span className="text-dim">[{l.time}]</span>
-                        <span className={l.type === 'positive' ? 'text-positive' : l.type === 'warn' ? 'text-warning' : 'text-label'}>
-                            {l.msg}
-                        </span>
-                    </div>
-                ))}
+                <div className="flex gap-2 mb-1">
+                    <span className="text-dim">[{fmt(0)}]</span>
+                    <span className="text-label">SYSTEM READY. AWAITING COMMANDS.</span>
+                </div>
                 <div className="mt-2 text-dim">... monitoring events ...</div>
             </div>
         </div>
@@ -680,7 +674,7 @@ export default function VektorTerminal() {
     fetchData();
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
-  }, [API_URL, btLoading]);
+  }, [API_URL, btLoading, currentRunId]);
 
   const startSimulation = async () => {
       setBtLoading(true);

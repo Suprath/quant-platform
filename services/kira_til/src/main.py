@@ -20,11 +20,49 @@ from .backtest_logic import BacktestController
 setup_logging()
 logger = logging.getLogger("KIRA-TIL")
 
+KNOWN_STOCKS = {
+    # NSE
+    "NSE_EQ|INE002A01018": "RELIANCE",
+    "NSE_EQ|INE040A01034": "HDFCBANK",
+    "NSE_EQ|INE467B01029": "TCS",
+    "NSE_EQ|INE009A01021": "INFY",
+    "NSE_EQ|INE090A01021": "ICICIBANK",
+    "NSE_EQ|INE062A01020": "SBIN",
+    "NSE_EQ|INE154A01025": "ITC",
+    "NSE_EQ|INE669E01016": "BAJFINANCE",
+    "NSE_EQ|INE030A01027": "HINDUNILVR",
+    "NSE_EQ|INE585B01010": "MARUTI",
+    "NSE_EQ|INE917I01010": "AXISBANK",
+    "NSE_EQ|INE021A01026": "ASIANPAINT",
+    "NSE_EQ|INE075A01022": "WIPRO",
+    "NSE_EQ|INE238A01034": "KOTAKBANK",
+    "NSE_EQ|INE028A01039": "BAJAJFINSV",
+    "NSE_EQ|INE397D01024": "BHARTIARTL",
+    "NSE_EQ|INE047A01021": "SUNPHARMA",
+    "NSE_EQ|INE326A01037": "ULTRACEMCO",
+    "NSE_EQ|INE101A01026": "HCLTECH",
+    "NSE_EQ|INE155A01022": "TATAMOTORS",
+}
+
+SYMBOL_MAP = {}
+for k, v in KNOWN_STOCKS.items():
+    prefix = k.split("|")[0] if "|" in k else "NSE_EQ"
+    SYMBOL_MAP[f"{prefix}|{v}"] = k
+    SYMBOL_MAP[f"{prefix}|{v.upper()}"] = k
+    SYMBOL_MAP[v] = k
+    SYMBOL_MAP[v.upper()] = k
+    SYMBOL_MAP[k] = k
+
+def normalize_symbol(sym):
+    if not sym: return sym
+    return SYMBOL_MAP.get(sym, SYMBOL_MAP.get(sym.upper(), sym))
+
 app = FastAPI(title="KIRA Trading Intelligence Layer")
 
 # Initialize shared resources
 trade_recorder = TradeRecorder()
 backtest_controller = BacktestController()
+
 
 class BacktestRequest(BaseModel):
     symbols: List[str] = []
@@ -190,45 +228,106 @@ async def get_historical_performance(run_id: Optional[str] = Query(None)):
         # Calculate real metrics
         start_equity = performance_data[0]["equity"]
         current_equity = performance_data[-1]["equity"]
+        net_profit = current_equity - start_equity
         total_pnl = ((current_equity / start_equity) - 1) * 100 if start_equity > 0 else 0
         
         peak = start_equity
         max_dd = 0
-        winning_steps = 0
-        losing_steps = 0
-        total_gains = 0
-        total_losses = 0
 
+        # Equity metrics
+        daily_returns = []
         for i in range(1, len(performance_data)):
             prev = performance_data[i-1]["equity"]
             curr = performance_data[i]["equity"]
-            diff = curr - prev
+            if prev > 0:
+                daily_returns.append((curr - prev) / prev)
             
-            if diff > 0:
-                winning_steps += 1
-                total_gains += diff
-            elif diff < 0:
-                losing_steps += 1
-                total_losses += abs(diff)
-
             if curr > peak:
                 peak = curr
             dd = (peak - curr) / peak * 100 if peak > 0 else 0
             if dd > max_dd:
                 max_dd = dd
 
-        total_steps = winning_steps + losing_steps
-        win_rate = (winning_steps / total_steps * 100) if total_steps > 0 else 0
-        profit_factor = (total_gains / total_losses) if total_losses > 0 else (total_gains if total_gains > 0 else 1.0)
+        # Sharpe Ratio
+        sharpe_ratio = 0.0
+        if len(daily_returns) > 2:
+            import statistics
+            import math
+            mean_ret = statistics.mean(daily_returns)
+            std_ret = statistics.stdev(daily_returns)
+            if std_ret > 0:
+                sharpe_ratio = (mean_ret / std_ret) * math.sqrt(252 * (len(daily_returns) / max(1, len(performance_data))))
+
+        # Fetch trades from backtest_orders
+        winning_steps = 0
+        losing_steps = 0
+        total_gains = 0
+        total_losses = 0
+        total_trades = 0
+        total_brokerage = 0.0
+        
+        try:
+            pg_host = os.getenv("POSTGRES_HOST", "postgres_metadata")
+            conn = psycopg2.connect(host=pg_host, port=5432, user="admin", password="password123", database="quant_platform")
+            cur = conn.cursor()
+            
+            if run_id:
+                cur.execute("SELECT pnl, price, quantity FROM backtest_orders WHERE run_id = %s", (run_id,))
+            else:
+                cur.execute("SELECT pnl, price, quantity FROM backtest_orders WHERE run_id IS NULL")
+                
+            trades = cur.fetchall()
+            cur.close()
+            conn.close()
+            
+            total_trades = len(trades)
+            for t in trades:
+                pnl = float(t[0] or 0)
+                price = float(t[1] or 0)
+                qty = int(t[2] or 0)
+                
+                if pnl > 0:
+                    winning_steps += 1
+                    total_gains += pnl
+                elif pnl < 0:
+                    losing_steps += 1
+                    total_losses += abs(pnl)
+                    
+                # Estimate Brokerage (Flat 20 + 0.03% STT/Txn approximating CNC)
+                if price > 0 and qty > 0:
+                    total_brokerage += 20.0 + (price * qty * 0.001)
+        except Exception as e:
+            logger.error(f"Error fetching backtest orders for stats: {e}")
+
+        # NO FALLBACK: If no real trades, all trade metrics are zero.
+        # The old code counted equity-delta steps as pseudo-trades, producing
+        # fake Win Rate and Profit Factor values. This is now removed.
+
+        win_rate = (winning_steps / total_trades * 100) if total_trades > 0 else 0
+        profit_factor = (total_gains / total_losses) if total_losses > 0 else (total_gains if total_gains > 0 else 0.0)
+        expectancy = (total_gains - total_losses) / total_trades if total_trades > 0 else 0
+        
+        # Approximate CAGR
+        start_date = datetime.fromisoformat(performance_data[0]["time"])
+        end_date = datetime.fromisoformat(performance_data[-1]["time"])
+        days = max(1, (end_date - start_date).days)
+        years = days / 252.0
+        cagr = ((current_equity / start_equity) ** (1/years) - 1) * 100 if years > 0.05 and start_equity > 0 else total_pnl
 
         return {
             "points": performance_data,
             "summary": {
                 "total_pnl_pct": round(total_pnl, 2),
+                "net_profit": round(net_profit, 2),
                 "max_drawdown_pct": round(max_dd, 2),
                 "current_equity": round(current_equity, 2),
                 "win_rate": round(win_rate, 1),
-                "profit_factor": round(profit_factor, 2)
+                "profit_factor": round(profit_factor, 2),
+                "total_trades": total_trades,
+                "sharpe_ratio": round(sharpe_ratio, 2),
+                "cagr": round(cagr, 2),
+                "expectancy": round(expectancy, 2),
+                "brokerage": round(total_brokerage, 2),
             }
         }
     except Exception as e:
@@ -242,9 +341,12 @@ async def trigger_backtest(req: BacktestRequest):
         raise HTTPException(status_code=400, detail="A backtest is already in progress.")
         
     try:
+        # Prevent 0-trade runs by resolving human tickers to proper ISIN tokens
+        formatted_symbols = [normalize_symbol(s) for s in req.symbols] if req.symbols else []
+        
         # run_backtest now returns a dict with status and run_id
         result = await backtest_controller.run_backtest(
-            req.symbols, req.start_date, req.end_date, 
+            formatted_symbols, req.start_date, req.end_date, 
             timeframe=req.timeframe, initial_capital=req.initial_capital
         )
         return {
