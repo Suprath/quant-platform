@@ -493,15 +493,15 @@ const PerformanceSummaryPanel = ({ summary }: { summary?: PerformanceSummary }) 
     return (
         <div className="grid grid-cols-5 gap-2 mb-2">
             {[
-                { label: 'TOTAL P&L', value: `${summary.total_pnl_pct}%`, color: summary.total_pnl_pct >= 0 ? 'text-positive' : 'text-negative' },
-                { label: 'NET PROFIT', value: `₹${summary.net_profit?.toLocaleString() || 0}`, color: (summary.net_profit || 0) >= 0 ? 'text-positive' : 'text-negative' },
-                { label: 'CALC BROKERAGE', value: `₹${summary.brokerage?.toLocaleString() || 0}`, color: 'text-warning' },
-                { label: 'SHARPE RATIO', value: summary.sharpe_ratio?.toFixed(2) || '0.00', color: (summary.sharpe_ratio || 0) >= 1 ? 'text-positive' : 'text-white' },
-                { label: 'MAX DRAWDOWN', value: `${summary.max_drawdown_pct}%`, color: 'text-negative' },
+                { label: 'TOTAL P&L', value: `${summary.total_pnl_pct || 0}%`, color: (summary.total_pnl_pct || 0) >= 0 ? 'text-positive' : 'text-negative' },
+                { label: 'NET PROFIT', value: `₹${(summary.net_profit || 0).toLocaleString()}`, color: (summary.net_profit || 0) >= 0 ? 'text-positive' : 'text-negative' },
+                { label: 'CALC BROKERAGE', value: `₹${(summary.brokerage || 0).toLocaleString()}`, color: 'text-warning' },
+                { label: 'SHARPE RATIO', value: (summary.sharpe_ratio || 0).toFixed(2), color: (summary.sharpe_ratio || 0) >= 1 ? 'text-positive' : 'text-white' },
+                { label: 'MAX DRAWDOWN', value: `${summary.max_drawdown_pct || 0}%`, color: 'text-negative' },
                 { label: 'CAGR', value: `${summary.cagr || 0}%`, color: 'text-info' },
-                { label: 'WIN RATE', value: `${summary.win_rate}%`, color: 'text-white' },
-                { label: 'EXPECTANCY', value: `₹${summary.expectancy?.toLocaleString() || 0}`, color: 'text-white' },
-                { label: 'PROFIT FACTOR', value: summary.profit_factor, color: 'text-white' },
+                { label: 'WIN RATE', value: `${summary.win_rate || 0}%`, color: 'text-white' },
+                { label: 'EXPECTANCY', value: `₹${(summary.expectancy || 0).toLocaleString()}`, color: 'text-white' },
+                { label: 'PROFIT FACTOR', value: (summary.profit_factor || 0).toFixed(2), color: 'text-white' },
                 { label: 'TOTAL TRADES', value: summary.total_trades || 0, color: 'text-white' },
             ].map((stat, i) => (
                 <div key={i} className="terminal-panel p-2 flex flex-col items-center justify-center">
@@ -615,7 +615,7 @@ export default function VektorTerminal() {
         const portRes = await fetch(`${API_URL}/api/v1/til/portfolio`);
         if (portRes.ok) setPortfolio(await portRes.json());
 
-        const perfUrl = currentRunId 
+        const perfUrl = (terminalMode === 'BACKTEST' && currentRunId)
             ? `${API_URL}/api/v1/til/performance?run_id=${currentRunId}`
             : `${API_URL}/api/v1/til/performance`;
             
@@ -660,7 +660,7 @@ export default function VektorTerminal() {
             setIsBtBackfilling(status.is_backfilling);
             setBtBackfillProgress(status.backfill_progress);
             setBtProgress(status.progress);
-            if (status.run_id && status.is_running) {
+            if (status.run_id) {
                 setCurrentRunId(status.run_id);
             }
             if (!status.is_running && btLoading) {
@@ -692,6 +692,7 @@ export default function VektorTerminal() {
           });
           if (res.ok) {
               const data = await res.json();
+              setTerminalMode('BACKTEST');
               setActiveTab(3); // Switch to PERFORMANCE
               setIsBtActive(true);
               setBtProgress(0);

@@ -2,6 +2,8 @@ import os
 import logging
 import json
 import asyncio
+import math
+import psycopg2
 from datetime import datetime
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Query
@@ -189,44 +191,104 @@ async def get_portfolio_state():
 
 @app.get("/api/v1/til/performance")
 async def get_historical_performance(run_id: Optional[str] = Query(None)):
-    """Returns historical equity curve points from PostgreSQL."""
+    conn = None
     try:
-        # Fetch last 500 snapshots
-        import psycopg2
         pg_host = os.getenv("POSTGRES_HOST", "postgres_metadata")
         conn = psycopg2.connect(
             host=pg_host, port=5432, user="admin", password="password123", database="quant_platform"
         )
         cur = conn.cursor()
+        
+        def safe_float(f, default=0.0):
+            try:
+                val = float(f)
+                return val if math.isfinite(val) else default
+            except:
+                return default
+
+        EMPTY_SUMMARY = {
+            "total_pnl_pct": 0.0, "total_pnl": 0.0, 
+            "net_profit": 0.0, 
+            "max_drawdown_pct": 0.0, "max_drawdown": 0.0, 
+            "current_equity": 0.0, 
+            "win_rate": 0.0, "win_rate_pct": 0.0,
+            "profit_factor": 0.0, 
+            "total_trades": 0, "sharpe_ratio": 0.0, "cagr": 0.0, 
+            "expectancy": 0.0, "brokerage": 0.0,
+            "mechanism_performance": []
+        }
+
         cur.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'portfolio_snapshots')")
         if not cur.fetchone()[0]:
             cur.close()
-            conn.close()
-            return {"points": [], "summary": {"total_pnl_pct": 0, "max_drawdown_pct": 0, "current_equity": 0, "win_rate": 0, "profit_factor": 0}}
+            return {"points": [], "summary": EMPTY_SUMMARY}
             
+        # Optimal Query: First, Last (Full), and Sampled (Thin)
         if run_id:
-            cur.execute("SELECT snapshot_time, heat_pct, full_json FROM portfolio_snapshots WHERE run_id = %s ORDER BY snapshot_time ASC", (run_id,))
-        else:
-            # Default to live (where run_id is NULL)
-            cur.execute("SELECT snapshot_time, heat_pct, full_json FROM portfolio_snapshots WHERE run_id IS NULL ORDER BY snapshot_time DESC LIMIT 500")
+            # Get First and Last IDs and count
+            cur.execute("""
+                SELECT MIN(id), MAX(id), COUNT(*) 
+                FROM portfolio_snapshots 
+                WHERE run_id = %s
+            """, (run_id,))
+            min_id, max_id, total_count = cur.fetchone()
             
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        
-        full_performance_data = [] # Use this for full metrics calculation
-        for r in rows:
-            state = r[2] 
-            full_performance_data.append({
-                "time": r[0].isoformat(),
-                "equity": state.get("total_equity", 0),
-                "heat": r[1]
-            })
+            if total_count == 0:
+                cur.close()
+                return {"points": [], "summary": EMPTY_SUMMARY}
+            
+            # Fetch First and Last (Full)
+            cur.execute("SELECT snapshot_time, heat_pct, full_json FROM portfolio_snapshots WHERE id IN (%s, %s)", (min_id, max_id))
+            boundary_rows = cur.fetchall()
+            
+            # Sampled Points (Thin) - every Nth ID
+            stride = max(1, total_count // 500)
+            cur.execute(f"""
+                SELECT snapshot_time, heat_pct, (full_json->>'total_equity')::float as equity 
+                FROM portfolio_snapshots 
+                WHERE run_id = %s AND id %% {stride} = 0
+                ORDER BY snapshot_time ASC
+            """, (run_id,))
+            sampled_rows = cur.fetchall()
+            
+            # Build full_performance_data
+            full_performance_data = []
+            
+            # Process sampled
+            for r in sampled_rows:
+                full_performance_data.append({
+                    "time": r[0].isoformat(), "equity": r[2], "heat": r[1]
+                })
+                
+            # Ensure boundaries are included with full fidelity
+            for r in boundary_rows:
+                p = {
+                    "time": r[0].isoformat(), 
+                    "equity": r[2].get("total_equity", 0), 
+                    "heat": r[1]
+                }
+                full_performance_data.append(p)
+            
+            # De-duplicate and sort
+            unique_data = {p["time"]: p for p in full_performance_data}.values()
+            full_performance_data = sorted(list(unique_data), key=lambda x: x["time"])
+        else:
+            # Live mode: Fetch 500 latest
+            cur.execute("SELECT snapshot_time, heat_pct, full_json FROM portfolio_snapshots WHERE run_id IS NULL ORDER BY snapshot_time DESC LIMIT 500")
+            rows = cur.fetchall()[::-1]
+            full_performance_data = []
+            for r in rows:
+                full_performance_data.append({
+                    "time": r[0].isoformat(),
+                    "equity": r[2].get("total_equity", 0),
+                    "heat": r[1]
+                })
             
         if not full_performance_data:
-            return {"points": [], "summary": {"total_pnl_pct": 0, "max_drawdown_pct": 0, "current_equity": 0, "win_rate": 0, "profit_factor": 0}}
+            cur.close()
+            return {"points": [], "summary": EMPTY_SUMMARY}
 
-        # Calculate real metrics on FULL fidelity data
+        # Calculate equity metrics...
         start_equity = full_performance_data[0]["equity"]
         current_equity = full_performance_data[-1]["equity"]
         net_profit = current_equity - start_equity
@@ -234,115 +296,131 @@ async def get_historical_performance(run_id: Optional[str] = Query(None)):
         
         peak = start_equity
         max_dd = 0
-
-        # Equity metrics
         daily_returns = []
         for i in range(1, len(full_performance_data)):
             prev = full_performance_data[i-1]["equity"]
             curr = full_performance_data[i]["equity"]
             if prev > 0:
                 daily_returns.append((curr - prev) / prev)
-            
-            if curr > peak:
-                peak = curr
+            if curr > peak: peak = curr
             dd = (peak - curr) / peak * 100 if peak > 0 else 0
-            if dd > max_dd:
-                max_dd = dd
+            if dd > max_dd: max_dd = dd
 
-        # Sampling logic for UI performance (ONLY for the points list)
         performance_data = full_performance_data
-        if run_id and len(performance_data) > 1000:
-            stride = len(performance_data) // 1000
-            sampled = performance_data[::stride]
-            if sampled[-1]["time"] != performance_data[-1]["time"]:
-                sampled.append(performance_data[-1])
-            performance_data = sampled
 
-        # Sharpe Ratio
         sharpe_ratio = 0.0
         if len(daily_returns) > 2:
             import statistics
-            import math
             mean_ret = statistics.mean(daily_returns)
             std_ret = statistics.stdev(daily_returns)
             if std_ret > 0:
                 sharpe_ratio = (mean_ret / std_ret) * math.sqrt(252 * (len(daily_returns) / max(1, len(performance_data))))
 
-        # Fetch trades from backtest_orders
+        # Fetch trades (REUSING CURSOR)
         winning_steps = 0
         losing_steps = 0
         total_gains = 0
         total_losses = 0
         total_trades = 0
         total_brokerage = 0.0
-        
+        mechanism_performance = []
+
         try:
-            pg_host = os.getenv("POSTGRES_HOST", "postgres_metadata")
-            conn = psycopg2.connect(host=pg_host, port=5432, user="admin", password="password123", database="quant_platform")
-            cur = conn.cursor()
-            
             if run_id:
-                cur.execute("SELECT pnl, price, quantity FROM backtest_orders WHERE run_id = %s", (run_id,))
+                cur.execute("SELECT pnl, price, quantity, mechanism FROM backtest_orders WHERE run_id = %s AND pnl IS NOT NULL", (run_id,))
             else:
-                cur.execute("SELECT pnl, price, quantity FROM backtest_orders WHERE run_id IS NULL")
+                cur.execute("SELECT pnl, price, quantity, mechanism FROM backtest_orders WHERE run_id IS NULL AND pnl IS NOT NULL")
                 
             trades = cur.fetchall()
-            cur.close()
-            conn.close()
-            
-            total_trades = len(trades)
+            real_total_trades = len(trades)
+            total_trades = real_total_trades # Use this for win rate
+            mechanism_map = {}
+
             for t in trades:
-                pnl = float(t[0] or 0)
+                p_val = float(t[0] or 0)
                 price = float(t[1] or 0)
                 qty = int(t[2] or 0)
+                mech = t[3] or "UNKNOWN"
+
+                if mech not in mechanism_map:
+                    mechanism_map[mech] = {"gains": 0.0, "losses": 0.0, "wins": 0, "total": 0, "brokerage": 0.0}
                 
-                if pnl > 0:
+                m_stats = mechanism_map[mech]
+                m_stats["total"] += 1
+                
+                if p_val > 0:
                     winning_steps += 1
-                    total_gains += pnl
-                elif pnl < 0:
+                    total_gains += p_val
+                    m_stats["wins"] += 1
+                    m_stats["gains"] += p_val
+                elif p_val < 0:
                     losing_steps += 1
-                    total_losses += abs(pnl)
+                    total_losses += abs(p_val)
+                    m_stats["losses"] += abs(p_val)
                     
-                # Estimate Brokerage (Flat 20 + 0.03% STT/Txn approximating CNC)
-                if price > 0 and qty > 0:
-                    total_brokerage += 20.0 + (price * qty * 0.001)
-        except Exception as e:
-            logger.error(f"Error fetching backtest orders for stats: {e}")
+                b = 20.0 + (price * qty * 0.001) if price > 0 and qty > 0 else 0.0
+                total_brokerage += b
+                m_stats["brokerage"] += b
 
-        # NO FALLBACK: If no real trades, all trade metrics are zero.
-        # The old code counted equity-delta steps as pseudo-trades, producing
-        # fake Win Rate and Profit Factor values. This is now removed.
+            for name, m in mechanism_map.items():
+                m_wr = (m["wins"] / m["total"] * 100) if m["total"] > 0 else 0
+                m_pnl = m["gains"] - m["losses"]
+                mechanism_performance.append({
+                    "mechanism": name,
+                    "trades": m["total"],
+                    "win_rate": round(m_wr, 1),
+                    "net_pnl": round(m_pnl, 2),
+                    "profit_factor": round(m["gains"] / m["losses"], 2) if m["losses"] > 0 else (round(m["gains"], 2) if m["gains"] > 0 else 0.0)
+                })
+        except Exception as te:
+            logger.error(f"Error fetching backtest orders: {te}")
 
+        cur.close()
+        
         win_rate = (winning_steps / total_trades * 100) if total_trades > 0 else 0
         profit_factor = (total_gains / total_losses) if total_losses > 0 else (total_gains if total_gains > 0 else 0.0)
         expectancy = (total_gains - total_losses) / total_trades if total_trades > 0 else 0
         
-        # Approximate CAGR
-        start_date = datetime.fromisoformat(performance_data[0]["time"])
-        end_date = datetime.fromisoformat(performance_data[-1]["time"])
+        import datetime as dt_pkg
+        start_date = dt_pkg.datetime.fromisoformat(performance_data[0]["time"])
+        end_date = dt_pkg.datetime.fromisoformat(performance_data[-1]["time"])
         days = max(1, (end_date - start_date).days)
         years = days / 252.0
         cagr = ((current_equity / start_equity) ** (1/years) - 1) * 100 if years > 0.05 and start_equity > 0 else total_pnl
 
+        summary_payload = {
+            "total_pnl_pct": safe_float(round(total_pnl, 2)),
+            "total_pnl": safe_float(round(total_pnl, 2)),
+            "net_profit": safe_float(round(net_profit, 2)),
+            "max_drawdown_pct": safe_float(round(max_dd, 2)),
+            "max_drawdown": safe_float(round(max_dd, 2)),
+            "current_equity": safe_float(round(current_equity, 2)),
+            "win_rate": safe_float(round(win_rate, 1)),
+            "win_rate_pct": safe_float(round(win_rate, 1)),
+            "profit_factor": safe_float(round(profit_factor, 2)),
+            "total_trades": int(total_trades),
+            "sharpe_ratio": safe_float(round(sharpe_ratio, 2)),
+            "cagr": safe_float(round(cagr, 2)),
+            "expectancy": safe_float(round(expectancy, 2)),
+            "brokerage": safe_float(round(total_brokerage, 2)),
+            "mechanism_performance": mechanism_performance
+        }
+        
         return {
             "points": performance_data,
-            "summary": {
-                "total_pnl_pct": round(total_pnl, 2),
-                "net_profit": round(net_profit, 2),
-                "max_drawdown_pct": round(max_dd, 2),
-                "current_equity": round(current_equity, 2),
-                "win_rate": round(win_rate, 1),
-                "profit_factor": round(profit_factor, 2),
-                "total_trades": total_trades,
-                "sharpe_ratio": round(sharpe_ratio, 2),
-                "cagr": round(cagr, 2),
-                "expectancy": round(expectancy, 2),
-                "brokerage": round(total_brokerage, 2),
-            }
+            "summary": summary_payload
         }
     except Exception as e:
         logger.error(f"Error fetching performance: {e}")
-        return [] # Return empty if table doesn't exist yet
+        return {"points": [], "summary": {
+            "total_pnl_pct": 0.0, "total_pnl": 0.0, "net_profit": 0.0, "max_drawdown_pct": 0.0, "max_drawdown": 0.0,
+            "current_equity": 0.0, "win_rate": 0.0, "win_rate_pct": 0.0, "profit_factor": 0.0, 
+            "total_trades": 0, "sharpe_ratio": 0.0, "cagr": 0.0, 
+            "expectancy": 0.0, "brokerage": 0.0, "mechanism_performance": []
+        }}
+    finally:
+        if conn:
+            conn.close()
 
 @app.post("/api/v1/til/backtest")
 async def trigger_backtest(req: BacktestRequest):

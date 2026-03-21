@@ -299,11 +299,11 @@ class BacktestController:
                             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, batch_snaps)
                     
-                    # Batch insert orders recorded during the day (Fixed: Removed nonexistent 'status' column)
+                    # Batch insert orders recorded during the day
                     if day_orders:
                         cur_pg.executemany("""
-                            INSERT INTO backtest_orders (run_id, timestamp, symbol, transaction_type, quantity, price, pnl)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            INSERT INTO backtest_orders (run_id, timestamp, symbol, transaction_type, quantity, price, pnl, mechanism)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         """, day_orders)
                     
                     # Update the final equity for the day in the summary table
@@ -428,7 +428,7 @@ class BacktestController:
             conf_map[r[0]] = r[1]
         return conf_map
 
-    async def _execute_trade(self, symbol, direction, qty, price, timestamp, run_id, skip_db):
+    async def _execute_trade(self, symbol, direction, qty, price, timestamp, run_id, skip_db, mechanism="UNKNOWN"):
         """Executes a trade in the portfolio engine and records it."""
         try:
             # 1. Update Portfolio Engine (Internal State)
@@ -444,14 +444,15 @@ class BacktestController:
                 "bars_held": 0,
                 "sl": price * 0.985 if direction == "LONG" else price * 1.015,
                 "tp_price": price * 1.05 if direction == "LONG" else price * 0.95,
-                "is_trailing": False
+                "is_trailing": False,
+                "mechanism": mechanism # Store for exits
             }
             
             # 3. Batch Log (for Speed)
             if skip_db and hasattr(self, "_current_day_orders"):
-                # Order: (run_id, timestamp, symbol, transaction_type, quantity, price, pnl)
+                # Order: (run_id, timestamp, symbol, direction, qty, price, pnl, mechanism)
                 self._current_day_orders.append((
-                    run_id, timestamp, symbol, direction, qty, price, None # PnL is only for exits
+                    run_id, timestamp, symbol, direction, qty, price, None, mechanism
                 ))
         except Exception as e:
             logger.error(f"Trade Execution Failed for {symbol}: {e}")
@@ -529,9 +530,14 @@ class BacktestController:
                 if skip_db and hasattr(self, "_current_day_orders"):
                     mult = 1 if pos.direction == "LONG" else -1
                     actual_pnl = pos.qty * (price - pos.entry_price) * mult
+                    
+                    # Retrieve original opening mechanism from metadata
+                    p_meta = getattr(self, "position_metadata", {}).get(pos.symbol, {})
+                    mech = p_meta.get("mechanism", "ACCUMULATION_BREAKOUT")
+                    
                     self._current_day_orders.append((
                         run_id, timestamp, pos.symbol, 
-                        "LONG" if pos.direction=="SHORT" else "SHORT", abs(pos.qty), price, actual_pnl
+                        "LONG" if pos.direction=="SHORT" else "SHORT", abs(pos.qty), price, actual_pnl, mech
                     ))
 
                 await portfolio_engine.update_position_v2(
@@ -558,7 +564,7 @@ class BacktestController:
                 
                 shares = size_res.get("shares", 0)
                 if shares > 0:
-                    await self._execute_trade(sym, "LONG", shares, tick_data[sym]['ltp'], timestamp, run_id, skip_db)
+                    await self._execute_trade(sym, "LONG", shares, tick_data[sym]['ltp'], timestamp, run_id, skip_db, mechanism="ACCUMULATION_BREAKOUT")
 
         except (ImportError, Exception) as e:
             logger.error(f"C++ Batch Error: {e}")
@@ -624,9 +630,14 @@ class BacktestController:
                 if skip_db and hasattr(self, "_current_day_orders"):
                     mult = 1 if pos.direction == "LONG" else -1
                     actual_pnl = pos.qty * (current_price - pos.entry_price) * mult
+                    
+                    # Retrieve original opening mechanism from metadata
+                    p_meta = getattr(self, "position_metadata", {}).get(pos.symbol, {})
+                    mech = p_meta.get("mechanism", "ACCUMULATION_BREAKOUT")
+
                     self._current_day_orders.append((
                         run_id, timestamp, pos.symbol, 
-                        "LONG" if pos.direction=="SHORT" else "SHORT", abs(pos.qty), current_price, actual_pnl
+                        "LONG" if pos.direction=="SHORT" else "SHORT", abs(pos.qty), current_price, actual_pnl, mech
                     ))
 
                 await portfolio_engine.update_position_v2(
@@ -737,11 +748,12 @@ class BacktestController:
             
             direction_str = signal.direction.name if hasattr(signal.direction, 'name') else str(signal.direction)
             if sizing.get("approved"):
-                # Record order locally for batching instead of calling engine's internal sync
+                # Record order locally for batching
                 if skip_db and hasattr(self, "_current_day_orders"):
                     self._current_day_orders.append((
                         run_id, timestamp, signal.symbol, 
-                        direction_str, abs(sizing.get("shares")), signal.entry_price_estimate, 0.0
+                        direction_str, abs(sizing.get("shares")), signal.entry_price_estimate, 0.0,
+                        mech_res.primary_mechanism if hasattr(mech_res, 'primary_mechanism') else "UNKNOWN"
                     ))
 
                 await portfolio_engine.update_position_v2(

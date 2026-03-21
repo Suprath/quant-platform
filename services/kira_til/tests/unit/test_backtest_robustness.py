@@ -66,8 +66,8 @@ async def test_backtest_persistence_flow_robustness(controller):
         # In a real run, this happens at the end of the day in _execute_simulation
         # But here we just verify _execute_trade populated the batch correctly.
         order_row = controller._current_day_orders[0]
-        # Order: (run_id, timestamp, symbol, transaction_type, quantity, price, pnl)
-        assert len(order_row) == 7
+        # Order: (run_id, timestamp, symbol, transaction_type, quantity, price, pnl, mechanism)
+        assert len(order_row) == 8
         assert order_row[3] == "LONG"
 
 @pytest.mark.asyncio
@@ -102,3 +102,45 @@ async def test_portfolio_initialization_schema_check(controller):
                 found_init = True
         
         assert found_init, "Initial portfolio insert with last_updated not found!"
+
+@pytest.mark.asyncio
+async def test_performance_api_large_volume_sampling():
+    """
+    Ensures that the performance API handles large snapshot volumes using sampling.
+    """
+    from src.main import get_historical_performance
+    from unittest.mock import MagicMock, patch
+    
+    # Mock postgres connection
+    with patch('src.main.psycopg2.connect') as mock_pg:
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_pg.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cur
+        
+        # Mock boundary and sampling results
+        # min_id, max_id, count
+        mock_cur.fetchone.return_value = (1, 200000, 200000)
+        
+        # Mock boundary rows fetch
+        start_time = datetime(2024, 1, 1)
+        end_time = datetime(2024, 1, 2)
+        mock_cur.fetchall.side_effect = [
+            # Boundary rows
+            [(start_time, 0.0, {"total_equity": 100000.0}), 
+             (end_time, 0.0, {"total_equity": 105000.0})],
+            # Sampled rows (thin)
+            [(start_time + timedelta(hours=i), 0.0, 100000.0 + i*100) for i in range(1, 10)],
+            # Trades
+            [(100.0, 150.0, 10, "TEST")]
+        ]
+        
+        # Call the API function directly
+        result = await get_historical_performance(run_id="test_run")
+        
+        # Verify metrics
+        summary = result["summary"]
+        assert summary["total_pnl"] == 5.0 # (105000/100000 - 1) * 100
+        assert summary["net_profit"] == 5000.0
+        assert summary["total_trades"] == 1
+        assert len(result["points"]) > 2
