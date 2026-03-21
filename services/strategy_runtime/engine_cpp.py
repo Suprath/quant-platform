@@ -211,6 +211,7 @@ class CppBacktestRunner:
             return result
 
         _original_liquidate = getattr(engine, 'Liquidate', None)
+        _original_submit_order = getattr(engine, 'SubmitOrder', None)
 
         def cpp_liquidate(symbol=None):
             if symbol is None:

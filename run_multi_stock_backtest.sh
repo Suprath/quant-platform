@@ -231,83 +231,42 @@ if [[ "$STRATEGY_NAME" == *"momentum_pro"* ]]; then
     echo "✅ Parameter optimization complete"
 fi
 
-# Step 3: Replay all stocks (parallel in background)
+# Step 3: Replay all stocks
 echo ""
 echo "======================================================================"
-echo "STEP 3: Running Multi-Stock Backtest (Parallel Replay)"
+echo "STEP 3: Running Multi-Stock Backtest via C++ Engine"
 echo "======================================================================"
-echo "⏩ Replay Speed: 100x (5 stocks simultaneously)"
 echo ""
-
-# Start isolated pipeline
-echo "🚀 Starting Feature Engine (Backtest Mode)..."
-docker compose run -d --rm \
-    -e BACKTEST_MODE=true \
-    -e RUN_ID="$RUN_ID" \
-    --name feature_engine_backtest \
-    feature_engine python main.py > /dev/null 2>&1
-
-echo "🚀 Starting Strategy Runtime (Backtest Mode)..."
 
 echo "🐛 DEBUG: STRATEGY_PARAMS='$STRATEGY_PARAMS'"
 
-# Export variables for Docker Compose to pick up
 export STRATEGY_NAME="${STRATEGY_NAME:-orb.EnhancedORB}"
 export STRATEGY_PARAMS="${STRATEGY_PARAMS:-{}}"
 
-docker compose run -d \
-    -e BACKTEST_MODE=true \
-    -e RUN_ID="$RUN_ID" \
-    -e STRATEGY_NAME \
-    -e STRATEGY_PARAMS \
-    --name strategy_backtest \
-    strategy_runtime python main.py
-
-echo "⏳ Waiting for pipeline to initialize..."
-sleep 15
-
-# Replay Nifty 50 First
-echo "📡 Replaying Nifty 50..."
-docker compose run -d \
-    -e RUN_ID="$RUN_ID" \
-    historical_replayer python main.py \
-    --symbol "NSE_INDEX|Nifty 50" \
-    --start "$START_DATE" \
-    --end "$END_DATE" \
-    --timeframe "1m" \
-    --speed 0
-
-# Replay all stocks in parallel (unlimited speed for backtest)
-echo "📡 Replaying historical data for ${#STOCKS[@]} stocks..."
+echo "📡 Executing backtests sequentially for ${#STOCKS[@]} stocks..."
 for stock_entry in "${STOCKS[@]}"; do
     IFS=':' read -r symbol name <<< "$stock_entry"
-    echo "  → $name"
+    echo "  → Running $name ($symbol)..."
     
-    docker compose run -d \
+    docker compose run --rm \
+        -e BACKTEST_MODE=true \
         -e RUN_ID="$RUN_ID" \
-        historical_replayer python main.py \
+        -e STRATEGY_NAME \
+        -e STRATEGY_PARAMS \
+        --name "strategy_backtest_${name}" \
+        strategy_runtime python backtest_runner.py \
         --symbol "$symbol" \
         --start "$START_DATE" \
         --end "$END_DATE" \
         --timeframe "1m" \
-        --speed 0
+        --speed 0 \
+        --cash 50000
+    
+    echo "  ✅ $name finished."
 done
 
 echo ""
-echo "⏳ Waiting for replays to complete..."
-# Wait while any historical_replayer container is still running
-while docker ps --format '{{.Names}}' | grep -q "historical_replayer"; do
-    sleep 5
-done
-
-# Small buffer for Kafka consumers to finish processing the last ticks
-sleep 15
-
-# Cleanup
-# docker stop strategy_backtest feature_engine_backtest 2>/dev/null || true
-# docker rm strategy_backtest feature_engine_backtest 2>/dev/null || true
-
-echo "✅ Backtest replay complete"
+echo "✅ All backtests completed cleanly."
 
 # Step 4: Display Results
 echo ""

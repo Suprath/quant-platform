@@ -79,52 +79,24 @@ echo "======================================================================"
 
 # Clean up existing test containers
 echo "🧹 Cleaning up old containers..."
-docker rm -f strategy_test feature_engine_test 2>/dev/null || true
-docker container prune -f --filter "label=com.docker.compose.service=historical_replayer"
+docker container prune -f --filter "label=com.docker.compose.service=strategy_runtime"
 
-echo "🚀 Starting Feature Engine (Backtest Mode)..."
-docker compose run -d --rm \
-    -e BACKTEST_MODE=true \
-    -e RUN_ID="$RUN_ID" \
-    --name feature_engine_test \
-    feature_engine python main.py
-
-echo "🚀 Starting Strategy Runtime (Backtest Mode)..."
-docker compose run -d --rm \
-    -e BACKTEST_MODE=true \
-    -e RUN_ID="$RUN_ID" \
-    --name strategy_test \
-    strategy_runtime python main.py
-
-echo "⏳ Waiting for pipeline to initialize..."
-sleep 10
-
-# Step 4: Replaying Historical Data
-echo ""
-echo "======================================================================"
-echo "STEP 4: Replaying Historical Data (Isolated Topic)"
-echo "======================================================================"
-echo "⏩ Speed: 10x"
-echo ""
-
+echo "🚀 Running Backtest via backtest_runner.py..."
 docker compose run --rm \
+    -e BACKTEST_MODE=true \
     -e RUN_ID="$RUN_ID" \
-    historical_replayer python main.py \
+    -e STRATEGY_NAME="strategies.mean_reversion.main.MeanReversion" \
+    -e KIRA_CPP_ENGINE="true" \
+    --name strategy_test \
+    strategy_runtime python backtest_runner.py \
     --symbol "$SYMBOL" \
     --start "$START_DATE" \
     --end "$END_DATE" \
     --timeframe "1m" \
-    --speed 100
+    --speed 100 \
+    --cash 20000
 
-echo "✅ Replay complete"
-
-# Give strategy time to process remaining ticks
-echo "⏳ Allowing final ticks to process..."
-sleep 5
-
-# Cleanup (Disabled for debugging)
-# docker stop strategy_test 2>/dev/null || true
-# docker rm strategy_test 2>/dev/null || true
+echo "✅ Backtest execution complete"
 
 # Restart normal strategy runtime
 docker compose up -d strategy_runtime

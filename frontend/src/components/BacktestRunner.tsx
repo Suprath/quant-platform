@@ -76,6 +76,7 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
         endDate: "2024-01-31",
         cash: 100000,
         speed: "fast",
+        timeframe: "5m",
         tradingMode: "MIS"
     });
 
@@ -154,6 +155,7 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                     strategy_name: strategyName,
                     project_files: projectFiles || undefined,
                     speed: config.speed,
+                    timeframe: config.timeframe,
                     trading_mode: config.tradingMode
                 })
             });
@@ -476,6 +478,23 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                                         <SelectItem value="fast">Fast</SelectItem>
                                         <SelectItem value="medium">Medium</SelectItem>
                                         <SelectItem value="slow">Slow</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="flex items-center gap-2 bg-[#0a0a0b] px-3 py-1.5 rounded-md border border-slate-800 shrink-0">
+                                <Clock className="h-4 w-4 text-slate-500" />
+                                <Select value={config.timeframe} onValueChange={v => setConfig({ ...config, timeframe: v })}>
+                                    <SelectTrigger className="h-7 w-[90px] bg-transparent border-none focus:ring-0 text-white font-mono text-sm px-0">
+                                        <SelectValue placeholder="Period" />
+                                    </SelectTrigger>
+                                    <SelectContent className="bg-[#1a1a1e] border-slate-700 text-white">
+                                        <SelectItem value="1m">1 min</SelectItem>
+                                        <SelectItem value="5m">5 min</SelectItem>
+                                        <SelectItem value="15m">15 min</SelectItem>
+                                        <SelectItem value="30m">30 min</SelectItem>
+                                        <SelectItem value="1h">1 hour</SelectItem>
+                                        <SelectItem value="1d">1 day</SelectItem>
                                     </SelectContent>
                                 </Select>
                             </div>

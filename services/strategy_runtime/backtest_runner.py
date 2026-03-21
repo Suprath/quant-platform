@@ -345,10 +345,11 @@ async def backfill_symbol(session, qdb_conn, symbol, missing_dates):
                 cur = qdb_conn.cursor()
                 # Save to both legacy 'ohlc' and 'ohlc_1m' for consistency
                 for table in ["ohlc", "ohlc_1m"]:
-                    cur.execute(f"""
+                    data = [(c[0], canonical_sym, "1m", c[1], c[2], c[3], c[4], c[5]) for c in candles]
+                    cur.executemany(f"""
                         INSERT INTO {table} (timestamp, symbol, timeframe, open, high, low, close, volume)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (c[0], canonical_sym, "1m", c[1], c[2], c[3], c[4], c[5]))
+                    """, data)
                 qdb_conn.commit()
                 cur.close()
                 total_saved += len(candles)
@@ -833,13 +834,22 @@ def run(symbol, start_date_str, end_date_str, initial_cash, speed, timeframe='1m
                 start_ts = f"{start_date_str}T00:00:00.000000Z"
                 from datetime import datetime as dt2, timedelta as td2
                 next_day = (dt2.strptime(end_date_str, "%Y-%m-%d") + td2(days=1)).strftime("%Y-%m-%dT00:00:00.000000Z")
-                target_table = f"ohlc_{timeframe}"
-                cur.execute(f"""
-                    SELECT timestamp, open, high, low, close, volume
-                    FROM {target_table}
-                    WHERE symbol = %s AND timestamp >= %s AND timestamp < %s
-                    ORDER BY timestamp ASC
-                """, (db_sym, start_ts, next_day))
+                if timeframe == '1m':
+                    # Fast path: query ohlc (1m data) directly
+                    cur.execute(f"""
+                        SELECT timestamp, open, high, low, close, volume
+                        FROM ohlc
+                        WHERE symbol = %s AND timestamp >= %s AND timestamp < %s
+                        ORDER BY timestamp ASC
+                    """, (db_sym, start_ts, next_day))
+                else:
+                    # Downsample on the fly using QuestDB SAMPLE BY
+                    cur.execute(f"""
+                        SELECT timestamp, first(open), max(high), min(low), last(close), sum(volume)
+                        FROM ohlc
+                        WHERE symbol = %s AND timestamp >= %s AND timestamp < %s
+                        SAMPLE BY {timeframe} ALIGN TO CALENDAR
+                    """, (db_sym, start_ts, next_day))
                 candles = cur.fetchall()
                 cur.close()
                 return sym, candles
