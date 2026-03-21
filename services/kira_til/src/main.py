@@ -205,7 +205,7 @@ async def get_historical_performance(run_id: Optional[str] = Query(None)):
             return {"points": [], "summary": {"total_pnl_pct": 0, "max_drawdown_pct": 0, "current_equity": 0, "win_rate": 0, "profit_factor": 0}}
             
         if run_id:
-            cur.execute("SELECT snapshot_time, heat_pct, full_json FROM portfolio_snapshots WHERE run_id = %s ORDER BY snapshot_time DESC LIMIT 500", (run_id,))
+            cur.execute("SELECT snapshot_time, heat_pct, full_json FROM portfolio_snapshots WHERE run_id = %s ORDER BY snapshot_time ASC", (run_id,))
         else:
             # Default to live (where run_id is NULL)
             cur.execute("SELECT snapshot_time, heat_pct, full_json FROM portfolio_snapshots WHERE run_id IS NULL ORDER BY snapshot_time DESC LIMIT 500")
@@ -214,20 +214,21 @@ async def get_historical_performance(run_id: Optional[str] = Query(None)):
         cur.close()
         conn.close()
         
-        performance_data = []
-        for r in reversed(rows):
-            state = r[2] # Already a dict from JSONB column
-            performance_data.append({
+        full_performance_data = [] # Use this for full metrics calculation
+        for r in rows:
+            state = r[2] 
+            full_performance_data.append({
                 "time": r[0].isoformat(),
                 "equity": state.get("total_equity", 0),
                 "heat": r[1]
             })
-        if not performance_data:
+            
+        if not full_performance_data:
             return {"points": [], "summary": {"total_pnl_pct": 0, "max_drawdown_pct": 0, "current_equity": 0, "win_rate": 0, "profit_factor": 0}}
 
-        # Calculate real metrics
-        start_equity = performance_data[0]["equity"]
-        current_equity = performance_data[-1]["equity"]
+        # Calculate real metrics on FULL fidelity data
+        start_equity = full_performance_data[0]["equity"]
+        current_equity = full_performance_data[-1]["equity"]
         net_profit = current_equity - start_equity
         total_pnl = ((current_equity / start_equity) - 1) * 100 if start_equity > 0 else 0
         
@@ -236,9 +237,9 @@ async def get_historical_performance(run_id: Optional[str] = Query(None)):
 
         # Equity metrics
         daily_returns = []
-        for i in range(1, len(performance_data)):
-            prev = performance_data[i-1]["equity"]
-            curr = performance_data[i]["equity"]
+        for i in range(1, len(full_performance_data)):
+            prev = full_performance_data[i-1]["equity"]
+            curr = full_performance_data[i]["equity"]
             if prev > 0:
                 daily_returns.append((curr - prev) / prev)
             
@@ -247,6 +248,15 @@ async def get_historical_performance(run_id: Optional[str] = Query(None)):
             dd = (peak - curr) / peak * 100 if peak > 0 else 0
             if dd > max_dd:
                 max_dd = dd
+
+        # Sampling logic for UI performance (ONLY for the points list)
+        performance_data = full_performance_data
+        if run_id and len(performance_data) > 1000:
+            stride = len(performance_data) // 1000
+            sampled = performance_data[::stride]
+            if sampled[-1]["time"] != performance_data[-1]["time"]:
+                sampled.append(performance_data[-1])
+            performance_data = sampled
 
         # Sharpe Ratio
         sharpe_ratio = 0.0

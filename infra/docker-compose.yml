@@ -358,9 +358,9 @@ services:
       - REDIS_HOST=redis_state
       - POSTGRES_HOST=postgres_metadata
       - TIL_BACKTEST_MODE=false
-      - PYTHONPATH=/app:/kira-shared/src
+      - PYTHONPATH=/app:/app/src:/kira-shared/src
     volumes:
-      - ../services/kira_til:/app
+      - ../services/kira_til/src:/app/src
       - ../kira-shared:/kira-shared
     ports:
       - "8003:8000"

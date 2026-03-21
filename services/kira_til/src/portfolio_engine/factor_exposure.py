@@ -1,5 +1,10 @@
 from .models import PortfolioState, Position
 from typing import Dict, List
+try:
+    import til_core
+    HAS_TIL_CORE = True
+except ImportError:
+    HAS_TIL_CORE = False
 
 class FactorManager:
     """
@@ -35,8 +40,7 @@ class FactorManager:
     def validate_sector_limit(self, state: PortfolioState, sector: str, trade_value: float) -> (bool, str):
         self.calculate_exposures(state)
         
-        try:
-            import til_core
+        if HAS_TIL_CORE:
             new_exp = ((trade_value) / state.total_equity) * 100 if state.total_equity > 0 else 0
             limit = self.sector_limits.get(sector, self.max_sector_exposure_pct)
             
@@ -54,11 +58,11 @@ class FactorManager:
                 return False, res.reason
             
             return True, "Sector Approved"
-        except ImportError:
-            current_exp = state.sector_exposure.get(sector, 0.0)
-            new_exp = ((trade_value) / state.total_equity) * 100
-            total_exp = current_exp + new_exp
-            limit = self.sector_limits.get(sector, self.max_sector_exposure_pct)
-            if total_exp > limit:
-                return False, f"SEC_LIMIT_EXCEEDED"
-            return True, "Sector Approved"
+            
+        current_exp = state.sector_exposure.get(sector, 0.0)
+        new_exp = ((trade_value) / state.total_equity) * 100
+        total_exp = current_exp + new_exp
+        limit = self.sector_limits.get(sector, self.max_sector_exposure_pct)
+        if total_exp > limit:
+            return False, f"SEC_LIMIT_EXCEEDED"
+        return True, "Sector Approved"

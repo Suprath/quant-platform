@@ -27,24 +27,90 @@ ExcursionResult calculate_excursion_metrics(double entry_price, double min_excur
     return res;
 }
 
-double score_accumulation_pattern(double obv_slope, double adx, double vwap_dist, double relative_vol) {
-    double score = 0.0;
+struct PositionState {
+    std::string symbol;
+    double entry_price;
+    double current_price;
+    int qty;
+    std::string direction; // "LONG" or "SHORT"
+    double sl_price;
+    double tp_price;
+    int bars_held;
+};
+
+struct StockFeatures {
+    double adx;
+    double atr_slope_5d;
+    double obv_slope_5d;
+    double momentum_5d;
+    double hurst;
+    double close;
+};
+
+struct TickSignal {
+    std::string symbol;
+    std::string reason; // "SL", "TP", "TIME", "SIGNAL"
+};
+
+struct BatchResults {
+    std::vector<TickSignal> exits;
+    std::map<std::string, double> signals; // symbol -> score
+};
+
+double score_accumulation_pattern(double adx, double atr_slope, double obv_slope, double momentum, double hurst) {
+    double adx_score = std::max(0.0, 1.0 - (adx / 25.0));
+    double atr_score = std::min(1.0, std::max(0.0, -atr_slope / 0.002));
+    double obv_score = std::min(1.0, obv_slope / 0.005);
+    double flat_score = std::max(0.0, 1.0 - std::abs(momentum) / 0.015);
+    double hurst_score = std::min(1.0, std::max(0.0, (hurst - 0.45) / 0.15));
     
-    // OBV Slope: Direct institutional interest (40 points)
-    if (obv_slope > 0) score += 40.0 * (std::min(obv_slope, 5.0) / 5.0);
+    return (adx_score * 0.20 + atr_score * 0.25 + obv_score * 0.25 + flat_score * 0.20 + hurst_score * 0.10);
+}
+
+BatchResults process_tick_batch(std::vector<PositionState>& positions, 
+                               const std::map<std::string, StockFeatures>& universe_features) {
+    BatchResults res;
     
-    // ADX: Trend strength (20 points)
-    if (adx > 20.0) score += 20.0 * (std::min(adx - 20.0, 30.0) / 30.0);
+    // 1. Exit & MTW Logic
+    for (auto& pos : positions) {
+        if (universe_features.count(pos.symbol)) {
+            const auto& feat = universe_features.at(pos.symbol);
+            pos.current_price = feat.close;
+            pos.bars_held++;
+            
+            double pnl_pct = (pos.current_price - pos.entry_price) / pos.entry_price;
+            if (pos.direction == "SHORT") pnl_pct = -pnl_pct;
+            
+            bool exited = false;
+            if (pos.direction == "LONG" && pos.current_price >= pos.tp_price) {
+                res.exits.push_back({pos.symbol, "TP"});
+                exited = true;
+            } else if (pos.direction == "SHORT" && pos.current_price <= pos.tp_price) {
+                res.exits.push_back({pos.symbol, "TP"});
+                exited = true;
+            } else if (pos.direction == "LONG" && pos.current_price <= pos.sl_price) {
+                res.exits.push_back({pos.symbol, "SL"});
+                exited = true;
+            } else if (pos.direction == "SHORT" && pos.current_price >= pos.sl_price) {
+                res.exits.push_back({pos.symbol, "SL"});
+                exited = true;
+            } else if (pos.bars_held >= 40) {
+                res.exits.push_back({pos.symbol, "TIME"});
+                exited = true;
+            }
+        }
+    }
     
-    // VWAP Distance: Valuation anchor (20 points)
-    // Closer to VWAP is better for accumulation (within 2%)
-    double abs_vwap_dist = std::abs(vwap_dist);
-    if (abs_vwap_dist < 2.0) score += 20.0 * (1.0 - abs_vwap_dist / 2.0);
+    // 2. Scanner Logic (Multi-Stock)
+    for (const auto& [sym, feat] : universe_features) {
+        // Only scan if not already in position (simplified)
+        double score = score_accumulation_pattern(feat.adx, feat.atr_slope_5d, feat.obv_slope_5d, feat.momentum_5d, feat.hurst);
+        if (score >= 0.40) {
+            res.signals[sym] = score;
+        }
+    }
     
-    // Relative Volume: Conviction (20 points)
-    if (relative_vol > 1.2) score += 20.0 * (std::min(relative_vol - 1.2, 3.8) / 3.8);
-    
-    return std::min(score, 100.0);
+    return res;
 }
 
 struct RiskResult {
@@ -88,7 +154,38 @@ PYBIND11_MODULE(til_core, m) {
         .def_readwrite("approved", &RiskResult::approved)
         .def_readwrite("reason", &RiskResult::reason);
 
+    py::class_<StockFeatures>(m, "StockFeatures")
+        .def(py::init<>())
+        .def_readwrite("adx", &StockFeatures::adx)
+        .def_readwrite("atr_slope_5d", &StockFeatures::atr_slope_5d)
+        .def_readwrite("obv_slope_5d", &StockFeatures::obv_slope_5d)
+        .def_readwrite("momentum_5d", &StockFeatures::momentum_5d)
+        .def_readwrite("hurst", &StockFeatures::hurst)
+        .def_readwrite("close", &StockFeatures::close);
+
+    py::class_<PositionState>(m, "PositionState")
+        .def(py::init<>())
+        .def_readwrite("symbol", &PositionState::symbol)
+        .def_readwrite("entry_price", &PositionState::entry_price)
+        .def_readwrite("current_price", &PositionState::current_price)
+        .def_readwrite("qty", &PositionState::qty)
+        .def_readwrite("direction", &PositionState::direction)
+        .def_readwrite("sl_price", &PositionState::sl_price)
+        .def_readwrite("tp_price", &PositionState::tp_price)
+        .def_readwrite("bars_held", &PositionState::bars_held);
+
+    py::class_<TickSignal>(m, "TickSignal")
+        .def(py::init<>())
+        .def_readwrite("symbol", &TickSignal::symbol)
+        .def_readwrite("reason", &TickSignal::reason);
+
+    py::class_<BatchResults>(m, "BatchResults")
+        .def(py::init<>())
+        .def_readwrite("exits", &BatchResults::exits)
+        .def_readwrite("signals", &BatchResults::signals);
+
     m.def("calculate_excursion_metrics", &calculate_excursion_metrics, "Calculates MAE and MFE percentages");
     m.def("score_accumulation_pattern", &score_accumulation_pattern, "Vectorized institutional accumulation pattern scoring");
     m.def("validate_risk_batch", &validate_risk_batch, "Fast portfolio risk and sector batch validation");
+    m.def("process_tick_batch", &process_tick_batch, "Atomic multi-stock scan, exit, and MTW update");
 }

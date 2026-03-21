@@ -2,6 +2,11 @@ from datetime import datetime
 from typing import Optional
 from .base_strategy import BaseStrategy, RawSignal
 from kira_shared.models.market import FeatureVector
+try:
+    import til_core
+    HAS_TIL_CORE = True
+except ImportError:
+    HAS_TIL_CORE = False
 
 class AccumulationBreakoutStrategy(BaseStrategy):
     """
@@ -54,6 +59,16 @@ class AccumulationBreakoutStrategy(BaseStrategy):
         )
     
     def get_pattern_score(self, features: FeatureVector) -> float:
+        if HAS_TIL_CORE:
+            # Explicitly pass all 5 required institutional parameters
+            return til_core.score_accumulation_pattern(
+                float(features.adx),
+                float(features.atr_slope_5d),
+                float(features.obv_slope_5d),
+                float(features.momentum_5d),
+                float(features.hurst)
+            )
+        # Fallback to Python logic
         adx_score    = max(0, 1.0 - (features.adx / 25))
         atr_score    = max(0, -features.atr_slope_5d / 0.002)
         atr_score    = min(1.0, atr_score)

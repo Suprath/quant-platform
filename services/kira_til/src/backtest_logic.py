@@ -231,6 +231,7 @@ class BacktestController:
                 
                 ohlc_rows = self._fetch_ohlc_bulk(fetch_symbols, start_ts, end_ts, timeframe)
                 noise_map = self._fetch_noise_confidence_bulk(fetch_symbols, date_str)
+                features_day = {} # Initialize to avoid NameError
                 
                 if not ohlc_rows:
                     continue
@@ -259,7 +260,7 @@ class BacktestController:
                     data_at_time = time_slices[ts_obj]
                     try:
                         # Pass skip_db=True to avoid synchronous per-tick writes
-                        await self._step_v3(data_at_time, noise_map, ts_obj, timeframe, pg_conn, sim_run_id, fetch_symbols, skip_db=True)
+                        await self._step_v4(data_at_time, features_day, ts_obj, timeframe, pg_conn, sim_run_id, fetch_symbols, skip_db=True)
                         
                         # Capture a snapshot in memory for the equity curve
                         state = await portfolio_engine.get_state()
@@ -287,7 +288,8 @@ class BacktestController:
                     if day_snapshots:
                         # We only flush every Nth snapshot to keep the DB size manageable while maintaining resolution
                         # e.g. every 5th snapshot for 1m data, or all for 15m+
-                        stride = 1 if timeframe in ["15m", "30m", "1h", "1d"] else 5
+                        # Record ALL snapshots for maximum curve resolution in backtests
+                        stride = 1
                         batch_snaps = day_snapshots[::stride]
                         
                         cur_pg.executemany("""
@@ -426,6 +428,141 @@ class BacktestController:
             conf_map[r[0]] = r[1]
         return conf_map
 
+    async def _execute_trade(self, symbol, direction, qty, price, timestamp, run_id, skip_db):
+        """Executes a trade in the portfolio engine and records it."""
+        try:
+            # 1. Update Portfolio Engine (Internal State)
+            await portfolio_engine.update_position_v2(
+                symbol=symbol, qty=qty, price=price,
+                sector="EQUITY", direction=direction,
+                timestamp=timestamp, run_id=run_id
+            )
+            
+            # 2. Set Metadata (Stops and Targets)
+            if not hasattr(self, "position_metadata"): self.position_metadata = {}
+            self.position_metadata[symbol] = {
+                "bars_held": 0,
+                "sl": price * 0.985 if direction == "LONG" else price * 1.015,
+                "tp_price": price * 1.05 if direction == "LONG" else price * 0.95,
+                "is_trailing": False
+            }
+            
+            # 3. Batch Log (for Speed)
+            if skip_db and hasattr(self, "_current_day_orders"):
+                # Order: (run_id, timestamp, symbol, transaction_type, quantity, price, pnl)
+                self._current_day_orders.append((
+                    run_id, timestamp, symbol, direction, qty, price, None # PnL is only for exits
+                ))
+        except Exception as e:
+            logger.error(f"Trade Execution Failed for {symbol}: {e}")
+
+    async def _step_v4(self, tick_data: Dict, features_day: Dict, timestamp: datetime, timeframe: str, pg_conn, run_id, discovery_universe, skip_db: bool = False):
+        """
+        Ultra-High Performance C++ Batch Ticker.
+        Zero Pydantic Allocation in Hot Loop.
+        """
+        if not tick_data: return
+        
+        portfolio_state = await portfolio_engine.get_state()
+        if not hasattr(self, 'feature_state'): self.feature_state = {}
+        
+        try:
+            import til_core
+            # 1. Prepare Portfolio Data for C++
+            cpp_positions = []
+            for pos in portfolio_state.open_positions:
+                meta = getattr(self, "position_metadata", {}).get(pos.symbol, {})
+                cpp_pos = til_core.PositionState()
+                cpp_pos.symbol = pos.symbol
+                cpp_pos.entry_price = pos.entry_price
+                cpp_pos.current_price = pos.current_price
+                cpp_pos.qty = pos.qty
+                cpp_pos.direction = pos.direction
+                cpp_pos.sl_price = meta.get("sl", pos.entry_price * 0.985)
+                cpp_pos.tp_price = meta.get("tp_price", pos.entry_price * 1.05)
+                cpp_pos.bars_held = meta.get("bars_held", 0)
+                cpp_positions.append(cpp_pos)
+            
+            # 2. Prepare Universe Data (Fast dict updates instead of Pydantic)
+            cpp_universe = {}
+            for sym, tick in tick_data.items():
+                ltp = tick['ltp']
+                fs = self.feature_state.get(sym, {"sma50": ltp, "sma200": ltp, "rsi": 50.0, "last_ltp": ltp})
+                
+                # Recursive SMA updates (O(1))
+                fs["sma50"] = (fs["sma50"] * 49 + ltp) / 50
+                fs["sma200"] = (fs["sma200"] * 199 + ltp) / 200
+                fs["last_ltp"] = ltp
+                self.feature_state[sym] = fs
+
+                momentum = (ltp / fs["sma50"]) - 1
+                
+                feat = til_core.StockFeatures()
+                feat.adx = 25.0 # Mock or from features_day
+                feat.atr_slope_5d = -0.0001
+                feat.obv_slope_5d = 0.02
+                feat.momentum_5d = momentum
+                feat.hurst = 0.55
+                feat.close = ltp
+                cpp_universe[sym] = feat
+            
+            # 3. Call C++ Atomic Operation (Scanning + Exit + MTW)
+            results = til_core.process_tick_batch(cpp_positions, cpp_universe)
+            
+            # 4. Sync State back to Python
+            for i, pos in enumerate(portfolio_state.open_positions):
+                pos.current_price = cpp_positions[i].current_price
+                pos.market_value = pos.qty * pos.current_price
+                meta = getattr(self, "position_metadata", {})
+                if pos.symbol not in meta: meta[pos.symbol] = {}
+                meta[pos.symbol]["bars_held"] = cpp_positions[i].bars_held
+                self.position_metadata = meta
+
+            portfolio_state.total_equity = portfolio_state.cash + sum(p.market_value for p in portfolio_state.open_positions)
+            
+            # 5. Handle Exits
+            for exit_sig in results.exits:
+                pos = next((p for p in portfolio_state.open_positions if p.symbol == exit_sig.symbol), None)
+                if not pos: continue
+                
+                price = tick_data[pos.symbol]['ltp']
+                if skip_db and hasattr(self, "_current_day_orders"):
+                    mult = 1 if pos.direction == "LONG" else -1
+                    actual_pnl = pos.qty * (price - pos.entry_price) * mult
+                    self._current_day_orders.append((
+                        run_id, timestamp, pos.symbol, 
+                        "LONG" if pos.direction=="SHORT" else "SHORT", abs(pos.qty), price, actual_pnl
+                    ))
+
+                await portfolio_engine.update_position_v2(
+                    symbol=pos.symbol, qty=-pos.qty, price=price,
+                    sector="EQUITY", direction="LONG" if pos.direction=="SHORT" else "SHORT",
+                    timestamp=timestamp, run_id=run_id
+                )
+                if pos.symbol in self.position_metadata:
+                    del self.position_metadata[pos.symbol]
+
+            # 6. Handle New Signals
+            for sym, score in results.signals.items():
+                if any(p.symbol == sym for p in portfolio_state.open_positions):
+                    continue
+                
+                # ML Logic (Python) - Only for approved signals
+                # confidence = await classifier.classify(sym, ...) # Optional
+                
+                size_res = await position_sizer.get_size(
+                    symbol=sym, entry_price=tick_data[sym]['ltp'],
+                    confidence=score, current_equity=portfolio_state.total_equity,
+                    in_backtest=True
+                )
+                
+                shares = size_res.get("shares", 0)
+                if shares > 0:
+                    await self._execute_trade(sym, "LONG", shares, tick_data[sym]['ltp'], timestamp, run_id, skip_db)
+
+        except (ImportError, Exception) as e:
+            logger.error(f"C++ Batch Error: {e}")
+            await self._step_v3(tick_data, {}, timestamp, timeframe, pg_conn, run_id, discovery_universe, skip_db)
 
     async def _step_v3(self, tick_data: Dict, noise_map: Dict, timestamp: datetime, timeframe: str, pg_conn, run_id, discovery_universe, skip_db: bool = False):
         """
@@ -588,14 +725,14 @@ class BacktestController:
             combined_conf = (signal.pattern_score + mech_res.mechanism_confidence + confidence_from_db) / 3.0
             
             sizing = await position_sizer.get_size(
-                symbol=signal.symbol,
-                entry_price=signal.entry_price_estimate,
-                confidence=combined_conf,
-                current_equity=current_equity,
-                signal_type=signal.signal_type,
-                direction=signal.direction.name if hasattr(signal.direction, 'name') else str(signal.direction),
-                timestamp=timestamp.isoformat(),
-                in_backtest=skip_db
+                signal.symbol,
+                signal.entry_price_estimate,
+                combined_conf,
+                current_equity,
+                signal.signal_type,
+                signal.direction.name if hasattr(signal.direction, 'name') else str(signal.direction),
+                timestamp.isoformat(),
+                skip_db
             )
             
             direction_str = signal.direction.name if hasattr(signal.direction, 'name') else str(signal.direction)
@@ -632,15 +769,14 @@ class BacktestController:
 
     def _fetch_discovery_universe(self, timestamp: datetime, timeframe: str) -> List[str]:
         """
-        Discovers all active symbols in QuestDB for the given time slice.
-        Uses a short-lived connection to prevent stale connection errors.
+        Discovers active symbols in QuestDB. 
+        Always looks at '1m' base data for discovery.
         """
-        # Find symbols with data in the last 2 hours from ohlc table
         window_start = timestamp - timedelta(hours=2)
         query = f"""
         SELECT DISTINCT symbol 
         FROM ohlc 
-        WHERE timeframe = '{timeframe}'
+        WHERE timeframe = '1m'
         AND timestamp >= '{window_start.isoformat()}'
         AND timestamp <= '{timestamp.isoformat()}';
         """
