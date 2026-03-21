@@ -38,7 +38,7 @@ class CppBacktestRunner:
         """
         self.py_engine = py_engine
 
-    def run(self):
+    def init_engine(self):
         try:
             import kira_engine as ke
         except ImportError:
@@ -53,32 +53,34 @@ class CppBacktestRunner:
         algo = engine.Algorithm
 
         # ── 1. Create and configure C++ engine ──
-        cpp = ke.KiraEngine()
-        is_cnc = engine.TradingMode == "CNC"
+        self.cpp = ke.KiraEngine()
+        trading_mode = engine.TradingMode
         initial_cash = algo.Portfolio.get('Cash', 100000.0)
-        cpp.configure(
+        self.cpp.configure(
             initial_cash=initial_cash,
             sq_hour=engine.SQUARE_OFF_HOUR,
             sq_minute=engine.SQUARE_OFF_MINUTE,
-            is_cnc=is_cnc,
+            is_cnc=trading_mode,
             leverage=engine.Leverage,
         )
+        self.symbol_id_map = {}
 
-        # ── 2. Load ticks into C++ (symbol string → int mapping) ──
-        ticks = engine.LocalData
-        cpp.reserve_ticks(len(ticks))
-
+    def add_ticks(self, ticks):
+        """Append to C++ engine without holding list in python memory."""
+        if not hasattr(self, 'cpp'):
+            self.init_engine()
+            
         # Build symbol map
-        symbol_id_map = {}  # string → int
         for t in ticks:
             sym = t['symbol']
-            if sym not in symbol_id_map:
-                symbol_id_map[sym] = cpp.get_or_create_symbol_id(sym)
+            if sym not in self.symbol_id_map:
+                self.symbol_id_map[sym] = self.cpp.get_or_create_symbol_id(sym)
 
         # Bulk-load ticks
+        # C++ std::vector grows dynamically
         for t in ticks:
-            cpp.add_tick(
-                symbol_id_map[t['symbol']],
+            self.cpp.add_tick(
+                self.symbol_id_map[t['symbol']],
                 t['ltp'],
                 t['v'],
                 t['timestamp'],
@@ -86,9 +88,16 @@ class CppBacktestRunner:
                 t['_hour'],
                 t['_minute'],
             )
+        logger.info(f"⏳ C++ Engine buffered {len(ticks):,} ticks. Total in C++ RAM: {self.cpp.tick_count():,} | Symbols Tracked: {len(self.symbol_id_map)}")
 
-        logger.info(f"📦 Loaded {cpp.tick_count():,} ticks into C++ engine "
-                     f"({len(symbol_id_map)} symbols)")
+    def run(self):
+        engine = self.py_engine
+        algo = engine.Algorithm
+        if not hasattr(self, 'cpp'):
+            self.init_engine()
+            
+        cpp = self.cpp
+        symbol_id_map = self.symbol_id_map
 
         # ── 3. Register indicators in C++ ──
         indicator_id_counter = 0
@@ -123,10 +132,16 @@ class CppBacktestRunner:
 
         # Pre-allocate reusable objects (same optimisation as ProcessTickFast)
         _tick = Tick(None, '', 0, 0)
-        _slice = FastSlice()
-
-        # Reverse map: int → string
+        # ── 3. Map Symbol IDs and populate initial Portfolio ──
+        symbol_id_map = self.symbol_id_map # string symbol -> int id
         id_to_symbol = {v: k for k, v in symbol_id_map.items()}
+        
+        # Ensure algo.Portfolio has entries for all subscribed symbols to avoid KeyErrors
+        for sym in symbol_id_map.keys():
+            if sym not in algo.Portfolio:
+                algo.Portfolio[sym] = SecurityHolding(sym, 0, 0.0)
+
+        _slice = FastSlice() # This line was moved here from above
 
         def on_tick(symbol_id, price, volume, timestamp_ms):
             """Called from C++ per tick. Builds a Slice and invokes OnData."""
@@ -148,6 +163,15 @@ class CppBacktestRunner:
             algo.Portfolio['Cash'] = cpp.get_cash()
             algo.Portfolio['TotalPortfolioValue'] = cpp.get_portfolio_value()
 
+            # Date rollover logic for Noise Update!
+            from datetime import datetime as _dt
+            dt = _dt.utcfromtimestamp(timestamp_ms / 1000.0)
+            current_date_int = dt.year * 10000 + dt.month * 100 + dt.day
+            if not hasattr(engine, '_cpp_last_date_int') or engine._cpp_last_date_int != current_date_int:
+                engine._cpp_last_date_int = current_date_int
+                if hasattr(engine, 'AllNoiseData'):
+                    engine.SetNoiseData(engine.AllNoiseData.get(current_date_int, {}))
+
             # Sync indicator values from C++ → Python objects
             for ind_id, py_ind in indicator_map.items():
                 py_ind.Value = cpp.get_indicator_value(ind_id)
@@ -163,6 +187,7 @@ class CppBacktestRunner:
 
             # Set time on the algorithm
             algo.Time = datetime.utcfromtimestamp(timestamp_ms / 1000.0)
+            _slice.Time = algo.Time
             engine.CurrentSlice = _slice
 
             # Call user strategy
@@ -194,8 +219,24 @@ class CppBacktestRunner:
                 cpp.liquidate(symbol_id_map[symbol], 0)
             algo.Portfolio['Cash'] = cpp.get_cash()
 
+        def cpp_submit_order(symbol, quantity, order_type="MARKET"):
+            if symbol not in symbol_id_map:
+                logger.warning(f"⚠️ SubmitOrder: {symbol} not in universe")
+                return False
+            sym_id = symbol_id_map[symbol]
+            price = cpp.get_last_price(sym_id)
+            if price <= 0:
+                return False
+            
+            # Execute in C++
+            success = cpp.execute_order(sym_id, "BUY" if quantity > 0 else "SELL", abs(int(quantity)), price, 0)
+            # Sync balance back
+            algo.Portfolio['Cash'] = cpp.get_cash()
+            return success
+
         engine.SetHoldings = cpp_set_holdings
         engine.Liquidate = cpp_liquidate
+        engine.SubmitOrder = cpp_submit_order
 
         # ── 6. Run the C++ engine ──
         logger.info("🚀 Starting C++ engine tick loop...")
@@ -207,7 +248,7 @@ class CppBacktestRunner:
         _t_interval = [t0]
         _max_tps = [0.0]
         _speed_samples = []
-        _report_interval = 100_000
+        _report_interval = 500_000
 
         # Wrap on_tick with speed tracking
         _original_on_tick = on_tick
@@ -240,6 +281,8 @@ class CppBacktestRunner:
         engine.SetHoldings = _original_set_holdings
         if _original_liquidate:
             engine.Liquidate = _original_liquidate
+        if _original_submit_order:
+            engine.SubmitOrder = _original_submit_order
 
         # ── 8. Flush buffered orders to DB via existing exchange ──
         orders = cpp.get_orders()

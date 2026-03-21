@@ -32,6 +32,7 @@ class BacktestRequest(BaseModel):
     initial_cash: float
     strategy_name: str = "CustomStrategy"
     project_files: Optional[Dict[str, str]] = None  # {filename: code} for multi-file projects
+    timeframe: str = "1m"
     speed: str = "fast"  # fast, medium, slow
     trading_mode: str = "MIS" # MIS, CNC, or OPTIONS
 
@@ -542,7 +543,8 @@ def run_backtest_process(run_id: str, request: BacktestRequest, strategy_file_pa
         "--start", request.start_date,
         "--end", request.end_date,
         "--cash", str(request.initial_cash),
-        "--speed", request.speed
+        "--speed", request.speed,
+        "--timeframe", request.timeframe
     ]
     
     try:

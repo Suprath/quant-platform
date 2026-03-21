@@ -491,7 +491,7 @@ class AlgorithmEngine:
         _last_hm = None
 
         # Speed measurement
-        _report_interval = 250_000
+        _report_interval = 25_000
         _t_start = _time.time()
         _t_interval = _t_start
         _max_tps = 0.0

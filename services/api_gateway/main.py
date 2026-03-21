@@ -985,23 +985,13 @@ def run_backtest(request: BacktestRequest):
         if "initial_cash" in req_data:
             req_data["initial_capital"] = req_data["initial_cash"]
 
-        # If strategy_name suggests traditional, we could route elsewhere, 
-        # but for now, we point to the optimized kira_til engine.
+        # Route to strategy_runtime for custom Python code execution
         response = requests.post(
-            target_url,
-            json=req_data,
-            timeout=10 
+            "http://strategy_runtime:8000/backtest",
+            json=request.dict(),
+            timeout=10
         )
-        if response.status_code == 200:
-             return response.json()
-        else:
-             # Fallback to strategy_runtime if kira_til fails or doesn't handle this type
-             response = requests.post(
-                "http://strategy_runtime:8000/backtest",
-                json=request.dict(),
-                timeout=10
-             )
-             return response.json()
+        return response.json()
     except requests.exceptions.RequestException as e:
         # Try strategy_runtime fallback on connection error too
         try:

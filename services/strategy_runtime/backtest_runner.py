@@ -605,21 +605,25 @@ def ohlc_to_ticks(timestamp, open_price, high, low, close, volume):
     
     return [t_open, t_mid1, t_mid2, t_close]
 
-def run(symbol, start, end, initial_cash, speed="fast"):
-    if not STRATEGY_NAME:
-        logger.error("STRATEGY_NAME env var not set")
-        sys.exit(1)
+def run(symbol, start_date_str, end_date_str, initial_cash, speed, timeframe='1m'):
+    """
+    Main entry point for backtest execution.
+    Initializes engine, loads data in chunks, and runs the tick loop.
+    """
+    RUN_ID = os.getenv('RUN_ID', 'test_run')
+    STRATEGY_NAME = os.getenv('STRATEGY_NAME', 'strategies.demo_algo.DemoStrategy')
+    TRADING_MODE = os.getenv('TRADING_MODE', 'MIS')
 
     logger.info(f"🚀 Starting Backtest Runner: {RUN_ID} for {STRATEGY_NAME}")
     
     # Parse clean date strings for backfill/scanner
-    start_clean = start.split('T')[0] if 'T' in start else start
-    end_clean = end.split('T')[0] if 'T' in end else end
+    start_clean = start_date_str.split('T')[0] if 'T' in start_date_str else start_date_str
+    end_clean = end_date_str.split('T')[0] if 'T' in end_date_str else end_date_str
     
     if start_clean > end_clean:
         logger.warning(f"🔄 Swapping start/end dates: {start_clean} > {end_clean}")
         start_clean, end_clean = end_clean, start_clean
-        start, end = end, start
+        start_date_str, end_date_str = end_date_str, start_date_str
     
     # ===== STEP 1: Initialize Engine & Load Strategy =====
     pg_conn = get_db_connection()
@@ -787,103 +791,223 @@ def run(symbol, start, end, initial_cash, speed="fast"):
 
     _t0 = _time.time()
     total_ticks = 0
-    max_workers = min(len(universe_symbols), 16)
 
-    for day_idx, date_str in enumerate(trading_dates):
-        # ── Dynamic Symbol Selection ──
-        # We fetch data for:
-        # A. Symbols in the user's static universe (if any)
-        # B. Symbols selected by the scanner today
-        # C. Symbols we currently hold in our portfolio (Ensure continuity for CNC exits)
-        held_symbols = engine.GetHeldSymbols()
-        active_symbols_list = list(universe_symbols) # Static/Initial List
+    use_cpp = os.getenv("KIRA_CPP_ENGINE", "false").lower() == "true"
+    if use_cpp:
+        logger.info("⚡ KIRA_CPP_ENGINE=true. Preparing Bulk Data Load for C++ wrapper...")
         
-        # Merge with held symbols
-        for sym in held_symbols:
-            if sym not in active_symbols_list:
-                active_symbols_list.append(sym)
-                
-        # Update worker count if needed
-        max_workers = min(len(active_symbols_list) or 1, 16)
-
-        # Fetch this day's candles and noise signals for all symbols in parallel
-        day_ticks = []
-        day_noise = {}
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            # 1. Fetch Candles
-            candle_futures = {pool.submit(_fetch_candles_for_date, sym, date_str): sym for sym in active_symbols_list}
-            # 2. Fetch Noise Signals (Phase 9)
-            noise_futures = {pool.submit(_fetch_noise_for_date, sym, date_str): sym for sym in active_symbols_list}
+        try:
+            from engine_cpp import CppBacktestRunner
+        except ImportError:
+            logger.error("❌ kira_engine C++ module not found. Falling back to Python loop.")
+            use_cpp = False
             
-            for future in as_completed(candle_futures):
-                sym, candles = future.result()
-                if candles:
-                    for c in candles:
-                        ts, o, h, l, c_price, v = c
-                        for t in ohlc_to_ticks(ts, o, h, l, c_price, v):
-                            t['symbol'] = sym
-                            day_ticks.append(t)
-            
-            for future in as_completed(noise_futures):
-                sym, confidence = future.result()
-                day_noise[sym] = confidence
-
-        if not day_ticks:
-            continue  # Holiday or no data
-
-        # Inject Noise Cache (Phase 9)
-        engine.SetNoiseData(day_noise)
-
-        # Inject Active Universe (Phase 12)
-        # 1. Get symbols explicitly selected by scanner for today
-        daily_symbols = []
+    if use_cpp:
+        # --- C++ MONOLITHIC BULK FETCH ---
+        master_universe = set(initial_symbols) | set(engine.GetHeldSymbols())
         if engine.UniverseEnabled:
             try:
                 pg_conn = get_db_connection()
                 try:
                     pg_cur = pg_conn.cursor()
-                    pg_cur.execute("""
-                        SELECT symbol FROM backtest_universe 
-                        WHERE run_id = %s AND date = %s
-                    """, (RUN_ID, date_str))
-                    daily_symbols = [row[0] for row in pg_cur.fetchall()]
+                    pg_cur.execute("SELECT DISTINCT symbol FROM backtest_universe WHERE run_id = %s", (RUN_ID,))
+                    db_symbols = [row[0] for row in pg_cur.fetchall()]
+                    master_universe.update(db_symbols)
                     pg_cur.close()
                 finally:
                     release_db_connection(pg_conn)
             except Exception as e:
-                logger.error(f"Failed to fetch daily universe from DB: {e}")
+                logger.error(f"Failed to fetch master universe from DB: {e}")
         else:
-            daily_symbols = list(engine.SubscriptionManager.Subscriptions.keys())
-
-        # 2. ALSO include symbols we currently hold (Continuity for exits/re-entries)
-        # AND include initial static symbols (Leaders) to ensure they are always processed
-        held_symbols = engine.GetHeldSymbols()
-        final_universe = list(set(daily_symbols + held_symbols + list(initial_symbols)))
+            master_universe.update(engine.SubscriptionManager.Subscriptions.keys())
         
-        if len(held_symbols) > 0:
-            added = [s for s in held_symbols if s not in daily_symbols]
-            if added:
-                logger.debug(f"🌌 Continuity: Added {len(added)} held symbols to today's universe")
+        master_universe = list(master_universe)
+        engine.SetActiveUniverse(master_universe)
+
+        def _fetch_all_candles(sym, start_date_str, end_date_str):
+            db_sym = normalize_symbol(sym)
+            conn = get_qdb_conn()
+            if not conn: return sym, []
+            try:
+                cur = conn.cursor()
+                start_ts = f"{start_date_str}T00:00:00.000000Z"
+                from datetime import datetime as dt2, timedelta as td2
+                next_day = (dt2.strptime(end_date_str, "%Y-%m-%d") + td2(days=1)).strftime("%Y-%m-%dT00:00:00.000000Z")
+                target_table = f"ohlc_{timeframe}"
+                cur.execute(f"""
+                    SELECT timestamp, open, high, low, close, volume
+                    FROM {target_table}
+                    WHERE symbol = %s AND timestamp >= %s AND timestamp < %s
+                    ORDER BY timestamp ASC
+                """, (db_sym, start_ts, next_day))
+                candles = cur.fetchall()
+                cur.close()
+                return sym, candles
+            finally:
+                release_qdb_conn(conn)
+
+        def _fetch_all_noise(sym, start_date_str, end_date_str):
+            db_sym = normalize_symbol(sym)
+            conn = get_qdb_conn()
+            if not conn: return sym, []
+            try:
+                cur = conn.cursor()
+                start_ts = f"{start_date_str}T00:00:00.000000Z"
+                from datetime import datetime as dt2, timedelta as td2
+                next_day = (dt2.strptime(end_date_str, "%Y-%m-%d") + td2(days=1)).strftime("%Y-%m-%dT00:00:00.000000Z")
+                cur.execute("""
+                    SELECT timestamp, confidence FROM noise_confidence
+                    WHERE symbol = %s AND timestamp >= %s AND timestamp < %s
+                    ORDER BY timestamp ASC
+                """, (db_sym, start_ts, next_day))
+                rows = cur.fetchall()
+                cur.close()
+                return sym, rows
+            finally:
+                release_qdb_conn(conn)
+
+        max_workers = min(len(master_universe) or 1, 16)
+        all_noise = {}
         
-        engine.SetActiveUniverse(final_universe)
+        runner = CppBacktestRunner(engine)
+        runner.init_engine()
 
-        # Sort this day's ticks chronologically
-        day_ticks.sort(key=itemgetter('timestamp'))
+        chunk_size = 20  # Load 20 trading days (~1 month) per chunk
+        
+        logger.info(f"⏳ Bulk-paging {len(master_universe)} symbols in {chunk_size}-day chunks straight to C++ memory...")
+        from operator import itemgetter
+        
+        for i in range(0, len(trading_dates), chunk_size):
+            chunk_dates = trading_dates[i:i+chunk_size]
+            curr_start = chunk_dates[0]
+            curr_end = chunk_dates[-1]
+            chunk_ticks = []
 
-        # Feed to engine and process
-        engine.SetBacktestData(day_ticks)
-        engine._run_python_turbo_path()
-        total_ticks += len(day_ticks)
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                candle_futures = {pool.submit(_fetch_all_candles, sym, curr_start, curr_end): sym for sym in master_universe}
+                noise_futures = {pool.submit(_fetch_all_noise, sym, curr_start, curr_end): sym for sym in master_universe}
+                
+                for future in as_completed(candle_futures):
+                    sym, candles = future.result()
+                    if candles:
+                        for c in candles:
+                            ts, o, h, l, c_price, v = c
+                            for t in ohlc_to_ticks(ts, o, h, l, c_price, v):
+                                t['symbol'] = sym
+                                chunk_ticks.append(t)
+                
+                for future in as_completed(noise_futures):
+                    sym, rows = future.result()
+                    if rows:
+                        for row in rows:
+                            nt, conf = row
+                            from datetime import datetime as dt2
+                            if isinstance(nt, int): nt_dt = dt2.utcfromtimestamp(nt/1000.0)
+                            else: nt_dt = nt
+                            d_int = nt_dt.year * 10000 + nt_dt.month * 100 + nt_dt.day
+                            if d_int not in all_noise: all_noise[d_int] = {}
+                            all_noise[d_int][sym] = conf
+            
+            # Sort this specific sequence natively 
+            chunk_ticks.sort(key=itemgetter('timestamp'))
+            
+            # Feed buffer direct to C++ memory
+            runner.add_ticks(chunk_ticks)
+            total_ticks += len(chunk_ticks)
+            
+            # Allow Python GC to obliterate this array before pulling the next 20 days
+            del chunk_ticks
 
-        # Discard — free memory immediately
-        del day_ticks
+        engine.AllNoiseData = all_noise
 
-        # Progress report every 20 days
-        if (day_idx + 1) % 20 == 0 or day_idx == len(trading_dates) - 1:
-            elapsed = _time.time() - _t0
-            tps = total_ticks / elapsed if elapsed > 0 else 0
-            logger.info(f"📊 Day {day_idx+1}/{len(trading_dates)} done | "
-                        f"{total_ticks:,} ticks in {elapsed:.1f}s ({tps:,.0f} tps)")
+        logger.info(f"🚀 Master load finished! Executing C++ Engine...")
+        runner.run()
+
+    else:
+        # --- PYTHON LOCAL STREAMING ---
+        for day_idx, date_str in enumerate(trading_dates):
+            # ── Dynamic Symbol Selection ──
+            # 1. Get symbols explicitly selected by scanner for today
+            daily_symbols = []
+            if engine.UniverseEnabled:
+                try:
+                    pg_conn = get_db_connection()
+                    try:
+                        pg_cur = pg_conn.cursor()
+                        pg_cur.execute("""
+                            SELECT symbol FROM backtest_universe 
+                            WHERE run_id = %s AND date = %s
+                        """, (RUN_ID, date_str))
+                        daily_symbols = [row[0] for row in pg_cur.fetchall()]
+                        pg_cur.close()
+                    finally:
+                        release_db_connection(pg_conn)
+                except Exception as e:
+                    logger.error(f"Failed to fetch daily universe from DB: {e}")
+            else:
+                daily_symbols = list(engine.SubscriptionManager.Subscriptions.keys())
+
+            # 2. ALSO include symbols we currently hold (Continuity for exits/re-entries)
+            # AND include initial static symbols (Leaders) to ensure they are always processed
+            held_symbols = engine.GetHeldSymbols()
+            final_universe = list(set(daily_symbols + held_symbols + list(initial_symbols)))
+            
+            if len(held_symbols) > 0:
+                added = [s for s in held_symbols if s not in daily_symbols]
+                if added:
+                    logger.debug(f"🌌 Continuity: Added {len(added)} held symbols to today's universe")
+            
+            engine.SetActiveUniverse(final_universe)
+            active_symbols_list = final_universe
+
+            # Update worker count if needed
+            max_workers = min(len(active_symbols_list) or 1, 16)
+
+            # Fetch this day's candles and noise signals for all symbols in parallel
+            day_ticks = []
+            day_noise = {}
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                # 1. Fetch Candles
+                candle_futures = {pool.submit(_fetch_candles_for_date, sym, date_str): sym for sym in active_symbols_list}
+                # 2. Fetch Noise Signals (Phase 9)
+                noise_futures = {pool.submit(_fetch_noise_for_date, sym, date_str): sym for sym in active_symbols_list}
+                
+                for future in as_completed(candle_futures):
+                    sym, candles = future.result()
+                    if candles:
+                        for c in candles:
+                            ts, o, h, l, c_price, v = c
+                            for t in ohlc_to_ticks(ts, o, h, l, c_price, v):
+                                t['symbol'] = sym
+                                day_ticks.append(t)
+                
+                for future in as_completed(noise_futures):
+                    sym, confidence = future.result()
+                    day_noise[sym] = confidence
+
+            if not day_ticks:
+                continue  # Holiday or no data
+
+            # Inject Noise Cache (Phase 9)
+            engine.SetNoiseData(day_noise)
+
+            # Sort this day's ticks chronologically
+            day_ticks.sort(key=itemgetter('timestamp'))
+
+            # Feed to engine and process
+            engine.SetBacktestData(day_ticks)
+            engine._run_python_turbo_path()
+            total_ticks += len(day_ticks)
+
+            # Discard — free memory immediately
+            del day_ticks
+
+            # Progress report every 2 days
+            if (day_idx + 1) % 2 == 0 or day_idx == len(trading_dates) - 1:
+                elapsed = _time.time() - _t0
+                tps = total_ticks / elapsed if elapsed > 0 else 0
+                logger.info(f"📊 Day {day_idx+1}/{len(trading_dates)} done | "
+                            f"{total_ticks:,} ticks in {elapsed:.1f}s ({tps:,.0f} tps)")
 
     _elapsed = _time.time() - _t0
     _tps = total_ticks / _elapsed if _elapsed > 0 else 0
@@ -920,6 +1044,7 @@ if __name__ == "__main__":
     parser.add_argument("--end", required=True)
     parser.add_argument("--cash", type=float, default=100000.0)
     parser.add_argument("--speed", type=str, default="fast")
+    parser.add_argument("--timeframe", type=str, default="1m")
     args = parser.parse_args()
     
-    run(args.symbol, args.start, args.end, args.cash, args.speed)
+    run(args.symbol, args.start, args.end, args.cash, args.speed, args.timeframe)
