@@ -3,7 +3,9 @@ FROM kira-python-base
 WORKDIR /app
 
 # Install only service-specific dependencies
-RUN pip install --no-cache-dir pybind11
+COPY services/kira_til/requirements.txt /app/
+RUN pip install --no-cache-dir pybind11 && \
+    pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy kira-shared (we expect it to be provided in the build context)
 COPY kira-shared /app/kira-shared

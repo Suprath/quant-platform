@@ -32,13 +32,11 @@ class MechanismClassifier:
         
         start_ms = time.monotonic() * 1000
         
-        # Run all mechanism checks concurrently
-        tasks = [
-            asyncio.create_task(m.check(signal, features, market_context))
-            for m in self.mechanisms
-        ]
-        
-        results = await asyncio.gather(*tasks)
+        # Run mechanism checks sequentially (optimized)
+        results = []
+        for m in self.mechanisms:
+            res = await m.check(signal, features, market_context)
+            results.append(res)
         
         # Filter to present mechanisms
         present = [r for r in results if r.is_present]

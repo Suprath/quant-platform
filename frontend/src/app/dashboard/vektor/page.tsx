@@ -801,6 +801,7 @@ export default function VektorTerminal() {
                                 <option value="1m">1 MINUTE</option>
                                 <option value="5m">5 MINUTES</option>
                                 <option value="15m">15 MINUTES</option>
+                                <option value="30m">30 MINUTES</option>
                                 <option value="1h">1 HOUR</option>
                                 <option value="1d">1 DAY</option>
                             </select>

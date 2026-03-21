@@ -34,8 +34,8 @@ class PositionSizerClient:
 
     async def get_size(self, symbol: str, entry_price: float, confidence: float, current_equity: float, 
                       strategy_id: str = "default", signal_type: str = "long", direction: str = "BUY",
-                      timestamp: Optional[str] = None) -> Dict:
-        if self.backtest_mode:
+                      timestamp: Optional[str] = None, in_backtest: bool = False) -> Dict:
+        if self.backtest_mode or in_backtest:
             # Returns a realistic position size based on current equity for testing
             risk_per_trade = current_equity * 0.02 # 2% risk
             shares = int(risk_per_trade / entry_price) if entry_price > 0 else 0

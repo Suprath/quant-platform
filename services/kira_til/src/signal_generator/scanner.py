@@ -16,18 +16,16 @@ class UniverseScanner:
     
     async def scan(self, features_batch: Dict[str, FeatureVector]) -> List[RawSignal]:
         """
-        Runs concurrently for all stocks.
+        Runs sequentially for all stocks (optimized for backtest).
         """
-        tasks = [
-            self._scan_stock(symbol, features)
-            for symbol, features in features_batch.items()
-        ]
-        
-        results = await asyncio.gather(*tasks)
-        
         fired_signals = []
-        for signal_list in results:
-            fired_signals.extend(signal_list)
+        for symbol, features in features_batch.items():
+            try:
+                stock_signals = await self._scan_stock(symbol, features)
+                if stock_signals:
+                    fired_signals.extend(stock_signals)
+            except Exception as e:
+                logger.error(f"Error scanning {symbol}: {e}")
             
         return fired_signals
     

@@ -37,7 +37,7 @@ def test_heat_limit_validation():
     # Try a trade with 11% risk -> REJECT
     ok, msg = manager.validate_trade_risk(state, 11000.0)
     assert ok is False
-    assert "Heat Limit Exceeded" in msg
+    assert "TOTAL_HEAT_LIMIT_EXCEEDED" in msg
 
 def test_sector_exposure_validation():
     manager = FactorManager(max_sector_exposure_pct=30.0)
@@ -65,7 +65,7 @@ def test_sector_exposure_validation():
     # Adding more IT -> REJECT
     ok, msg = manager.validate_sector_limit(state, "IT", 5000.0)
     assert ok is False
-    assert "Sector Exposure Limit Exceeded" in msg
+    assert "SEC_LIMIT_EXCEEDED" in msg
     
     # Adding ENERGY -> OK
     ok, msg = manager.validate_sector_limit(state, "ENERGY", 5000.0)

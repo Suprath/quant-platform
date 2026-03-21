@@ -6,3 +6,5 @@ psycopg2-binary==2.9.9
 requests==2.31.0
 python-dotenv==1.0.1
 aiohttp==3.9.3
+pytest==7.4.4
+pytest-asyncio==0.23.5

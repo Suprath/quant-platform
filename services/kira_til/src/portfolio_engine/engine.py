@@ -29,9 +29,13 @@ class PortfolioEngine:
         self.factor_manager = FactorManager()
         self.initial_capital = initial_capital
         self._state: Optional[PortfolioState] = None
+        self.in_backtest = False
 
     async def get_state(self) -> PortfolioState:
-        """Fetch current state from Redis or return default."""
+        """Fetch current state from memory (backtest) or Redis (live)."""
+        if self.in_backtest and self._state:
+            return self._state
+
         try:
             cached = await self.redis.client.get(self.REDIS_KEY_STATE)
         except Exception as e:
@@ -53,6 +57,7 @@ class PortfolioEngine:
 
     async def clear_state(self, timestamp: Optional[datetime] = None, initial_capital: Optional[float] = None, run_id: Optional[str] = None):
         """Reset portfolio state in Redis and memory, and initialize backtest_portfolios in Postgres."""
+        self.in_backtest = run_id is not None
         cap = initial_capital if initial_capital is not None else self.initial_capital
         self._state = PortfolioState(
             total_equity=cap,
@@ -88,13 +93,20 @@ class PortfolioEngine:
         # Take initial snapshot to mark the start of the equity curve at initial_capital
         await self.take_snapshot(timestamp, run_id=run_id)
 
-    async def save_state(self):
-        """Persist state to Redis."""
+        await self.save_state(run_id=run_id)
+        await self.take_snapshot(timestamp, run_id=run_id)
+
+    async def save_state(self, run_id: Optional[str] = None):
+        """Persist state to Redis. Skips if in high-speed backtest (run_id present)."""
         if self._state:
             # Update metrics before saving
             self.heat_manager.calculate_heat(self._state)
             self.factor_manager.calculate_exposures(self._state)
             
+            # Skip Redis during high-speed backtests to avoid I/O bottleneck
+            if run_id:
+                return
+
             # Ensure timestamp in model is updated if needed, but snapshots handle temporal logging
             state_json = self._state.json()
             await self.redis.client.set(self.REDIS_KEY_STATE, state_json)
@@ -213,31 +225,17 @@ class PortfolioEngine:
         
         # 3. Persist to standard backtest_orders table for frontend
         if run_id:
-            try:
-                conn = psycopg2.connect(
-                    host=self.pg_host, port=5432, user="admin", password="password123", database="quant_platform"
-                )
-                cur = conn.cursor()
-                cur.execute("""
-                    INSERT INTO backtest_orders (run_id, timestamp, symbol, transaction_type, quantity, price, pnl, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    run_id, timestamp or timesync.now_ist(), symbol, 
-                    "BUY" if qty > 0 else "SELL", abs(qty), price, pnl, 'filled'
-                ))
-                conn.commit()
-                cur.close()
-                conn.close()
-            except Exception as e:
-                logger.error(f"Failed to record backtest_order: {e}")
+            # We bypass this for standard high-speed runs and let the controller handle batching
+            pass
 
-        await self.save_state()
+        await self.save_state(run_id=run_id)
         await self.take_snapshot(timestamp, run_id=run_id)
 
-    async def mark_to_market(self, price_map: Dict[str, float], timestamp: Optional[datetime] = None, db_conn = None, run_id: Optional[str] = None):
+    async def mark_to_market(self, price_map: Dict[str, float], timestamp: Optional[datetime] = None, db_conn = None, run_id: Optional[str] = None, skip_db: bool = False):
         """
         Updates the current prices of all open positions and recalculates total equity.
         Syncs with backtest_portfolios for frontend visibility.
+        If skip_db is True, avoids synchronous Postgres updates for high performance.
         """
         state = await self.get_state()
         if not state.open_positions:
@@ -252,7 +250,7 @@ class PortfolioEngine:
             state.total_equity = state.cash + total_market_value
             
         # Update standard portfolio table for frontend
-        if run_id:
+        if run_id and not skip_db:
             try:
                 # We use the passed db_conn if available to avoid opening many connections
                 conn = db_conn
@@ -276,15 +274,19 @@ class PortfolioEngine:
             except Exception as e:
                 logger.error(f"Failed to update backtest_portfolios during MtM: {e}")
 
-        await self.save_state()
-        await self.take_snapshot(timestamp, db_conn=db_conn, run_id=run_id)
+        await self.save_state(run_id=run_id)
+        await self.take_snapshot(timestamp, db_conn=db_conn, run_id=run_id, skip_db=skip_db)
 
-    async def take_snapshot(self, timestamp: Optional[datetime] = None, db_conn = None, run_id: Optional[str] = None):
+    async def take_snapshot(self, timestamp: Optional[datetime] = None, db_conn = None, run_id: Optional[str] = None, skip_db: bool = False):
         """
         Saves a point-in-time snapshot to the PostgreSQL metadata DB.
         Useful for building historical equity curves and sector heatmaps.
+        If skip_db is True, skips the database write (used for high-speed batching).
         """
         state = await self.get_state()
+        if skip_db:
+            return
+
         snapshot_time = timestamp or timesync.now_ist()
         conn = db_conn
         should_close = False
@@ -334,6 +336,6 @@ class PortfolioEngine:
             cur.close()
             if should_close:
                 conn.close()
-            logger.info(f"📸 Portfolio snapshot saved to PostgreSQL (run_id={run_id})")
+            # logger.info(f"📸 Portfolio snapshot saved to PostgreSQL (run_id={run_id})") # Disabled for noise
         except Exception as e:
             logger.error(f"Failed to save portfolio snapshot: {e}")

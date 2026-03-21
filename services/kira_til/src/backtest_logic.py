@@ -249,15 +249,73 @@ class BacktestController:
                 
                 # 7. PROCESS SLICES SEQUENTIALLY (zero lookahead bias)
                 sorted_timestamps = sorted(time_slices.keys())
+                day_snapshots = []
+                day_orders = []
+                
+                # Mock a list to collect orders since we bypassed the engine's internal DB write
+                self._current_day_orders = day_orders
+
                 for ts_obj in sorted_timestamps:
                     data_at_time = time_slices[ts_obj]
                     try:
-                        await self._step_v3(data_at_time, noise_map, ts_obj, timeframe, pg_conn, sim_run_id, active_universe)
+                        # Pass skip_db=True to avoid synchronous per-tick writes
+                        await self._step_v3(data_at_time, noise_map, ts_obj, timeframe, pg_conn, sim_run_id, fetch_symbols, skip_db=True)
+                        
+                        # Capture a snapshot in memory for the equity curve
+                        state = await portfolio_engine.get_state()
+                        day_snapshots.append((
+                            ts_obj, state.total_heat_pct, 
+                            state.factor_exposure.get("BANKING", 0.0),
+                            state.factor_exposure.get("IT", 0.0),
+                            state.factor_exposure.get("ENERGY", 0.0),
+                            state.factor_exposure.get("FMCG", 0.0),
+                            len(state.open_positions),
+                            state.json(),
+                            sim_run_id
+                        ))
+
                     except Exception as e:
                         logger.error(f"Error in _step_v3 at {ts_obj}: {e}")
                     
                     self.current_step += 1
                     self.progress = min(99, int((self.current_step / max(1, self.total_steps)) * 100))
+
+                # 8. DAY-END BATCH FLUSH (The "Speed Boost")
+                try:
+                    cur_pg = pg_conn.cursor()
+                    # Batch insert snapshots
+                    if day_snapshots:
+                        # We only flush every Nth snapshot to keep the DB size manageable while maintaining resolution
+                        # e.g. every 5th snapshot for 1m data, or all for 15m+
+                        stride = 1 if timeframe in ["15m", "30m", "1h", "1d"] else 5
+                        batch_snaps = day_snapshots[::stride]
+                        
+                        cur_pg.executemany("""
+                            INSERT INTO portfolio_snapshots (
+                                snapshot_time, heat_pct, factor_banking, factor_it, 
+                                factor_energy, factor_fmcg, open_positions_count, full_json, run_id
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, batch_snaps)
+                    
+                    # Batch insert orders recorded during the day (Fixed: Removed nonexistent 'status' column)
+                    if day_orders:
+                        cur_pg.executemany("""
+                            INSERT INTO backtest_orders (run_id, timestamp, symbol, transaction_type, quantity, price, pnl)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """, day_orders)
+                    
+                    # Update the final equity for the day in the summary table
+                    state = await portfolio_engine.get_state()
+                    cur_pg.execute("""
+                        UPDATE backtest_portfolios 
+                        SET balance = %s, equity = %s, last_updated = %s
+                        WHERE run_id = %s;
+                    """, (state.cash, state.total_equity, day_dt, sim_run_id))
+                    
+                    pg_conn.commit()
+                    cur_pg.close()
+                except Exception as e:
+                    logger.error(f"Failed to flush day batch to DB: {e}")
 
                 # Yield to event loop periodically
                 await asyncio.sleep(0)
@@ -369,7 +427,7 @@ class BacktestController:
         return conf_map
 
 
-    async def _step_v3(self, tick_data: Dict, noise_map: Dict, timestamp: datetime, timeframe: str, pg_conn, run_id, discovery_universe):
+    async def _step_v3(self, tick_data: Dict, noise_map: Dict, timestamp: datetime, timeframe: str, pg_conn, run_id, discovery_universe, skip_db: bool = False):
         """
         High-Performance Tick Execution.
         Processes OHLC slice for all symbols at once.
@@ -377,7 +435,7 @@ class BacktestController:
         if not tick_data: return
         # 1. Mark to Market (Update Portfolio Value)
         price_map = {sym: d['ltp'] for sym, d in tick_data.items()}
-        await portfolio_engine.mark_to_market(price_map, timestamp, db_conn=pg_conn, run_id=run_id)
+        await portfolio_engine.mark_to_market(price_map, timestamp, db_conn=pg_conn, run_id=run_id, skip_db=skip_db)
         
         portfolio_state = await portfolio_engine.get_state()
         
@@ -425,6 +483,15 @@ class BacktestController:
                 exit_reason = "TIME EXIT"
                 
             if exit_reason:
+                # Record order locally for batching (Parity with update_position_v2 calculation)
+                if skip_db and hasattr(self, "_current_day_orders"):
+                    mult = 1 if pos.direction == "LONG" else -1
+                    actual_pnl = pos.qty * (current_price - pos.entry_price) * mult
+                    self._current_day_orders.append((
+                        run_id, timestamp, pos.symbol, 
+                        "LONG" if pos.direction=="SHORT" else "SHORT", abs(pos.qty), current_price, actual_pnl
+                    ))
+
                 await portfolio_engine.update_position_v2(
                     symbol=pos.symbol,
                     qty=-pos.qty, # Reverse quantity to close
@@ -527,16 +594,25 @@ class BacktestController:
                 current_equity=current_equity,
                 signal_type=signal.signal_type,
                 direction=signal.direction.name if hasattr(signal.direction, 'name') else str(signal.direction),
-                timestamp=timestamp.isoformat()
+                timestamp=timestamp.isoformat(),
+                in_backtest=skip_db
             )
             
+            direction_str = signal.direction.name if hasattr(signal.direction, 'name') else str(signal.direction)
             if sizing.get("approved"):
+                # Record order locally for batching instead of calling engine's internal sync
+                if skip_db and hasattr(self, "_current_day_orders"):
+                    self._current_day_orders.append((
+                        run_id, timestamp, signal.symbol, 
+                        direction_str, abs(sizing.get("shares")), signal.entry_price_estimate, 0.0
+                    ))
+
                 await portfolio_engine.update_position_v2(
                     symbol=signal.symbol,
                     qty=sizing.get("shares"),
                     price=signal.entry_price_estimate,
                     sector="EQUITY",
-                    direction=signal.direction.name if hasattr(signal.direction, 'name') else str(signal.direction),
+                    direction=direction_str,
                     timestamp=timestamp,
                     run_id=run_id
                 )
