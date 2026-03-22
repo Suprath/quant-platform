@@ -262,9 +262,15 @@ async def get_historical_performance(run_id: Optional[str] = Query(None)):
                 
             # Ensure boundaries are included with full fidelity
             for r in boundary_rows:
+                # Handle cases where full_json might be a string or a dict
+                f_json = r[2]
+                if isinstance(f_json, str):
+                    try: f_json = json.loads(f_json)
+                    except: f_json = {}
+                
                 p = {
                     "time": r[0].isoformat(), 
-                    "equity": r[2].get("total_equity", 0), 
+                    "equity": f_json.get("total_equity", 0), 
                     "heat": r[1]
                 }
                 full_performance_data.append(p)
@@ -327,9 +333,9 @@ async def get_historical_performance(run_id: Optional[str] = Query(None)):
 
         try:
             if run_id:
-                cur.execute("SELECT pnl, price, quantity, mechanism FROM backtest_orders WHERE run_id = %s AND pnl IS NOT NULL", (run_id,))
+                cur.execute("SELECT pnl, price, quantity, mechanism FROM backtest_orders WHERE run_id = %s AND pnl IS NOT NULL AND pnl != 0", (run_id,))
             else:
-                cur.execute("SELECT pnl, price, quantity, mechanism FROM backtest_orders WHERE run_id IS NULL AND pnl IS NOT NULL")
+                cur.execute("SELECT pnl, price, quantity, mechanism FROM backtest_orders WHERE run_id IS NULL AND pnl IS NOT NULL AND pnl != 0")
                 
             trades = cur.fetchall()
             real_total_trades = len(trades)
@@ -375,10 +381,16 @@ async def get_historical_performance(run_id: Optional[str] = Query(None)):
         except Exception as te:
             logger.error(f"Error fetching backtest orders: {te}")
 
-        cur.close()
+        # cur.close() removed from here (moved to end of try block)
         
         win_rate = (winning_steps / total_trades * 100) if total_trades > 0 else 0
         profit_factor = (total_gains / total_losses) if total_losses > 0 else (total_gains if total_gains > 0 else 0.0)
+        
+        # Calculate real total trades (including entries) for the summary "Total Trades" stat
+        # but use COMPLETED trades for expectancy
+        cur.execute("SELECT COUNT(*) FROM backtest_orders WHERE run_id = %s", (run_id,))
+        real_total_count = cur.fetchone()[0]
+        
         expectancy = (total_gains - total_losses) / total_trades if total_trades > 0 else 0
         
         import datetime as dt_pkg
@@ -398,7 +410,7 @@ async def get_historical_performance(run_id: Optional[str] = Query(None)):
             "win_rate": safe_float(round(win_rate, 1)),
             "win_rate_pct": safe_float(round(win_rate, 1)),
             "profit_factor": safe_float(round(profit_factor, 2)),
-            "total_trades": int(total_trades),
+            "total_trades": int(real_total_count),
             "sharpe_ratio": safe_float(round(sharpe_ratio, 2)),
             "cagr": safe_float(round(cagr, 2)),
             "expectancy": safe_float(round(expectancy, 2)),
@@ -406,6 +418,7 @@ async def get_historical_performance(run_id: Optional[str] = Query(None)):
             "mechanism_performance": mechanism_performance
         }
         
+        cur.close()
         return {
             "points": performance_data,
             "summary": summary_payload
