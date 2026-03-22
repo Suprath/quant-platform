@@ -421,6 +421,12 @@ public:
 
             // ── Call user strategy (Python callback via PyBind11) ──
             on_tick(t.symbol_id, t.price, t.volume, t.timestamp_ms);
+
+            // ── Granular equity snapshot (every 50 ticks for high-fidelity charts) ──
+            if (i % 50 == 0) {
+                calculate_portfolio_value();
+                equity_curve_.push_back({t.timestamp_ms, total_portfolio_value_});
+            }
         }
 
         // Final equity snapshot

@@ -10,12 +10,19 @@ if [ "${KIRA_CPP_ENGINE}" = "true" ] && [ -d "/app/cpp" ]; then
     NEEDS_BUILD=false
 
     if [ -z "$SO_FILE" ]; then
-        NEEDS_BUILD=true
+        if command -v cmake >/dev/null 2>&1; then
+            NEEDS_BUILD=true
+        else
+            echo "❌ ERROR: kira_engine.so not found and cmake not available for build!"
+            # Don't exit 1 here yet, let it try to run Python if possible (though it will fail later)
+            # Actually, exiting 1 is better to stop the restart loop in a 'Backoff' state
+            exit 1
+        fi
     else
-        # Recompile if any source file is newer than the .so
+        # Recompile ONLY if source is newer AND cmake is available
         NEWER=$(find /app/cpp -name "*.h" -o -name "*.cpp" -o -name "CMakeLists.txt" | \
                 xargs -I{} find {} -newer "$SO_FILE" 2>/dev/null | head -1)
-        if [ -n "$NEWER" ]; then
+        if [ -n "$NEWER" ] && command -v cmake >/dev/null 2>&1; then
             NEEDS_BUILD=true
             echo "🔄 C++ source changed, recompiling..."
         fi

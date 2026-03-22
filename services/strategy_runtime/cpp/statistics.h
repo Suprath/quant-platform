@@ -213,14 +213,16 @@ struct TradeMetrics {
 
 inline TradeMetrics compute_trade_metrics(const std::vector<double>& pnl_list) {
     TradeMetrics m;
-    m.total_trades = static_cast<int>(pnl_list.size());
-    if (m.total_trades == 0) return m;
+    m.total_trades = 0;
 
     double gross_profit = 0.0, gross_loss = 0.0;
     double sum_pnl = 0.0;
     int wins = 0, losses = 0;
 
     for (double p : pnl_list) {
+        if (std::abs(p) < 1e-8) continue; // Skip entries (no PnL)
+        
+        m.total_trades++;
         sum_pnl += p;
         if (p > 0.0) {
             gross_profit += p;
@@ -230,6 +232,8 @@ inline TradeMetrics compute_trade_metrics(const std::vector<double>& pnl_list) {
             losses++;
         }
     }
+
+    if (m.total_trades == 0) return m;
 
     m.win_rate = (static_cast<double>(wins) / m.total_trades) * 100.0;
     m.expectancy = sum_pnl / m.total_trades;

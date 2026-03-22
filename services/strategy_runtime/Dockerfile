@@ -20,6 +20,10 @@ RUN cd /app/cpp && mkdir -p build && cd build && \
 FROM kira-python-base
 WORKDIR /app
 
+# Install build tools in final stage for dev-mode (volume mounts)
+RUN apt-get update && apt-get install -y cmake g++ build-essential && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache pybind11[global]
+
 COPY --from=builder /app/kira_engine*.so /app/
 
 # Add kira-shared

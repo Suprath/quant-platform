@@ -375,33 +375,36 @@ def compute_calmar_ratio(cagr: float, max_drawdown_pct: float) -> float:
 # ────────────────────────────────────────────────────────────
 
 def compute_win_rate(pnl_list: List[float]) -> float:
-    """Percentage of profitable trades (PnL > 0)."""
-    if not pnl_list:
+    """Percentage of profitable trades (PnL > 0), excluding entries (PnL=0)."""
+    # Filter out entries
+    actual_trades = [p for p in pnl_list if abs(p) > 1e-8]
+    if not actual_trades:
         return 0.0
-    wins = sum(1 for p in pnl_list if p > 0)
-    return round((wins / len(pnl_list)) * 100, 1)
+    wins = sum(1 for p in actual_trades if p > 0)
+    return round((wins / len(actual_trades)) * 100, 1)
 
 
 def compute_profit_factor(pnl_list: List[float]) -> float:
     """
     Gross Profit / Gross Loss.
-
-    Returns 99.99 if no losses, 0.0 if no wins.
+    Excludes entries (PnL=0).
     """
-    if not pnl_list:
+    actual_trades = [p for p in pnl_list if abs(p) > 1e-8]
+    if not actual_trades:
         return 0.0
-    gross_profit = sum(p for p in pnl_list if p > 0)
-    gross_loss   = abs(sum(p for p in pnl_list if p < 0))
+    gross_profit = sum(p for p in actual_trades if p > 0)
+    gross_loss   = abs(sum(p for p in actual_trades if p < 0))
     if gross_loss < 0.01:
         return 99.99 if gross_profit > 0 else 0.0
     return round(gross_profit / gross_loss, 2)
 
 
 def compute_expectancy(pnl_list: List[float]) -> float:
-    """Average expected PnL per trade."""
-    if not pnl_list:
+    """Average expected PnL per trade, excluding entries (PnL=0)."""
+    actual_trades = [p for p in pnl_list if abs(p) > 1e-8]
+    if not actual_trades:
         return 0.0
-    return round(sum(pnl_list) / len(pnl_list), 2)
+    return round(sum(actual_trades) / len(actual_trades), 2)
 
 
 def compute_avg_win_loss(pnl_list: List[float]) -> Tuple[float, float]:
@@ -541,6 +544,9 @@ def compute_all_statistics(
     # ── Fallback: Python path ──
     logger.info("📊 Statistics computed via Python fallback path")
 
+    # Filter out entries for trade-level metrics
+    filtered_pnl = [p for p in pnl_list if abs(p) > 1e-8]
+
     # Final equity from curve
     if equity_curve:
         final_equity = float(equity_curve[-1].get("equity", initial_capital))
@@ -570,10 +576,10 @@ def compute_all_statistics(
         "calmar_ratio":     compute_calmar_ratio(cagr, dd_info["max_drawdown_pct"]),
 
         # Trade metrics
-        "total_trades":     len(pnl_list),
-        "win_rate":         compute_win_rate(pnl_list),
-        "profit_factor":    compute_profit_factor(pnl_list),
-        "expectancy":       compute_expectancy(pnl_list),
+        "total_trades":     len(pnl_list), # Total includes entries for raw count
+        "win_rate":         compute_win_rate(filtered_pnl),
+        "profit_factor":    compute_profit_factor(filtered_pnl),
+        "expectancy":       compute_expectancy(filtered_pnl),
         "avg_win":          avg_win,
         "avg_loss":         avg_loss,
     }
