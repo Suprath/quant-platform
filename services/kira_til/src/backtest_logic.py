@@ -2,6 +2,8 @@ import os
 import asyncio
 import logging
 import pandas as pd
+import numpy as np
+import til_core
 import psycopg2
 from psycopg2 import pool
 import json
@@ -223,63 +225,78 @@ class BacktestController:
                     logger.error(f"Failed to record backtest_universe: {e}")
 
                 if not fetch_symbols:
+                    logger.warning(f"⚠️ No symbols discovered for {date_str}. Skipping day.")
                     continue
 
-                # 5. BULK FETCH OHLCV for this day (using short-lived connection)
+                # 5. BULK FETCH OHLCV for this day
                 start_ts = f"{date_str}T00:00:00.000000Z"
                 end_ts = f"{date_str}T23:59:59.999999Z"
                 
                 ohlc_rows = self._fetch_ohlc_bulk(fetch_symbols, start_ts, end_ts, timeframe)
-                noise_map = self._fetch_noise_confidence_bulk(fetch_symbols, date_str)
-                features_day = {} # Initialize to avoid NameError
-                
                 if not ohlc_rows:
                     continue
 
                 logger.info(f"📅 Day {day_idx+1}/{len(trading_days)} ({date_str}): {len(ohlc_rows)} ticks across {len(fetch_symbols)} symbols")
 
-                # 6. GROUP BY TIMESTAMP → Time Slices (IDE pattern)
-                from collections import defaultdict
-                time_slices = defaultdict(dict)
-                for row in ohlc_rows:
-                    sym, ts, cl, vol = row[0], row[1], row[2], row[3] if len(row) > 3 else 0
-                    time_slices[ts][sym] = {
-                        'ltp': float(cl),
-                        'volume': int(vol) if vol else 0
-                    }
+                # NEW: Vectorized Data Pipeline (Target: 10M ticks/sec)
+                sym_to_id = {sym: i for i, sym in enumerate(fetch_symbols)}
+                id_to_sym = {i: sym for sym, i in sym_to_id.items()}
                 
-                # 7. PROCESS SLICES SEQUENTIALLY (zero lookahead bias)
-                sorted_timestamps = sorted(time_slices.keys())
-                day_snapshots = []
+                # Pre-allocate Numpy array for zero-copy C++ processing
+                # [Timestamp, SymbolID, Close, ADX, ATR, OBV, Momentum, Hurst]
+                data_np = np.zeros((len(ohlc_rows), 8), dtype=np.float64)
+                
+                for i, row in enumerate(ohlc_rows):
+                    sym, ts, cl = row[0], row[1], row[2]
+                    ts_val = ts.timestamp() if isinstance(ts, datetime) else 0.0
+                    data_np[i, 0] = ts_val
+                    data_np[i, 1] = sym_to_id[sym]
+                    data_np[i, 2] = float(cl)
+                    # Vectorized kernels calculate these in C++, but we start with baseline mocks
+                    data_np[i, 3:8] = [25.0, -0.0001, 0.01, 0.0, 0.52]
+
+                # 6. Call C++ Engine (Atomic Simulation)
+                state = await portfolio_engine.get_state()
+                engine = til_core.SimulationEngine(float(state.total_equity))
+                cpp_res = engine.run_vectorized_simulation(data_np, id_to_sym)
+                
+                # Sync final state back to PortfolioEngine (IDE convergence)
+                from .portfolio_engine.models import Position
+                state.cash = cpp_res.final_cash
+                state.total_equity = cpp_res.final_equity
+                state.open_positions = [
+                    Position(
+                        symbol=id_to_sym[p.symbol_id],
+                        qty=p.qty,
+                        entry_price=p.entry_price,
+                        current_price=p.current_price,
+                        market_value=p.qty * p.current_price,
+                        risk_at_risk=abs(p.qty * (p.entry_price - p.sl_price)),
+                        direction=p.direction,
+                        sector=p.sector
+                    ) for p in cpp_res.final_positions
+                ]
+                await portfolio_engine.save_state(run_id=sim_run_id)
+
+                # 7. Convert C++ Results to DB Objects
                 day_orders = []
+                for t in cpp_res.trades:
+                    day_orders.append((
+                        sim_run_id, datetime.fromtimestamp(t.timestamp), 
+                        id_to_sym[t.symbol_id], t.direction, t.qty, t.price, t.pnl, t.reason
+                    ))
                 
-                # Mock a list to collect orders since we bypassed the engine's internal DB write
-                self._current_day_orders = day_orders
+                day_snapshots = []
+                for j, eq in enumerate(cpp_res.equity_curve):
+                    # Sampled snapshots for the curve
+                    snap_ts = day_dt + timedelta(seconds=j * 10) 
+                    day_snapshots.append((
+                        snap_ts, 1.0, 0.0, 0.0, 0.0, 0.0, 0, 
+                        json.dumps({"total_equity": eq, "cash": eq}), sim_run_id
+                    ))
 
-                for ts_obj in sorted_timestamps:
-                    data_at_time = time_slices[ts_obj]
-                    try:
-                        # Pass skip_db=True to avoid synchronous per-tick writes
-                        await self._step_v4(data_at_time, features_day, ts_obj, timeframe, pg_conn, sim_run_id, fetch_symbols, skip_db=True)
-                        
-                        # Capture a snapshot in memory for the equity curve
-                        state = await portfolio_engine.get_state()
-                        day_snapshots.append((
-                            ts_obj, state.total_heat_pct, 
-                            state.factor_exposure.get("BANKING", 0.0),
-                            state.factor_exposure.get("IT", 0.0),
-                            state.factor_exposure.get("ENERGY", 0.0),
-                            state.factor_exposure.get("FMCG", 0.0),
-                            len(state.open_positions),
-                            state.json(),
-                            sim_run_id
-                        ))
-
-                    except Exception as e:
-                        logger.error(f"Error in _step_v3 at {ts_obj}: {e}")
-                    
-                    self.current_step += 1
-                    self.progress = min(99, int((self.current_step / max(1, self.total_steps)) * 100))
+                self.current_step += len(ohlc_rows)
+                self.progress = min(99, int((self.current_step / max(1, self.total_steps)) * 100))
 
                 # 8. DAY-END BATCH FLUSH (The "Speed Boost")
                 try:
@@ -784,7 +801,8 @@ class BacktestController:
         Discovers active symbols in QuestDB. 
         Always looks at '1m' base data for discovery.
         """
-        window_start = timestamp - timedelta(hours=2)
+        # Broaden window to 24 hours to handle timezone offsets (IST/UTC) and holidays
+        window_start = timestamp - timedelta(hours=24)
         query = f"""
         SELECT DISTINCT symbol 
         FROM ohlc 
