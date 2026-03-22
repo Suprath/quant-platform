@@ -643,6 +643,7 @@ def run(symbol, start_date_str, end_date_str, initial_cash, speed, timeframe='1m
             release_db_connection(pg_conn)
 
     engine = AlgorithmEngine(run_id=RUN_ID, backtest_mode=True, speed=speed, trading_mode=TRADING_MODE)
+    engine.InitialCash = initial_cash
     
     try:
         module_path, class_name = STRATEGY_NAME.rsplit('.', 1)

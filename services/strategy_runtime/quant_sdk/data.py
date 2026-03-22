@@ -33,6 +33,10 @@ class Tick:
         self.Volume = float(volume)
         self.Value = self.Price
 
+    def Clone(self):
+        """Returns a copy of the tick."""
+        return Tick(self.Time, self.Symbol, self.Price, self.Volume)
+
     @property
     def Close(self):
         return self.Price
@@ -75,6 +79,12 @@ class Slice:
     
     def get(self, symbol):
         return self._data.get(symbol)
+
+    def items(self):
+        return self._data.items()
+
+    def __iter__(self):
+        return iter(self._data)
 
 
 class FastSlice:

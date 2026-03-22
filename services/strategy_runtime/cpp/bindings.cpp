@@ -88,16 +88,20 @@ PYBIND11_MODULE(kira_engine, m) {
 
         // Main loop — accepts a Python callable as the on_tick callback.
         // The GIL is held during the callback (PyBind11 default for py::function).
-        .def("run", [](KiraEngine& self, py::function on_tick) {
+        .def("run", [](KiraEngine& self, py::function on_window, int window_size) {
             // Release GIL for the C++ loop, re-acquire only for callback
             py::gil_scoped_release release;
 
-            self.run([&on_tick](int sym_id, double price, int volume, int64_t ts) {
+            self.run([&on_window](const std::vector<int64_t>& ts_list,
+                                  const std::vector<int>& counts,
+                                  const std::vector<int>& sym_ids, 
+                                  const std::vector<double>& prices, 
+                                  const std::vector<int>& volumes) {
                 py::gil_scoped_acquire acquire;
-                on_tick(sym_id, price, volume, ts);
-            });
-        }, py::arg("on_tick"),
-           "Run the tick loop. Calls on_tick(symbol_id, price, volume, timestamp_ms) per tick.")
+                on_window(ts_list, counts, sym_ids, prices, volumes);
+            }, window_size);
+        }, py::arg("on_window"), py::arg("window_size") = 50,
+           "Run the tick loop with windowed aggregation. Calls on_window(...) once per window of slices.")
 
         // Results
         .def("get_orders",       &KiraEngine::get_orders)

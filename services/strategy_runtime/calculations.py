@@ -214,16 +214,26 @@ def _build_returns(
     returns = full["equity"].pct_change().dropna()
     returns = returns.replace([np.inf, -np.inf], 0.0)
 
-    # Estimate annualisation factor from average tick spacing
-    # (e.g. if ticks are ~1 minute apart in a 6.25h trading day → ~375 per day → 375×252)
+    # Estimate annualisation factor based on actual time span and trading days
     if len(full) >= 2:
-        total_span = (full.index[-1] - full.index[0]).total_seconds()
-        avg_interval = total_span / max(len(full) - 1, 1)
-        if avg_interval > 0:
-            ticks_per_day = (6.25 * 3600) / avg_interval  # NSE = 6.25 hours
-            ann_factor = max(int(ticks_per_day * 252), 1)
+        total_span_seconds = (full.index[-1] - full.index[0]).total_seconds()
+        
+        # If the span is < 5 minutes, annualisation is statistically dubious.
+        # We cap the annualisation factor to avoid astronomical Sharpe ratios.
+        if total_span_seconds < 300:
+            # Fall back to a more conservative estimate (e.g. daily if very short)
+            ann_factor = 252 
         else:
-            ann_factor = 252
+            # Estimate how many such intervals fit into a 6.25h trading day
+            avg_interval = total_span_seconds / max(len(full) - 1, 1)
+            if avg_interval > 0:
+                ticks_per_day = (6.25 * 3600) / avg_interval
+                # Cap the number of ticks_per_day to 10,000 (roughly 1 snapshot every 2.25s)
+                # to prevent outliers from blowing up the Sharpe.
+                ticks_per_day = min(ticks_per_day, 10000)
+                ann_factor = int(ticks_per_day * 252)
+            else:
+                ann_factor = 252
     else:
         ann_factor = 252
 
@@ -474,9 +484,19 @@ def _try_cpp_statistics(
 
     final_equity = cpp_curve[-1][1] if cpp_curve else initial_capital
 
-    # Build return series (C++ single-pass)
+    # Build return series
     returns = ke.build_daily_returns(cpp_curve, initial_capital)
-    ann_factor = 252 if len(cpp_curve) >= 3 else 252
+    
+    if len(cpp_curve) >= 2:
+        total_span_seconds = (cpp_curve[-1][0] - cpp_curve[0][0]) / 1000.0
+        if total_span_seconds < 300:
+            ann_factor = 252
+        else:
+            avg_interval = total_span_seconds / max(len(cpp_curve) - 1, 1)
+            ticks_per_day = min((6.25 * 3600) / avg_interval, 10000)
+            ann_factor = int(ticks_per_day * 252)
+    else:
+        ann_factor = 252
 
     # Auto-detect trading days
     if trading_days <= 0:
@@ -488,6 +508,14 @@ def _try_cpp_statistics(
     dd = ke.compute_max_drawdown_cpp(cpp_curve)
     cagr = ke.compute_cagr(initial_capital, final_equity, trading_days)
     calmar = ke.compute_calmar(cagr, dd.max_drawdown_pct)
+    tm = ke.compute_trade_metrics(pnl_list)
+
+    # Downsample curve for UI
+    downsampled = ke.downsample_lttb(cpp_curve, 500)
+    serialised_curve = [
+        {"time": datetime.fromtimestamp(ts / 1000.0).isoformat(), "equity": float(eq)}
+        for ts, eq in downsampled
+    ]
     tm = ke.compute_trade_metrics(pnl_list)
 
     return {
@@ -505,6 +533,7 @@ def _try_cpp_statistics(
         "expectancy":       round(tm.expectancy, 2),
         "avg_win":          round(tm.avg_win, 2),
         "avg_loss":         round(tm.avg_loss, 2),
+        "equity_curve":     serialised_curve,
     }
 
 
@@ -562,6 +591,17 @@ def compute_all_statistics(
     cagr = compute_cagr(initial_capital, final_equity, trading_days)
     avg_win, avg_loss = compute_avg_win_loss(pnl_list)
 
+    # Downsample equity curve for storage/UI (max 500 points)
+    downsampled_curve = downsample_equity_curve(equity_curve, max_points=500)
+    # Convert timestamps to ISO strings for JSON serialisation
+    serialised_curve = [
+        {
+            "time": (pt["timestamp"].isoformat() if hasattr(pt.get("timestamp"), "isoformat") else str(pt.get("timestamp", ""))),
+            "equity": float(pt.get("equity", 0))
+        }
+        for pt in downsampled_curve
+    ]
+
     return {
         # Return metrics
         "total_return":     compute_total_return(initial_capital, final_equity),
@@ -576,12 +616,15 @@ def compute_all_statistics(
         "calmar_ratio":     compute_calmar_ratio(cagr, dd_info["max_drawdown_pct"]),
 
         # Trade metrics
-        "total_trades":     len(pnl_list), # Total includes entries for raw count
+        "total_trades":     len(pnl_list), 
         "win_rate":         compute_win_rate(filtered_pnl),
         "profit_factor":    compute_profit_factor(filtered_pnl),
         "expectancy":       compute_expectancy(filtered_pnl),
         "avg_win":          avg_win,
         "avg_loss":         avg_loss,
+
+        # High-fidelity curve for UI
+        "equity_curve":     serialised_curve,
     }
 
 

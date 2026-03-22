@@ -27,6 +27,7 @@ class SubscriptionManager:
         logger.info(f"✅ Subscribed to {symbol} ({resolution})")
 
 class SecurityHolding:
+    __slots__ = ('Symbol', 'Quantity', 'AveragePrice')
     def __init__(self, symbol, quantity=0, avg_price=0):
         self.Symbol = symbol
         self.Quantity = quantity
@@ -58,6 +59,9 @@ class AlgorithmEngine:
         self.UniverseEnabled = False  # Track if a universe is requested
         self.Leverage = 1.0  # Default: No leverage. User can override via strategy.
         self.ScannerFrequency = None  # Minutes between scanner runs (None = once per day)
+        self.InitialCash = 0.0        # Set by runner/Initialize
+        self.SquareOffHour = self.SQUARE_OFF_HOUR
+        self.SquareOffMinute = self.SQUARE_OFF_MINUTE
         self._squared_off_today = False  # Track if we already squared off today
         self._last_square_off_date = None
         self._last_prices = {}  # Cache: symbol -> last known price
@@ -353,60 +357,53 @@ class AlgorithmEngine:
     # BACKTEST FAST PATH — zero allocations, zero timezone math
     # ──────────────────────────────────────────────────────────────
 
-    def ProcessTickFast(self, tick_dict):
+    def ProcessSliceFast(self, dt, slice_data):
         """
-        Backtest-only hot path. All per-tick overhead has been eliminated:
-        - No datetime.fromtimestamp() (pre-computed in tick dict)
-        - No Tick/Slice allocation (reuses cached objects)
-        - No to_ist() timezone conversion (pre-computed fields)
-        - No per-tick CalculatePortfolioValue (only on trade + day rollover)
+        Processes a full slice of ticks for the same timestamp.
+        More efficient than per-tick calls.
         """
-        symbol = tick_dict['symbol']
-        price  = tick_dict['ltp']
+        self.Algorithm.Time = dt
+        
+        # Ensure caches exist (for benchmarks/direct calls)
+        if not hasattr(self, '_indicator_cache'):
+            self._indicator_cache = getattr(self, 'Indicators', {})
+        if not hasattr(self, '_last_prices'):
+            self._last_prices = {}
+        if not hasattr(self, '_bt_last_date_int'):
+            self._bt_last_date_int = 0
 
-        # ── Reuse cached Tick object ──
-        _tick = self._reusable_tick
-        _tick.Price = price
-        _tick.Value = price
-        _tick.Volume = tick_dict['v']
-        _tick.Time = tick_dict['_dt']
-        _tick.Symbol = symbol
+        for symbol, tick in slice_data.items():
+            self._last_prices[symbol] = tick.Price
+            
+            # Update indicators
+            indicators = self._indicator_cache.get(symbol)
+            if indicators:
+                for ind in indicators:
+                    # Handle both SDK and custom indicator Update methods
+                    if hasattr(ind, 'Update'):
+                        ind.Update(dt, tick.Price)
+                    elif hasattr(ind, 'update'):
+                        ind.update(tick.Price)
+            
+            # Ensure Portfolio entry
+            if symbol not in self.Algorithm.Portfolio:
+                self.Algorithm.Portfolio[symbol] = SecurityHolding(symbol)
 
-        # ── Reuse cached FastSlice ──
-        _slice = self._reusable_slice
-        _slice.Time = tick_dict['_dt']
-        _slice._data_symbol = symbol
-        _slice._data_tick = _tick
-
-        # ── Update state ──
-        self._last_prices[symbol] = price
-        self.Algorithm.Time = tick_dict['_dt']
-        self.CurrentSlice = _slice
-
-        # ── Ensure Portfolio has entry (first tick for this symbol) ──
-        if symbol not in self.Algorithm.Portfolio:
-            self.Algorithm.Portfolio[symbol] = SecurityHolding(symbol)
-
-        # ── Indicator update (pre-cached list, no dict lookup) ──
-        indicators = self._indicator_cache.get(symbol)
-        if indicators:
-            dt = tick_dict['_dt']
-            for ind in indicators:
-                ind.Update(dt, price)
-
-        # ── Date rollover check (integer comparison, no datetime) ──
-        tick_date = tick_dict['_date_int']
+        # Handle square-off and rollovers once per slice
+        tick_date = dt.year * 10000 + dt.month * 100 + dt.day
         if tick_date != self._bt_last_date_int:
-            self._bt_handle_date_rollover(tick_dict)
+            # We need a dummy dict for compatibility with handle_date_rollover
+            self._bt_handle_date_rollover({'_date_int': tick_date, '_dt': dt})
 
-        # ── Square-off check (pre-computed ints) ──
-        if tick_dict['_hour'] == self.SQUARE_OFF_HOUR and tick_dict['_minute'] >= self.SQUARE_OFF_MINUTE:
-            if not self._squared_off_today:
+        # Square-off check
+        if dt.hour == self.SQUARE_OFF_HOUR and dt.minute >= self.SQUARE_OFF_MINUTE:
+            if not getattr(self, '_squared_off_today', False):
                 self._bt_handle_square_off()
                 return
 
-        # ── Call user strategy ──
-        self.Algorithm.OnData(_slice)
+        # Call user strategy
+        self.CurrentSlice = Slice(dt, slice_data)
+        self.Algorithm.OnData(self.CurrentSlice)
 
     def _bt_handle_date_rollover(self, tick_dict):
         """Handle date change during backtest. Called at most once per day."""

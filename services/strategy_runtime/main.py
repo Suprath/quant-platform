@@ -684,9 +684,22 @@ def _compute_and_save_stats(run_id: str):
     try:
         cur = conn.cursor()
 
-        # ── Step 1: Get initial capital ──────────────────────────────────────
-        # IMPORTANT: if the table doesn't exist, rollback so the connection
-        # stays clean for the next query.
+        # ── Step 1: Check if valid stats already exist ────────────────────────
+        # If the strategy runner already saved rich stats (including equity curve),
+        # we skip this fail-safe reconstruction to avoid overwriting high-fidelity
+        # data with low-fidelity (trade-based) data.
+        try:
+            cur.execute("SELECT stats_json FROM backtest_results WHERE run_id = %s", (run_id,))
+            existing = cur.fetchone()
+            if existing and existing[0]:
+                existing_stats = existing[0]
+                if existing_stats.get('equity_curve') and len(existing_stats['equity_curve']) > 2:
+                    logger.info(f"✅ Found existing high-fidelity stats for {run_id}. Skipping reconstruction.")
+                    return
+        except Exception:
+            conn.rollback()
+
+        # ── Step 2: Get initial capital ──────────────────────────────────────
         initial_cap = 100000.0
         try:
             cur.execute("SELECT initial_cash FROM backtest_runs WHERE run_id = %s", (run_id,))
@@ -694,9 +707,9 @@ def _compute_and_save_stats(run_id: str):
             if row and row[0]:
                 initial_cap = float(row[0])
         except Exception:
-            conn.rollback()   # ← CRITICAL: reset the aborted transaction
+            conn.rollback()
 
-        # ── Step 2: Fetch all trades ─────────────────────────────────────────
+        # ── Step 3: Fetch all trades ─────────────────────────────────────────
         cur.execute(
             "SELECT timestamp, pnl FROM backtest_orders WHERE run_id=%s ORDER BY timestamp ASC",
             (run_id,),

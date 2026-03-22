@@ -377,11 +377,16 @@ public:
     //  Main Tick Loop (the HOT PATH)
     // ================================================================
 
-    // Callback type: called for each tick, passing (symbol_id, price, volume, timestamp_ms)
-    // Returns: void. The Python side will call set_holdings/liquidate back into C++.
-    using OnTickCallback = std::function<void(int, double, int, int64_t)>;
+    // Callback type: called for a window of unique timestamps (Slices)
+    // Parameters: (timestamps, counts_per_slice, flat_sym_ids, flat_prices, flat_volumes)
+    using OnWindowCallback = std::function<void(
+        const std::vector<int64_t>&, 
+        const std::vector<int>&, 
+        const std::vector<int>&, 
+        const std::vector<double>&, 
+        const std::vector<int>&)>;
 
-    void run(OnTickCallback on_tick) {
+    void run(OnWindowCallback on_window, int window_size = 50) {
         last_date_int_ = 0;
         squared_off_today_ = false;
 
@@ -389,44 +394,82 @@ public:
         equity_curve_.push_back({0, config.initial_cash});
 
         const size_t n = ticks_.size();
-        for (size_t i = 0; i < n; ++i) {
-            const TickData& t = ticks_[i];
+        
+        std::vector<int64_t> timestamps;
+        std::vector<int> sym_counts;
+        std::vector<int> flat_sym_ids;
+        std::vector<double> flat_prices;
+        std::vector<int> flat_volumes;
 
-            // ── Update last price ──
-            last_prices_[t.symbol_id] = t.price;
+        // Pre-reserve based on window_size (avg 1 sym/tick)
+        timestamps.reserve(window_size);
+        sym_counts.reserve(window_size);
+        flat_sym_ids.reserve(window_size * 2);
+        flat_prices.reserve(window_size * 2);
+        flat_volumes.reserve(window_size * 2);
 
-            // ── Update indicators ──
-            auto ind_it = indicators_.find(t.symbol_id);
-            if (ind_it != indicators_.end()) {
-                for (auto* ind : ind_it->second) {
-                    ind->update(t.price);
+        for (size_t i = 0; i < n; ) {
+            int64_t current_ts = ticks_[i].timestamp_ms;
+            
+            int count = 0;
+            while (i < n && ticks_[i].timestamp_ms == current_ts) {
+                const TickData& t = ticks_[i];
+                
+                // Update state
+                last_prices_[t.symbol_id] = t.price;
+                
+                auto ind_it = indicators_.find(t.symbol_id);
+                if (ind_it != indicators_.end()) {
+                    for (auto* ind : ind_it->second) {
+                        ind->update(t.price);
+                    }
                 }
-            }
 
-            // ── Date rollover ──
-            if (t.date_int != last_date_int_) {
-                handle_date_rollover(t);
-            }
-
-            // ── Square-off check ──
-            if (t.hour == config.square_off_hour &&
-                t.minute >= config.square_off_minute &&
-                !squared_off_today_) {
-                squared_off_today_ = true;
-                if (config.trading_mode == "MIS") {
-                    liquidate_all(t.timestamp_ms);
+                if (t.date_int != last_date_int_) {
+                    handle_date_rollover(t);
                 }
-                continue;  // Skip user callback for square-off tick
+
+                flat_sym_ids.push_back(t.symbol_id);
+                flat_prices.push_back(t.price);
+                flat_volumes.push_back(t.volume);
+                count++;
+
+                // Square-off check
+                if (t.hour == config.square_off_hour &&
+                    t.minute >= config.square_off_minute &&
+                    !squared_off_today_) {
+                    squared_off_today_ = true;
+                    if (config.trading_mode == "MIS") {
+                        liquidate_all(t.timestamp_ms);
+                    }
+                }
+
+                // Granular equity snapshot (every 50 ticks)
+                static size_t total_processed = 0;
+                if (++total_processed % 50 == 0) {
+                    calculate_portfolio_value();
+                    equity_curve_.push_back({t.timestamp_ms, total_portfolio_value_});
+                }
+
+                i++;
             }
 
-            // ── Call user strategy (Python callback via PyBind11) ──
-            on_tick(t.symbol_id, t.price, t.volume, t.timestamp_ms);
+            timestamps.push_back(current_ts);
+            sym_counts.push_back(count);
 
-            // ── Granular equity snapshot (every 50 ticks for high-fidelity charts) ──
-            if (i % 50 == 0) {
-                calculate_portfolio_value();
-                equity_curve_.push_back({t.timestamp_ms, total_portfolio_value_});
+            if (timestamps.size() >= (size_t)window_size) {
+                on_window(timestamps, sym_counts, flat_sym_ids, flat_prices, flat_volumes);
+                timestamps.clear();
+                sym_counts.clear();
+                flat_sym_ids.clear();
+                flat_prices.clear();
+                flat_volumes.clear();
             }
+        }
+
+        // Final window
+        if (!timestamps.empty()) {
+            on_window(timestamps, sym_counts, flat_sym_ids, flat_prices, flat_volumes);
         }
 
         // Final equity snapshot
