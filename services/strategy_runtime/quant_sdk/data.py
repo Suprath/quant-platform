@@ -168,12 +168,14 @@ class BollingerBands:
 
     def values(self):
         """Returns (upper, lower, mean) in O(1)."""
-        n = self.period
+        n = self._count
+        if n < 1: return 0.0, 0.0, 0.0
         mean = self._sum / n
+        if n < 2: return mean, mean, mean
         # Variance = E[X²] - (E[X])²
         variance = (self._sum_sq / n) - (mean * mean)
         # Guard against floating-point negative variance
-        std = variance ** 0.5 if variance > 0 else 0.0
+        std = variance ** 0.5 if variance > 0.0000001 else 0.0
         upper = mean + (self.num_std * std)
         lower = mean - (self.num_std * std)
         return upper, lower, mean

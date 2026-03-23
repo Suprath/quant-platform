@@ -59,7 +59,7 @@ class AlgorithmEngine:
         self.UniverseEnabled = False  # Track if a universe is requested
         self.Leverage = 1.0  # Default: No leverage. User can override via strategy.
         self.ScannerFrequency = None  # Minutes between scanner runs (None = once per day)
-        self.InitialCash = 0.0        # Set by runner/Initialize
+        self.InitialCapital = 0.0     # Set by runner/Initialize
         self.SquareOffHour = self.SQUARE_OFF_HOUR
         self.SquareOffMinute = self.SQUARE_OFF_MINUTE
         self._squared_off_today = False  # Track if we already squared off today

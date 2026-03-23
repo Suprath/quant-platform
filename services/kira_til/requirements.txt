@@ -8,3 +8,4 @@ python-dotenv==1.0.1
 aiohttp==3.9.3
 pytest==7.4.4
 pytest-asyncio==0.23.5
+pybind11>=2.11.1

@@ -92,6 +92,7 @@ public:
 
     // ── Equity curve (sparse: day rollovers + start/end) ──
     std::vector<std::pair<int64_t, double>> equity_curve_;
+    size_t total_processed_ = 0;
 
     // ================================================================
     //  Public API
@@ -311,13 +312,13 @@ public:
                 int qty_to_close = std::min(pos.qty, quantity);
                 double proceeds = price * qty_to_close;
                 double charges = cost_calc_.calculate(proceeds, "SELL");
-                double pnl = (price - pos.avg_price) * qty_to_close - charges;
+                double gross_pnl = (price - pos.avg_price) * qty_to_close;
                 cash_ += proceeds - charges;
                 pos.qty -= qty_to_close;
                 if (pos.qty == 0) positions_.erase(symbol_id);
 
                 order_buffer_.push_back({symbol_id, symbol, action, quantity,
-                                         price, pnl, true, timestamp_ms});
+                                         price, gross_pnl, true, timestamp_ms});
             } else {
                 // Open SHORT
                 double charges = cost_calc_.calculate(turnover, "SELL");
@@ -445,8 +446,7 @@ public:
                 }
 
                 // Granular equity snapshot (every 50 ticks)
-                static size_t total_processed = 0;
-                if (++total_processed % 50 == 0) {
+                if (++total_processed_ % 50 == 0) {
                     calculate_portfolio_value();
                     equity_curve_.push_back({t.timestamp_ms, total_portfolio_value_});
                 }

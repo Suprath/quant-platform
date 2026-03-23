@@ -5,6 +5,7 @@ import os
 
 from quant_sdk.data import Tick, FastSlice
 from engine import SecurityHolding
+from db import get_db_connection, release_db_connection
 
 logger = logging.getLogger("StrategyRuntimeService")
 
@@ -21,7 +22,7 @@ class CppBacktestRunner:
         # Configure C++ engine
         is_cnc = (engine.TradingMode == "CNC")
         self.cpp.configure(
-            engine.InitialCash,
+            engine.InitialCapital,
             engine.SquareOffHour,
             engine.SquareOffMinute,
             engine.TradingMode,
@@ -195,6 +196,43 @@ class CppBacktestRunner:
             qty, avg = cpp.get_position_qty(sid), cpp.get_position_avg_price(sid)
             if qty != 0: engine.Exchange._bt_positions[sym_str] = {'qty': qty, 'avg_price': avg}
             else: engine.Exchange._bt_positions.pop(sym_str, None)
+
+        # ── Sync Orders to DB ──
+        logger.info("💾 Syncing C++ orders to Database...")
+        cpp_orders = cpp.get_orders()
+        if cpp_orders:
+            conn = get_db_connection()
+            try:
+                cur = conn.cursor()
+                table = "backtest_orders" if engine.BacktestMode else "orders"
+                
+                # Bulk insert for speed
+                data = [
+                    (
+                        engine.RunID,
+                        o.symbol,
+                        o.side,
+                        int(o.quantity),
+                        float(o.price),
+                        datetime.utcfromtimestamp(o.timestamp_ms / 1000.0),
+                        float(o.pnl) if o.has_pnl else None,
+                        "CO" # Complexity
+                    )
+                    for o in cpp_orders
+                ]
+                
+                cur.executemany(f"""
+                    INSERT INTO {table} 
+                    (run_id, symbol, transaction_type, quantity, price, timestamp, pnl, complexity)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, data)
+                conn.commit()
+                cur.close()
+                logger.info(f"✅ Synced {len(cpp_orders)} trades to DB")
+            except Exception as e:
+                logger.error(f"❌ Failed to sync C++ orders to DB: {e}")
+            finally:
+                if conn: release_db_connection(conn)
 
         # Sync equity curve
         for ts_ms, val in cpp.get_equity_curve():

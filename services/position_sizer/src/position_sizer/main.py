@@ -64,16 +64,28 @@ def fetch_daily_ranges(symbol, timestamp):
     if not conn: return []
     try:
         cur = conn.cursor()
+        # Fetch 15 days to get 14 True Range values (need previous close for first TR)
         query = f"""
-        SELECT max(high) - min(low) as tr
+        SELECT max(high) as h, min(low) as l, last(close) as c
         FROM ohlc 
         WHERE symbol = '{symbol}' AND timestamp < '{timestamp}'
         SAMPLE BY 1d ALIGN TO CALENDAR
-        LIMIT 14;
+        ORDER BY timestamp DESC
+        LIMIT 15;
         """
         cur.execute(query)
-        rows = cur.fetchall()
-        return [float(r[0]) for r in rows if r[0]]
+        rows = cur.fetchall() # Returns [[h, l, c], ...] descending
+        if len(rows) < 2: return []
+        
+        # Calculate True Range: max(h-l, abs(h-pc), abs(l-pc))
+        true_ranges = []
+        for i in range(len(rows) - 1):
+            h, l, c = rows[i]
+            prev_c = rows[i+1][2] # Previous day's close
+            tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
+            true_ranges.append(tr)
+            
+        return true_ranges
     except Exception as e:
         logger.error(f"Error fetching daily ranges for {symbol}: {e}")
         return []

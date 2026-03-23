@@ -47,12 +47,20 @@ struct SimulationResult {
     double execution_time_ms;
 };
 
+struct SymbolState {
+    double sma50 = 0.0;
+    double sma200 = 0.0;
+    int count = 0;
+};
+
 class SimulationEngine {
 public:
     double initial_capital;
     double cash;
     std::unordered_map<int, Position> positions;
     std::vector<TradeRecord> trades;
+    std::unordered_map<int, double> last_prices;
+    std::unordered_map<int, SymbolState> symbol_features;
     
     SimulationEngine(double cap) : initial_capital(cap), cash(cap) {}
 
@@ -71,12 +79,23 @@ public:
             double ts = r(i, 0);
             int sym_id = (int)r(i, 1);
             double price = r(i, 2);
-            // ... (rest of the loop same)
-            double adx = r(i, 3);
-            double atr_slope = r(i, 4);
-            double obv_slope = r(i, 5);
-            double momentum = r(i, 6);
-            double hurst = r(i, 7);
+            last_prices[sym_id] = price;
+            
+            // --- NEW: High-Performance C++ Feature Calculation ---
+            auto& fs = symbol_features[sym_id];
+            if (fs.count == 0) {
+                fs.sma50 = price;
+                fs.sma200 = price;
+            }
+            fs.count++;
+            
+            int n50 = std::min(fs.count, 50);
+            int n200 = std::min(fs.count, 200);
+            fs.sma50 = (fs.sma50 * (n50 - 1) + price) / n50;
+            fs.sma200 = (fs.sma200 * (n200 - 1) + price) / n200;
+            
+            double momentum = (fs.sma50 > 0) ? (price / fs.sma50 - 1.0) : 0.0;
+            // --- End Features ---
 
             if (positions.count(sym_id)) {
                 auto& pos = positions[sym_id];
@@ -99,17 +118,19 @@ public:
                     positions.erase(sym_id);
                 }
             } else {
-                double adx_score = std::max(0.0, 1.0 - (adx / 25.0));
-                double atr_score = std::min(1.0, std::max(0.0, -atr_slope / 0.002));
-                double obv_score = std::min(1.0, obv_slope / 0.005);
-                double flat_score = std::max(0.0, 1.0 - std::abs(momentum) / 0.015);
-                double hurst_score = std::min(1.0, std::max(0.0, (hurst - 0.45) / 0.15));
-                double score = (adx_score * 0.20 + atr_score * 0.25 + obv_score * 0.25 + flat_score * 0.20 + hurst_score * 0.10);
+                // Mean Reversion Trigger: Based on calculated momentum
+                // adx_score substitute: Use simple volatility or just momentum for now
+                double mom_abs = std::abs(momentum);
+                double score = 0.0;
+                
+                // If price is 2% below SMA50 (momentum < -0.02)
+                if (momentum < -0.02) {
+                    score = std::min(1.0, std::abs(momentum) * 20.0); // 0.05 -> score 1.0
+                }
 
                 if (score >= 0.45 && cash >= (price * 1)) {
-                    // Dynamic sizing: Allocate 10% of cash per trade
                     int qty = (int)((cash * 0.1) / price);
-                    if (qty <= 0) qty = 1; // Minimum 1 share if cash allows
+                    if (qty <= 0) qty = 1;
                     
                     if (cash >= (qty * price)) {
                         cash -= (qty * price);
@@ -118,8 +139,8 @@ public:
                         new_pos.entry_price = price;
                         new_pos.qty = qty;
                         new_pos.direction = "LONG";
-                        new_pos.sl_price = price * 0.98;
-                        new_pos.tp_price = price * 1.04;
+                        new_pos.sl_price = price * 0.985; // 1.5% SL
+                        new_pos.tp_price = price * 1.05;  // 5% TP
                         new_pos.bars_held = 0;
                         positions[sym_id] = new_pos;
                         trades.push_back({ts, sym_id, "LONG", qty, price, 0.0, "SIGNAL"});
@@ -127,9 +148,13 @@ public:
                 }
             }
 
+            // Snapshotting: Every 50 ticks to keep equity_curve manageable
             if (i % 50 == 0) {
                 double current_equity = cash;
-                for (auto const& [id, pos] : positions) current_equity += pos.qty * price;
+                for (auto const& [id, pos] : positions) {
+                    double p = (last_prices.count(id)) ? last_prices.at(id) : pos.entry_price;
+                    current_equity += pos.qty * p;
+                }
                 equity_curve.push_back({ts, current_equity});
             }
         }
@@ -137,8 +162,11 @@ public:
         result.final_cash = cash;
         double final_equity = cash;
         for (auto const& [id, pos] : positions) {
-            final_equity += pos.qty * pos.entry_price;
-            result.final_positions.push_back(pos);
+            double current_p = (last_prices.count(id)) ? last_prices.at(id) : pos.entry_price;
+            final_equity += pos.qty * current_p;
+            Position p_copy = pos;
+            p_copy.current_price = current_p;
+            result.final_positions.push_back(p_copy);
         }
         result.final_equity = final_equity;
         result.trades = trades;

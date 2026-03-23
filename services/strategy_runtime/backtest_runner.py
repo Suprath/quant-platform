@@ -633,6 +633,8 @@ def run(symbol, start_date_str, end_date_str, initial_cash, speed, timeframe='1m
         pg_cur.execute(f"DELETE FROM backtest_portfolios WHERE run_id = %s", (RUN_ID,))
         pg_cur.execute(f"INSERT INTO backtest_portfolios (user_id, run_id, balance, equity) VALUES (%s, %s, %s, %s)", ('default_user', RUN_ID, initial_cash, initial_cash))
         pg_cur.execute("DELETE FROM backtest_positions WHERE portfolio_id IN (SELECT id FROM backtest_portfolios WHERE run_id = %s)", (RUN_ID,))
+        pg_cur.execute("DELETE FROM backtest_orders WHERE run_id = %s", (RUN_ID,))
+        pg_cur.execute("DELETE FROM backtest_equity WHERE run_id = %s", (RUN_ID,))
         pg_conn.commit()
         pg_cur.close()
         logger.info(f"💰 Initialized Backtest Portfolio: ₹{initial_cash}")
@@ -643,7 +645,7 @@ def run(symbol, start_date_str, end_date_str, initial_cash, speed, timeframe='1m
             release_db_connection(pg_conn)
 
     engine = AlgorithmEngine(run_id=RUN_ID, backtest_mode=True, speed=speed, trading_mode=TRADING_MODE)
-    engine.InitialCash = initial_cash
+    engine.InitialCapital = initial_cash
     
     try:
         module_path, class_name = STRATEGY_NAME.rsplit('.', 1)

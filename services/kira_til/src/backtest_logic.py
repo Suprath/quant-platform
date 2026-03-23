@@ -6,6 +6,7 @@ import numpy as np
 import til_core
 import psycopg2
 from psycopg2 import pool
+from psycopg2.extras import execute_batch
 import json
 import aiohttp
 from datetime import datetime, timedelta
@@ -168,6 +169,7 @@ class BacktestController:
             with open("/tmp/backtest_debug.log", "a") as f: f.write(f"[{datetime.now()}] PG connected. Clearing state...\\n")
 
             # 1. Clear State
+            self.feature_state = {}
             await portfolio_engine.clear_state(timestamp=current_dt, initial_capital=initial_capital, run_id=sim_run_id)
             with open("/tmp/backtest_debug.log", "a") as f: f.write(f"[{datetime.now()}] State cleared. Checking data completeness...\\n")
             
@@ -205,7 +207,9 @@ class BacktestController:
             total_sim_time_ms = 0.0
             max_speed = 0.0
 
-            # 4. DAY-BY-DAY STREAMING (matching IDE backtest_runner.py pattern)
+            # 4. DAY-BY-DAY STREAMING
+            engine = til_core.SimulationEngine(initial_capital)
+            
             for day_idx, day_dt in enumerate(trading_days):
                 date_str = day_dt.strftime("%Y-%m-%d")
                 
@@ -219,16 +223,17 @@ class BacktestController:
                 held_symbols = [p.symbol for p in portfolio_state.open_positions]
                 fetch_symbols = list(set(active_universe + held_symbols))
                 
-                # Record universe for frontend visibility
+                # Record universe for frontend visibility (Optimized Batch)
                 try:
                     cur_pg = pg_conn.cursor()
-                    for sym in active_universe:
-                        cur_pg.execute("""
+                    if active_universe:
+                        universe_data = [(sim_run_id, day_dt.date(), sym, 1.0) for sym in active_universe]
+                        execute_batch(cur_pg, """
                             INSERT INTO backtest_universe (run_id, date, symbol, score)
                             VALUES (%s, %s, %s, %s)
                             ON CONFLICT (run_id, date, symbol) DO NOTHING;
-                        """, (sim_run_id, day_dt.date(), sym, 1.0))
-                    pg_conn.commit()
+                        """, universe_data, page_size=1000)
+                        pg_conn.commit()
                     cur_pg.close()
                 except Exception as e:
                     logger.error(f"Failed to record backtest_universe: {e}")
@@ -247,43 +252,49 @@ class BacktestController:
 
                 logger.info(f"📅 Day {day_idx+1}/{len(trading_days)} ({date_str}): {len(ohlc_rows)} ticks across {len(fetch_symbols)} symbols")
 
-                # NEW: Vectorized Data Pipeline (Target: 10M ticks/sec)
+                # NEW: High-Performance Vectorized Data Pipeline
+                t_prep_start = datetime.now()
                 sym_to_id = {sym: i for i, sym in enumerate(fetch_symbols)}
                 id_to_sym = {i: sym for sym, i in sym_to_id.items()}
                 
-                # Pre-allocate Numpy array for zero-copy C++ processing
-                # [Timestamp, SymbolID, Close, ADX, ATR, OBV, Momentum, Hurst]
-                data_np = np.zeros((len(ohlc_rows), 8), dtype=np.float64)
+                # ohlc_rows: [symbol, timestamp, close, volume]
+                data_np = np.zeros((len(ohlc_rows), 3), dtype=np.float64)
                 
-                for i, row in enumerate(ohlc_rows):
-                    sym, ts, cl = row[0], row[1], row[2]
-                    ts_val = ts.timestamp() if isinstance(ts, datetime) else 0.0
-                    data_np[i, 0] = ts_val
-                    data_np[i, 1] = sym_to_id[sym]
-                    data_np[i, 2] = float(cl)
-                    # Vectorized kernels calculate these in C++, but we start with baseline mocks
-                    data_np[i, 3:8] = [25.0, -0.0001, 0.01, 0.0, 0.52]
+                # Vectorized prep: lists to numpy
+                data_np[:, 0] = [row[1].timestamp() for row in ohlc_rows]
+                data_np[:, 1] = [sym_to_id[row[0]] for row in ohlc_rows]
+                data_np[:, 2] = [float(row[2]) for row in ohlc_rows] # Corrected Index
+                
+                prep_duration = (datetime.now() - t_prep_start).total_seconds()
 
                 # 6. Call C++ Engine (Atomic Simulation)
-                state = await portfolio_engine.get_state()
-                engine = til_core.SimulationEngine(float(state.total_equity))
+                t_cpp_start = datetime.now()
                 cpp_res = engine.run_vectorized_simulation(data_np, id_to_sym)
+                cpp_duration = (datetime.now() - t_cpp_start).total_seconds()
+                logger.info(f"⚡ Day {day_idx+1}: Prep={prep_duration:.2f}s, C++={cpp_duration:.2f}s")
                 
                 # Performance Tracking
                 total_ticks += len(ohlc_rows)
                 total_sim_time_ms += cpp_res.execution_time_ms
-                day_speed = len(ohlc_rows) / (max(0.001, cpp_res.execution_time_ms / 1000))
-                max_speed = max(max_speed, day_speed)
+                
+                # Engine Speed (C++ only)
+                engine_speed = len(ohlc_rows) / (max(0.000001, cpp_res.execution_time_ms / 1000))
+                
+                # E2E Speed (Fetching + Prep + C++ + State Sync)
+                e2e_speed = len(ohlc_rows) / (max(0.000001, prep_duration + cpp_duration))
+                
+                max_speed = max(max_speed, engine_speed)
 
                 self.current_step += len(ohlc_rows)
                 self.progress = min(99, int((self.current_step / max(1, self.total_steps)) * 100))
 
                 # Pulse Logging for Frontend (Debounced every 10 days or last day)
                 if day_idx % 10 == 0 or day_idx == len(trading_days) - 1:
-                    logger.info(f"SPEED: {day_speed:,.0f} ticks/sec | Progress: {self.progress}%")
+                    logger.info(f"⚡ ENGINE: {engine_speed:,.0f} ticks/s | E2E: {e2e_speed:,.0f} ticks/s | Progress: {self.progress}%")
 
                 # Sync final state back to PortfolioEngine (IDE convergence)
                 from .portfolio_engine.models import Position
+                state = await portfolio_engine.get_state()
                 state.cash = cpp_res.final_cash
                 state.total_equity = cpp_res.final_equity
                 state.open_positions = [
@@ -322,25 +333,23 @@ class BacktestController:
                     cur_pg = pg_conn.cursor()
                     # Batch insert snapshots
                     if day_snapshots:
-                        # We only flush every Nth snapshot to keep the DB size manageable while maintaining resolution
-                        # e.g. every 5th snapshot for 1m data, or all for 15m+
-                        # Record ALL snapshots for maximum curve resolution in backtests
-                        stride = 1
+                        # Optimization: Reduce resolution for 1m data to keep UI snappy and DB manageable
+                        stride = 5 if timeframe == '1m' else 1
                         batch_snaps = day_snapshots[::stride]
                         
-                        cur_pg.executemany("""
+                        execute_batch(cur_pg, """
                             INSERT INTO portfolio_snapshots (
                                 snapshot_time, heat_pct, factor_banking, factor_it, 
                                 factor_energy, factor_fmcg, open_positions_count, full_json, run_id
                             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """, batch_snaps)
+                        """, batch_snaps, page_size=1000)
                     
                     # Batch insert orders recorded during the day
                     if day_orders:
-                        cur_pg.executemany("""
+                        execute_batch(cur_pg, """
                             INSERT INTO backtest_orders (run_id, timestamp, symbol, transaction_type, quantity, price, pnl, mechanism)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        """, day_orders)
+                        """, day_orders, page_size=1000)
                     
                     # Update the final equity for the day in the summary table
                     state = await portfolio_engine.get_state()
@@ -527,11 +536,16 @@ class BacktestController:
             cpp_universe = {}
             for sym, tick in tick_data.items():
                 ltp = tick['ltp']
-                fs = self.feature_state.get(sym, {"sma50": ltp, "sma200": ltp, "rsi": 50.0, "last_ltp": ltp})
+                fs = self.feature_state.get(sym, {"sma50": ltp, "sma200": ltp, "rsi": 50.0, "last_ltp": ltp, "count": 0})
                 
-                # Recursive SMA updates (O(1))
-                fs["sma50"] = (fs["sma50"] * 49 + ltp) / 50
-                fs["sma200"] = (fs["sma200"] * 199 + ltp) / 200
+                # Progressive SMA updates (O(1)) - Eliminate startup bias
+                fs["count"] += 1
+                n = fs["count"]
+                n50 = min(n, 50)
+                n200 = min(n, 200)
+                
+                fs["sma50"] = (fs["sma50"] * (n50 - 1) + ltp) / n50
+                fs["sma200"] = (fs["sma200"] * (n200 - 1) + ltp) / n200
                 fs["last_ltp"] = ltp
                 self.feature_state[sym] = fs
 
@@ -702,11 +716,16 @@ class BacktestController:
             row = tick_data[symbol]
             ltp = row['ltp']
             
-            fs = self.feature_state.get(symbol, {"sma50": ltp, "sma200": ltp, "rsi": 50.0, "last_ltp": ltp})
+            fs = self.feature_state.get(symbol, {"sma50": ltp, "sma200": ltp, "rsi": 50.0, "last_ltp": ltp, "count": 0})
             
-            # Simple recursive updates for realistic dynamics
-            fs["sma50"] = (fs["sma50"] * 49 + ltp) / 50
-            fs["sma200"] = (fs["sma200"] * 199 + ltp) / 200
+            # Progressive SMA updates (O(1)) - Eliminate startup bias
+            fs["count"] += 1
+            n = fs["count"]
+            n50 = min(n, 50)
+            n200 = min(n, 200)
+            
+            fs["sma50"] = (fs["sma50"] * (n50 - 1) + ltp) / n50
+            fs["sma200"] = (fs["sma200"] * (n200 - 1) + ltp) / n200
             
             diff = ltp - fs["last_ltp"]
             gain = diff if diff > 0 else 0
@@ -820,14 +839,14 @@ class BacktestController:
 
     def _fetch_discovery_universe(self, timestamp: datetime, timeframe: str) -> List[str]:
         """
-        Discovers active symbols in QuestDB. 
-        Always looks at '1m' base data for discovery.
+        Discovered active symbols in QuestDB using LATEST BY for speed.
         """
-        # Broaden window to 24 hours to handle timezone offsets (IST/UTC) and holidays
-        window_start = timestamp - timedelta(hours=24)
+        # Narrow window to 1 hour for discovery to minimize scan, 
+        # but wide enough to find at least one tick for active stocks.
+        window_start = timestamp - timedelta(hours=1)
         query = f"""
-        SELECT DISTINCT symbol 
-        FROM ohlc 
+        SELECT symbol 
+        FROM ohlc LATEST BY symbol
         WHERE timeframe = '1m'
         AND timestamp >= '{window_start.isoformat()}'
         AND timestamp <= '{timestamp.isoformat()}';
@@ -869,13 +888,14 @@ class BacktestController:
         """Checks if QuestDB has sufficient 1-minute data for the run. Returns True if backfill is needed."""
         try:
             if not symbols:
-                # Dynamic mode: check if we have ANY data for this timeframe/period
+                # Dynamic mode: check if we have ANY data for this timeframe/period (High Speed)
                 rows = self._qdb_exec(
-                    f"SELECT count(*) FROM ohlc WHERE timeframe = '1m' "
+                    f"SELECT timestamp FROM ohlc WHERE timeframe = '1m' "
                     f"AND timestamp >= '{start_date}T00:00:00.000000Z' "
-                    f"AND timestamp <= '{end_date}T23:59:59.999999Z'"
+                    f"AND timestamp <= '{end_date}T23:59:59.999999Z' "
+                    f"LIMIT 1"
                 )
-                return (rows[0][0] if rows else 0) < 100  # Lower threshold
+                return len(rows) == 0
             
             missing_count = 0
             for symbol in symbols:
