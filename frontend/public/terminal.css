@@ -1,0 +1,491 @@
+/* ══════════════════════════════════════════════════════════
+   KIRA TERMINAL — Bloomberg-Grade Dark Terminal UI
+   ══════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg-primary:    #0a0e14;
+  --bg-secondary:  #0d1117;
+  --bg-tertiary:   #111820;
+  --bg-panel:      #131a24;
+  --bg-highlight:  #1a2332;
+  --bg-hover:      #1e2a3a;
+
+  --text-primary:  #e6edf3;
+  --text-secondary:#8b949e;
+  --text-dim:      #484f58;
+  --text-accent:   #ff9900;
+
+  --amber:         #ff9900;
+  --amber-dim:     #cc7a00;
+  --green:         #00ff88;
+  --green-dim:     #00cc6a;
+  --red:           #ff4444;
+  --red-dim:       #cc3636;
+  --cyan:          #00d4ff;
+  --cyan-dim:      #00a8cc;
+  --blue:          #4488ff;
+  --yellow:        #ffcc00;
+  --magenta:       #ff66cc;
+  --white:         #ffffff;
+
+  --border:        #21262d;
+  --border-bright: #30363d;
+
+  --font-mono:     'JetBrains Mono', 'Consolas', 'Monaco', monospace;
+  --font-sans:     'Inter', -apple-system, sans-serif;
+}
+
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Scanline Overlay ── */
+body::after {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.03) 2px,
+    rgba(0, 0, 0, 0.03) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ══ LAYOUT ══ */
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+}
+
+/* ── Header Bar ── */
+#header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  background: linear-gradient(180deg, #111820 0%, #0d1117 100%);
+  border-bottom: 1px solid var(--border);
+  min-height: 36px;
+  flex-shrink: 0;
+}
+
+#header .logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#header .logo-text {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: var(--amber);
+  text-transform: uppercase;
+}
+
+#header .logo-badge {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--bg-primary);
+  background: var(--amber);
+  padding: 1px 6px;
+  border-radius: 2px;
+  letter-spacing: 1px;
+}
+
+#header .status-bar {
+  display: flex;
+  gap: 16px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+#header .status-bar .status-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+#header .status-bar .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: pulse 2s infinite;
+}
+
+#header .status-bar .dot.offline { background: var(--red); animation: none; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Terminal Body ── */
+#terminal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  scroll-behavior: smooth;
+}
+
+#terminal-body::-webkit-scrollbar {
+  width: 6px;
+}
+#terminal-body::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+#terminal-body::-webkit-scrollbar-thumb {
+  background: var(--border-bright);
+  border-radius: 3px;
+}
+#terminal-body::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+/* ── Output Blocks ── */
+.output-block {
+  margin-bottom: 4px;
+  animation: fadeIn 0.15s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.output-block .cmd-line {
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.output-block .cmd-line .prompt {
+  color: var(--amber);
+  font-weight: 600;
+}
+
+.output-block .cmd-line .cmd-text {
+  color: var(--text-primary);
+  margin-left: 4px;
+}
+
+.output-block .result {
+  padding: 6px 0 6px 0;
+  line-height: 1.6;
+}
+
+/* ── Text Colors ── */
+.t-amber   { color: var(--amber); }
+.t-green   { color: var(--green); }
+.t-red     { color: var(--red); }
+.t-cyan    { color: var(--cyan); }
+.t-blue    { color: var(--blue); }
+.t-yellow  { color: var(--yellow); }
+.t-magenta { color: var(--magenta); }
+.t-dim     { color: var(--text-dim); }
+.t-sec     { color: var(--text-secondary); }
+.t-white   { color: var(--white); font-weight: 600; }
+.t-bold    { font-weight: 700; }
+
+/* ── Data Tables ── */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 6px 0;
+}
+
+.data-table th {
+  text-align: left;
+  padding: 4px 12px 4px 0;
+  color: var(--amber);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.data-table td {
+  padding: 3px 12px 3px 0;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--bg-tertiary);
+  white-space: nowrap;
+}
+
+.data-table tr:hover td {
+  background: var(--bg-highlight);
+}
+
+.data-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.data-table .pos { color: var(--green); }
+.data-table .neg { color: var(--red); }
+
+/* ── Stat Cards (Key-Value Grid) ── */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.stat-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 14px;
+}
+
+.stat-card .stat-label {
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.stat-card .stat-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--white);
+}
+
+.stat-card .stat-value.pos { color: var(--green); }
+.stat-card .stat-value.neg { color: var(--red); }
+.stat-card .stat-value.amber { color: var(--amber); }
+
+/* ── Status Badges ── */
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.badge-green  { background: rgba(0,255,136,0.15); color: var(--green); border: 1px solid rgba(0,255,136,0.3); }
+.badge-red    { background: rgba(255,68,68,0.15); color: var(--red); border: 1px solid rgba(255,68,68,0.3); }
+.badge-amber  { background: rgba(255,153,0,0.15); color: var(--amber); border: 1px solid rgba(255,153,0,0.3); }
+.badge-cyan   { background: rgba(0,212,255,0.15); color: var(--cyan); border: 1px solid rgba(0,212,255,0.3); }
+
+/* ── Progress Bar ── */
+.progress-bar {
+  width: 200px;
+  height: 4px;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  overflow: hidden;
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 8px;
+}
+.progress-bar .fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--amber), var(--green));
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* ── Separator ── */
+.separator {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 8px 0;
+}
+
+/* ── ASCII Art / Banners ── */
+.banner {
+  color: var(--amber);
+  font-size: 12px;
+  line-height: 1.2;
+  margin: 4px 0;
+  white-space: pre;
+}
+
+/* ── Input Area ── */
+#input-area {
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  min-height: 40px;
+  flex-shrink: 0;
+}
+
+#input-area .prompt-label {
+  color: var(--amber);
+  font-weight: 700;
+  font-size: 13px;
+  margin-right: 8px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+#input-area input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  caret-color: var(--amber);
+  letter-spacing: 0.3px;
+}
+
+#input-area input::placeholder {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* ── Footer Status ── */
+#footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 16px;
+  background: var(--amber);
+  color: var(--bg-primary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  min-height: 22px;
+  flex-shrink: 0;
+}
+
+#footer .footer-left,
+#footer .footer-right {
+  display: flex;
+  gap: 16px;
+}
+
+/* ── Loading Spinner ── */
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--text-dim);
+  border-top-color: var(--amber);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Welcome Screen ── */
+.welcome-art {
+  color: var(--amber);
+  font-size: 11px;
+  line-height: 1.15;
+  white-space: pre;
+  margin-bottom: 8px;
+}
+
+.welcome-info {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin: 4px 0;
+}
+
+.welcome-info .highlight {
+  color: var(--cyan);
+  font-weight: 600;
+}
+
+/* ── Help Table ── */
+.help-table {
+  margin: 6px 0;
+}
+
+.help-table .help-row {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.help-table .help-cmd {
+  color: var(--cyan);
+  font-weight: 600;
+  min-width: 340px;
+}
+
+.help-table .help-desc {
+  color: var(--text-secondary);
+}
+
+/* ── Error Block ── */
+.error-block {
+  color: var(--red);
+  padding: 4px 0;
+}
+
+.error-block::before {
+  content: '✖ ';
+  font-weight: 700;
+}
+
+/* ── Info Block ── */
+.info-block {
+  color: var(--cyan);
+  padding: 2px 0;
+}
+
+.info-block::before {
+  content: 'ℹ ';
+}
+
+/* ── Success Block ── */
+.success-block {
+  color: var(--green);
+  padding: 2px 0;
+}
+
+.success-block::before {
+  content: '✔ ';
+  font-weight: 700;
+}
+
+/* ── Responsive ── */
+@media (max-width: 768px) {
+  .stat-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .help-table .help-cmd {
+    min-width: 200px;
+  }
+}

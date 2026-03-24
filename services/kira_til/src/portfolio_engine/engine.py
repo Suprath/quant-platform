@@ -77,13 +77,13 @@ class PortfolioEngine:
                 )
                 cur = conn.cursor()
                 cur.execute("""
-                    INSERT INTO backtest_portfolios (user_id, run_id, balance, equity, last_updated)
-                    VALUES (%s, %s, %s, %s, %s)
+                    INSERT INTO backtest_portfolios (user_id, run_id, balance, equity, initial_equity, timestamp)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT (user_id, run_id) DO UPDATE SET
                     balance = EXCLUDED.balance,
                     equity = EXCLUDED.equity,
-                    last_updated = EXCLUDED.last_updated;
-                """, ("default_user", run_id, cap, cap, timestamp or timesync.now_ist()))
+                    timestamp = EXCLUDED.timestamp;
+                """, ("default_user", run_id, cap, cap, cap, timestamp or timesync.now_ist()))
                 conn.commit()
                 cur.close()
                 conn.close()
@@ -264,7 +264,7 @@ class PortfolioEngine:
                 cur = conn.cursor()
                 cur.execute("""
                     UPDATE backtest_portfolios 
-                    SET balance = %s, equity = %s, last_updated = %s
+                    SET balance = %s, equity = %s, timestamp = %s
                     WHERE run_id = %s;
                 """, (state.cash, state.total_equity, timestamp or timesync.now_ist(), run_id))
                 conn.commit()

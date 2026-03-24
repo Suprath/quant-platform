@@ -210,6 +210,10 @@ class BacktestController:
             # 4. DAY-BY-DAY STREAMING
             engine = til_core.SimulationEngine(initial_capital)
             
+            # Persistent symbol-to-id mapping (stable across all days)
+            sym_to_id = {}
+            id_to_sym = {}
+            
             for day_idx, day_dt in enumerate(trading_days):
                 date_str = day_dt.strftime("%Y-%m-%d")
                 try:
@@ -255,8 +259,12 @@ class BacktestController:
 
                     # NEW: High-Performance Vectorized Data Pipeline
                     t_prep_start = datetime.now()
-                    sym_to_id = {sym: i for i, sym in enumerate(fetch_symbols)}
-                    id_to_sym = {i: sym for sym, i in sym_to_id.items()}
+                    # Accumulate symbols into persistent map (don't rebuild each day)
+                    for sym in fetch_symbols:
+                        if sym not in sym_to_id:
+                            new_id = len(sym_to_id)
+                            sym_to_id[sym] = new_id
+                            id_to_sym[new_id] = sym
                     
                     # ohlc_rows: [symbol, timestamp, close, volume]
                     data_np = np.zeros((len(ohlc_rows), 4), dtype=np.float64)
@@ -309,7 +317,7 @@ class BacktestController:
                 state.total_equity = cpp_res.final_equity
                 state.open_positions = [
                     Position(
-                        symbol=id_to_sym[p.symbol_id],
+                        symbol=id_to_sym.get(p.symbol_id, f"UNKNOWN_{p.symbol_id}"),
                         qty=p.qty,
                         entry_price=p.entry_price,
                         current_price=p.current_price,
@@ -365,7 +373,7 @@ class BacktestController:
                     state = await portfolio_engine.get_state()
                     cur_pg.execute("""
                         UPDATE backtest_portfolios 
-                        SET balance = %s, equity = %s, last_updated = %s
+                        SET balance = %s, equity = %s, timestamp = %s
                         WHERE run_id = %s;
                     """, (state.cash, state.total_equity, day_dt, sim_run_id))
                     

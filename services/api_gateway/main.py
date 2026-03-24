@@ -1047,7 +1047,8 @@ def get_backtest_stats(run_id: str, conn = Depends(get_pg_conn)):
             stats = row[0]
             if isinstance(stats, str):
                 stats = json.loads(stats)
-            if stats.get('net_profit') is not None:
+            # Only return if it seems complete
+            if stats.get('net_profit') is not None and stats.get('sharpe_ratio') is not None:
                 # Add camelCase mapping for the frontend runner
                 stats['sharpeRatio'] = stats.get('sharpe_ratio', 0.0)
                 stats['totalTrades'] = stats.get('total_trades', 0)
@@ -1098,22 +1099,91 @@ def get_backtest_stats(run_id: str, conn = Depends(get_pg_conn)):
         gross_loss = abs(sum(losses)) if losses else 0
         net_profit = sum(pnl_list)
 
+        # Get initial capital from portfolio table
+        cur.execute("SELECT initial_equity FROM backtest_portfolios WHERE run_id = %s LIMIT 1;", (run_id,))
+        cap_row = cur.fetchone()
+        initial_capital = float(cap_row[0]) if cap_row and cap_row[0] else 100000.0
+
         win_rate = round((len(wins) / total_trades) * 100, 1) if total_trades > 0 else 0
         profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0.01 else (99.99 if gross_profit > 0 else 0)
         expectancy = round(net_profit / total_trades, 2) if total_trades > 0 else 0
         avg_win = round(gross_profit / len(wins), 2) if wins else 0
         avg_loss = round(-abs(sum(losses)) / len(losses), 2) if losses else 0
-        total_return = round((net_profit / 100000) * 100, 2)
+        total_return = round((net_profit / initial_capital) * 100, 2)
+
+        # ── Compute Sharpe, CAGR, Max Drawdown from cumulative equity curve ──
+        import math
+        
+        # Build daily P&L from trade timestamps
+        cur.execute("""
+            SELECT DATE(timestamp) as day, SUM(pnl) as day_pnl
+            FROM backtest_orders WHERE run_id = %s AND pnl IS NOT NULL AND pnl != 0
+            GROUP BY DATE(timestamp) ORDER BY day ASC;
+        """, (run_id,))
+        daily_rows = cur.fetchall()
+        
+        # Max Drawdown from cumulative equity
+        equity = initial_capital
+        peak = equity
+        max_dd = 0.0
+        daily_returns = []
+        
+        for dr in daily_rows:
+            day_pnl = float(dr[1])
+            prev_equity = equity
+            equity += day_pnl
+            if prev_equity > 0:
+                daily_returns.append(day_pnl / prev_equity)
+            if equity > peak:
+                peak = equity
+            dd = (peak - equity) / peak * 100 if peak > 0 else 0
+            if dd > max_dd:
+                max_dd = dd
+        
+        max_dd = round(max_dd, 2)
+        
+        # Sharpe Ratio (annualized, assuming 252 trading days)
+        sharpe = 0.0
+        if len(daily_returns) > 1:
+            mean_r = sum(daily_returns) / len(daily_returns)
+            variance = sum((r - mean_r) ** 2 for r in daily_returns) / (len(daily_returns) - 1)
+            std_r = math.sqrt(variance) if variance > 0 else 0
+            if std_r > 0:
+                sharpe = round((mean_r / std_r) * math.sqrt(252), 2)
+        
+        # Sortino Ratio
+        sortino = 0.0
+        if len(daily_returns) > 1:
+            mean_r = sum(daily_returns) / len(daily_returns)
+            downside = [r for r in daily_returns if r < 0]
+            if downside:
+                down_var = sum(r ** 2 for r in downside) / len(downside)
+                down_std = math.sqrt(down_var) if down_var > 0 else 0
+                if down_std > 0:
+                    sortino = round((mean_r / down_std) * math.sqrt(252), 2)
+        
+        # CAGR
+        cagr = 0.0
+        if len(daily_rows) > 1:
+            first_day = daily_rows[0][0]
+            last_day = daily_rows[-1][0]
+            days_span = (last_day - first_day).days
+            if days_span > 0:
+                final_equity = initial_capital + net_profit
+                years = days_span / 365.25
+                if initial_capital > 0 and final_equity > 0 and years > 0:
+                    cagr = round(((final_equity / initial_capital) ** (1 / years) - 1) * 100, 2)
 
         return {
             "total_return": total_return,
             "net_profit": round(net_profit, 2),
-            "cagr": 0.0,
-            "sharpe_ratio": 0.0,
-            "sortino_ratio": 0.0,
-            "max_drawdown": 0.0,
-            "max_dd_duration": 0,
-            "calmar_ratio": 0.0,
+            "initial_capital": initial_capital,
+            "final_equity": round(initial_capital + net_profit, 2),
+            "cagr": cagr,
+            "sharpe_ratio": sharpe,
+            "sortino_ratio": sortino,
+            "max_drawdown": max_dd,
+            "calmar_ratio": round(cagr / max_dd, 2) if max_dd > 0 else 0.0,
             "total_trades": total_trades,
             "win_rate": win_rate,
             "profit_factor": profit_factor,
@@ -1222,11 +1292,12 @@ def get_backtest_history(conn = Depends(get_pg_conn)):
                 bp.run_id,
                 bp.balance,
                 bp.equity,
-                bp.last_updated,
+                bp.timestamp,
                 COALESCE(t.trade_count, 0) as trade_count,
                 COALESCE(t.total_pnl, 0) as total_pnl,
                 t.first_trade,
-                t.last_trade
+                t.last_trade,
+                bp.initial_equity
             FROM backtest_portfolios bp
             LEFT JOIN (
                 SELECT 
@@ -1238,14 +1309,14 @@ def get_backtest_history(conn = Depends(get_pg_conn)):
                 FROM backtest_orders
                 GROUP BY run_id
             ) t ON bp.run_id = t.run_id
-            ORDER BY bp.last_updated DESC;
+            ORDER BY bp.timestamp DESC;
         """)
         rows = cur.fetchall()
         return [
             {
                 "run_id": r[0],
                 "final_balance": float(r[1]) if r[1] else 0,
-                "initial_equity": float(r[2]) if r[2] else 100000,
+                "initial_equity": float(r[8]) if r[8] else 100000,
                 "created_at": r[3].isoformat() if r[3] else None,
                 "trade_count": r[4],
                 "total_pnl": float(r[5]) if r[5] else 0,
