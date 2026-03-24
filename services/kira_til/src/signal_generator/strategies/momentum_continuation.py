@@ -37,7 +37,7 @@ class MomentumContinuationStrategy(BaseStrategy):
         # Pattern matched — compute quality
         score = self.get_pattern_score(features)
         
-        if score < 0.35:
+        if score < 0.55:
             return None
         
         return RawSignal(

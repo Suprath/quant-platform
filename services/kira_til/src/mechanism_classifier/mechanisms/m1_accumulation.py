@@ -9,7 +9,7 @@ class AccumulationMechanism(BaseMechanism):
     """
     
     MECHANISM_TYPE = "ACCUMULATION"
-    MINIMUM_SCORE = 0.30
+    MINIMUM_SCORE = 0.65
     
     async def check(
         self,

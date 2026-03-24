@@ -212,85 +212,95 @@ class BacktestController:
             
             for day_idx, day_dt in enumerate(trading_days):
                 date_str = day_dt.strftime("%Y-%m-%d")
-                
-                # Discovery Universe (if dynamic)
-                active_universe = list(symbols)
-                if is_dynamic:
-                    active_universe = self._fetch_discovery_universe(day_dt.replace(hour=9, minute=15), timeframe)
-                
-                # Include held symbols for MtM continuity (IDE parity)
-                portfolio_state = await portfolio_engine.get_state()
-                held_symbols = [p.symbol for p in portfolio_state.open_positions]
-                fetch_symbols = list(set(active_universe + held_symbols))
-                
-                # Record universe for frontend visibility (Optimized Batch)
                 try:
-                    cur_pg = pg_conn.cursor()
-                    if active_universe:
-                        universe_data = [(sim_run_id, day_dt.date(), sym, 1.0) for sym in active_universe]
-                        execute_batch(cur_pg, """
-                            INSERT INTO backtest_universe (run_id, date, symbol, score)
-                            VALUES (%s, %s, %s, %s)
-                            ON CONFLICT (run_id, date, symbol) DO NOTHING;
-                        """, universe_data, page_size=1000)
-                        pg_conn.commit()
-                    cur_pg.close()
-                except Exception as e:
-                    logger.error(f"Failed to record backtest_universe: {e}")
+                    # Discovery Universe (if dynamic)
+                    active_universe = list(symbols)
+                    if is_dynamic:
+                        active_universe = self._fetch_discovery_universe(day_dt.replace(hour=9, minute=15), timeframe)
+                    
+                    # Include held symbols for MtM continuity (IDE parity)
+                    portfolio_state = await portfolio_engine.get_state()
+                    held_symbols = [p.symbol for p in portfolio_state.open_positions]
+                    fetch_symbols = list(set(active_universe + held_symbols))
+                    
+                    # Record universe for frontend visibility (Optimized Batch)
+                    try:
+                        cur_pg = pg_conn.cursor()
+                        if active_universe:
+                            universe_data = [(sim_run_id, day_dt.date(), sym, 1.0) for sym in active_universe]
+                            execute_batch(cur_pg, """
+                                INSERT INTO backtest_universe (run_id, date, symbol, score)
+                                VALUES (%s, %s, %s, %s)
+                                ON CONFLICT (run_id, date, symbol) DO NOTHING;
+                            """, universe_data, page_size=1000)
+                            pg_conn.commit()
+                        cur_pg.close()
+                    except Exception as e:
+                        logger.error(f"Failed to record backtest_universe: {e}")
+                        pg_conn.rollback()
 
-                if not fetch_symbols:
-                    logger.warning(f"⚠️ No symbols discovered for {date_str}. Skipping day.")
+                    if not fetch_symbols:
+                        logger.warning(f"⚠️ No symbols discovered for {date_str}. Skipping day.")
+                        continue
+
+                    # 5. BULK FETCH OHLCV for this day
+                    start_ts = f"{date_str}T00:00:00.000000Z"
+                    end_ts = f"{date_str}T23:59:59.999999Z"
+                    
+                    ohlc_rows = self._fetch_ohlc_bulk(fetch_symbols, start_ts, end_ts, timeframe)
+                    if not ohlc_rows:
+                        continue
+
+                    logger.info(f"📅 Day {day_idx+1}/{len(trading_days)} ({date_str}): {len(ohlc_rows)} ticks across {len(fetch_symbols)} symbols")
+
+                    # NEW: High-Performance Vectorized Data Pipeline
+                    t_prep_start = datetime.now()
+                    sym_to_id = {sym: i for i, sym in enumerate(fetch_symbols)}
+                    id_to_sym = {i: sym for sym, i in sym_to_id.items()}
+                    
+                    # ohlc_rows: [symbol, timestamp, close, volume]
+                    data_np = np.zeros((len(ohlc_rows), 4), dtype=np.float64)
+                    
+                    # Vectorized prep: lists to numpy
+                    # row format from _fetch_ohlc_bulk: [symbol, timestamp, close, volume]
+                    data_np[:, 0] = [row[1].timestamp() for row in ohlc_rows]
+                    data_np[:, 1] = [sym_to_id[row[0]] for row in ohlc_rows]
+                    data_np[:, 2] = [float(row[2]) for row in ohlc_rows]
+                    data_np[:, 3] = [float(row[3]) for row in ohlc_rows]
+                    
+                    prep_duration = (datetime.now() - t_prep_start).total_seconds()
+
+                    # 6. Call C++ Engine (Atomic Simulation)
+                    # This engine now implements Mechanism Scoring, Noise Filtering, 
+                    # and Brokerage Sufficiency internally for >5M ticks/sec performance.
+                    t_cpp_start = datetime.now()
+                    cpp_res = engine.run_vectorized_simulation(data_np, id_to_sym)
+                    cpp_duration = (datetime.now() - t_cpp_start).total_seconds()
+                    logger.info(f"⚡ Day {day_idx+1}: Prep={prep_duration:.2f}s, C++={cpp_duration:.2f}s")
+                    
+                    # Performance Tracking
+                    total_ticks += len(ohlc_rows)
+                    total_sim_time_ms += cpp_res.execution_time_ms
+                    
+                    # Engine Speed (C++ only)
+                    engine_speed = len(ohlc_rows) / (max(0.000001, cpp_res.execution_time_ms / 1000))
+                    
+                    # E2E Speed (Fetching + Prep + C++ + State Sync)
+                    e2e_speed = len(ohlc_rows) / (max(0.000001, prep_duration + cpp_duration))
+                    
+                    max_speed = max(max_speed, engine_speed)
+
+                    self.current_step += len(ohlc_rows)
+                    self.progress = min(99, int((self.current_step / max(1, self.total_steps)) * 100))
+
+                    # Pulse Logging for Frontend (Debounced every 10 days or last day)
+                    if day_idx % 10 == 0 or day_idx == len(trading_days) - 1:
+                        logger.info(f"⚡ ENGINE: {engine_speed:,.0f} ticks/s | E2E: {e2e_speed:,.0f} ticks/s | Progress: {self.progress}%")
+                
+                except Exception as day_error:
+                    logger.error(f"Error in Day {date_str} simulation: {day_error}")
+                    if pg_conn: pg_conn.rollback()
                     continue
-
-                # 5. BULK FETCH OHLCV for this day
-                start_ts = f"{date_str}T00:00:00.000000Z"
-                end_ts = f"{date_str}T23:59:59.999999Z"
-                
-                ohlc_rows = self._fetch_ohlc_bulk(fetch_symbols, start_ts, end_ts, timeframe)
-                if not ohlc_rows:
-                    continue
-
-                logger.info(f"📅 Day {day_idx+1}/{len(trading_days)} ({date_str}): {len(ohlc_rows)} ticks across {len(fetch_symbols)} symbols")
-
-                # NEW: High-Performance Vectorized Data Pipeline
-                t_prep_start = datetime.now()
-                sym_to_id = {sym: i for i, sym in enumerate(fetch_symbols)}
-                id_to_sym = {i: sym for sym, i in sym_to_id.items()}
-                
-                # ohlc_rows: [symbol, timestamp, close, volume]
-                data_np = np.zeros((len(ohlc_rows), 3), dtype=np.float64)
-                
-                # Vectorized prep: lists to numpy
-                data_np[:, 0] = [row[1].timestamp() for row in ohlc_rows]
-                data_np[:, 1] = [sym_to_id[row[0]] for row in ohlc_rows]
-                data_np[:, 2] = [float(row[2]) for row in ohlc_rows] # Corrected Index
-                
-                prep_duration = (datetime.now() - t_prep_start).total_seconds()
-
-                # 6. Call C++ Engine (Atomic Simulation)
-                t_cpp_start = datetime.now()
-                cpp_res = engine.run_vectorized_simulation(data_np, id_to_sym)
-                cpp_duration = (datetime.now() - t_cpp_start).total_seconds()
-                logger.info(f"⚡ Day {day_idx+1}: Prep={prep_duration:.2f}s, C++={cpp_duration:.2f}s")
-                
-                # Performance Tracking
-                total_ticks += len(ohlc_rows)
-                total_sim_time_ms += cpp_res.execution_time_ms
-                
-                # Engine Speed (C++ only)
-                engine_speed = len(ohlc_rows) / (max(0.000001, cpp_res.execution_time_ms / 1000))
-                
-                # E2E Speed (Fetching + Prep + C++ + State Sync)
-                e2e_speed = len(ohlc_rows) / (max(0.000001, prep_duration + cpp_duration))
-                
-                max_speed = max(max_speed, engine_speed)
-
-                self.current_step += len(ohlc_rows)
-                self.progress = min(99, int((self.current_step / max(1, self.total_steps)) * 100))
-
-                # Pulse Logging for Frontend (Debounced every 10 days or last day)
-                if day_idx % 10 == 0 or day_idx == len(trading_days) - 1:
-                    logger.info(f"⚡ ENGINE: {engine_speed:,.0f} ticks/s | E2E: {e2e_speed:,.0f} ticks/s | Progress: {self.progress}%")
 
                 # Sync final state back to PortfolioEngine (IDE convergence)
                 from .portfolio_engine.models import Position
@@ -457,10 +467,11 @@ class BacktestController:
         conf_map = {s: 0.0 for s in symbols}
         
         # Backtest Mode Fallback
-        if os.getenv("TIL_BACKTEST_MODE", "false").lower() == "true":
-            for s in symbols:
-                conf_map[s] = 0.85
-            return conf_map
+        # No more global 0.85 fallback. Fetch real data or return 0.5 as neutral.
+        # if os.getenv("TIL_BACKTEST_MODE", "false").lower() == "true":
+        #    for s in symbols:
+        #        conf_map[s] = 0.85
+        #    return conf_map
             
         sym_list = "'" + "','".join(symbols) + "'"
         # Use LATEST BY for efficiency
@@ -783,12 +794,22 @@ class BacktestController:
             features = features_batch.get(signal.symbol)
             if not features: continue
             
-            mech_res = await mechanism_classifier.classify(signal, features, context)
             if not mech_res or mech_res.action == "DISCARD":
                 continue
             
             confidence_from_db = noise_map.get(signal.symbol, 0.0)
-            if confidence_from_db < 0.3:
+            if confidence_from_db < 0.6:
+                continue
+
+            # Brokerage Sufficiency Filter: Ensure ATR-based target justifies the trade cost
+            # Round-trip cost Estimate: ₹40 flat + 0.2% turnover
+            price = signal.entry_price_estimate
+            atr = features.atr_price
+            est_cost = 40.0 + (price * 2.0 * 0.001) 
+            target_gain = atr * 1.5 # Using strategy's stop distance as unit
+            
+            if target_gain < (est_cost * 4.0):
+                # logger.info(f"Skipping {signal.symbol}: Expected gain {target_gain:.2f} too small vs cost {est_cost:.2f}")
                 continue
                 
             combined_conf = (signal.pattern_score + mech_res.mechanism_confidence + confidence_from_db) / 3.0

@@ -36,7 +36,7 @@ class AccumulationBreakoutStrategy(BaseStrategy):
             return None     # Volume too inconsistent
         
         score = self.get_pattern_score(features)
-        if score < 0.40:
+        if score < 0.60:
             return None
         
         return RawSignal(

@@ -357,7 +357,7 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092
       - REDIS_HOST=redis_state
       - POSTGRES_HOST=postgres_metadata
-      - TIL_BACKTEST_MODE=false
+      - TIL_BACKTEST_MODE=true
       - PYTHONPATH=/app:/app/src:/kira-shared/src
     volumes:
       - ../services/kira_til/src:/app/src
