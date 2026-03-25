@@ -144,10 +144,8 @@ class BacktestController:
     async def _execute_simulation(self, symbols, start_date, end_date, timeframe, initial_capital, is_dynamic, sim_run_id):
         """
         Direct DB Streaming Engine (IDE Parity)
-        Fetches OHLCV from QuestDB day-by-day and processes tick slices
-        through the TIL module pipeline. Zero lookahead bias guaranteed
-        by sequential day processing.
         """
+        logger.info(f"🚀 EXECUTING SIM {sim_run_id} | SYMBOLS: {symbols} | DYNAMIC: {is_dynamic}")
         current_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
         
@@ -266,15 +264,16 @@ class BacktestController:
                             sym_to_id[sym] = new_id
                             id_to_sym[new_id] = sym
                     
-                    # ohlc_rows: [symbol, timestamp, close, volume]
-                    data_np = np.zeros((len(ohlc_rows), 4), dtype=np.float64)
+                    # data_np: [timestamp, symbol_id, close, volume, confidence]
+                    data_np = np.zeros((len(ohlc_rows), 5), dtype=np.float64)
                     
                     # Vectorized prep: lists to numpy
-                    # row format from _fetch_ohlc_bulk: [symbol, timestamp, close, volume]
+                    # row format from _fetch_ohlc_bulk: [symbol, timestamp, close, volume, confidence]
                     data_np[:, 0] = [row[1].timestamp() for row in ohlc_rows]
                     data_np[:, 1] = [sym_to_id[row[0]] for row in ohlc_rows]
                     data_np[:, 2] = [float(row[2]) for row in ohlc_rows]
                     data_np[:, 3] = [float(row[3]) for row in ohlc_rows]
+                    data_np[:, 4] = [float(row[4])/100.0 for row in ohlc_rows] # Normalize 0-1
                     
                     prep_duration = (datetime.now() - t_prep_start).total_seconds()
 
@@ -452,23 +451,35 @@ class BacktestController:
     def _fetch_ohlc_bulk(self, symbols: List[str], start_ts: str, end_ts: str, timeframe: str):
         """Optimal bulk fetch for OHLC using QuestDB SAMPLE BY for dynamic downsampling."""
         sym_list = "'" + "','".join(symbols) + "'"
-        # Query the base 'ohlc' table which has 1m data and use SAMPLE BY to aggregate on the fly
+        logger.info(f"🔍 Fetching OHLC for {len(symbols)} symbols: {sym_list}")
+        # Join with noise_confidence table to get historical ML conviction
+        # Optimized: Sample both tables separately before joining to reduce Cartesian load
         query = f"""
-            SELECT symbol, timestamp, first(open) as open, max(high) as high, min(low) as low, last(close) as close, sum(volume) as volume
-            FROM ohlc
-            WHERE symbol IN ({sym_list})
-              AND timeframe = '1m'
-              AND timestamp >= '{start_ts}'
-              AND timestamp <= '{end_ts}'
-            SAMPLE BY {timeframe} FILL(NONE)
-            ORDER BY timestamp ASC;
+            WITH 
+            ohlc_sampled AS (
+                SELECT symbol, timestamp, last(close) as close, sum(volume) as volume
+                FROM ohlc_1m
+                WHERE symbol IN ({sym_list})
+                  AND timeframe = '1m'
+                  AND timestamp >= '{start_ts}'
+                  AND timestamp <= '{end_ts}'
+                SAMPLE BY {timeframe} FILL(NONE) ALIGN TO CALENDAR
+            ),
+            noise_sampled AS (
+                SELECT symbol, timestamp, avg(confidence) as confidence
+                FROM noise_confidence
+                WHERE symbol IN ({sym_list})
+                  AND timestamp >= '{start_ts}'
+                  AND timestamp <= '{end_ts}'
+                SAMPLE BY {timeframe} FILL(NONE) ALIGN TO CALENDAR
+            )
+            SELECT A.symbol, A.timestamp, A.close, A.volume, B.confidence
+            FROM ohlc_sampled A
+            LEFT JOIN noise_sampled B ON A.timestamp = B.timestamp AND A.symbol = B.symbol;
         """
-        # We need to map the aggregated columns back to standard dictionary format if needed
-        # The query returns: symbol, timestamp, open, high, low, close, volume (7 items)
-        # But _execute_simulation only extracts timestamp, close, volume. But we fetch 7 columns.
         rows = self._qdb_exec(query)
-        # return [symbol, timestamp, close, volume] format to match existing _execute_simulation unpack
-        return [[r[0], r[1], r[5], r[6]] for r in rows]
+        # return [symbol, timestamp, close, volume, confidence]
+        return [[r[0], r[1], r[2], r[3], r[4] or 50] for r in rows]
 
     def _fetch_noise_confidence_bulk(self, symbols: List[str], date_str: str):
         """Optimal bulk fetch for noise confidence using a short-lived connection."""
@@ -875,7 +886,7 @@ class BacktestController:
         window_start = timestamp - timedelta(hours=1)
         query = f"""
         SELECT symbol 
-        FROM ohlc LATEST BY symbol
+        FROM ohlc_1m LATEST BY symbol
         WHERE timeframe = '1m'
         AND timestamp >= '{window_start.isoformat()}'
         AND timestamp <= '{timestamp.isoformat()}';
@@ -895,7 +906,7 @@ class BacktestController:
             sym_list = "'" + "','".join(symbols) + "'"
             query = f"""
             SELECT symbol, close, volume 
-            FROM ohlc LATEST BY symbol 
+            FROM ohlc_1m LATEST BY symbol 
             WHERE timeframe = '{timeframe}'
             AND symbol IN ({sym_list}) 
             AND timestamp <= '{timestamp.isoformat()}';
@@ -919,7 +930,7 @@ class BacktestController:
             if not symbols:
                 # Dynamic mode: check if we have ANY data for this timeframe/period (High Speed)
                 rows = self._qdb_exec(
-                    f"SELECT timestamp FROM ohlc WHERE timeframe = '1m' "
+                    f"SELECT timestamp FROM ohlc_1m WHERE timeframe = '1m' "
                     f"AND timestamp >= '{start_date}T00:00:00.000000Z' "
                     f"AND timestamp <= '{end_date}T23:59:59.999999Z' "
                     f"LIMIT 1"
@@ -929,7 +940,7 @@ class BacktestController:
             missing_count = 0
             for symbol in symbols:
                 rows = self._qdb_exec(
-                    f"SELECT count(*) FROM ohlc WHERE symbol = '{symbol}' "
+                    f"SELECT count(*) FROM ohlc_1m WHERE symbol = '{symbol}' "
                     f"AND timeframe = '1m' "
                     f"AND timestamp >= '{start_date}T00:00:00.000000Z' "
                     f"AND timestamp <= '{end_date}T23:59:59.999999Z'"

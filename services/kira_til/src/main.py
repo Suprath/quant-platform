@@ -453,7 +453,9 @@ async def trigger_backtest(req: BacktestRequest):
         
         # Resolve symbols if missing
         if not req.symbols:
-            req.symbols = list(SYMBOL_MAP.keys())[:req.universe_size or 10]
+            # Bugfix: SYMBOL_MAP has multiple entries per stock. Get unique ISINs only.
+            unique_isins = list(dict.fromkeys(SYMBOL_MAP.values()))
+            req.symbols = unique_isins[:req.universe_size or 10]
 
         # Prevent 0-trade runs by resolving human tickers to proper ISIN tokens
         formatted_symbols = [normalize_symbol(s) for s in req.symbols]

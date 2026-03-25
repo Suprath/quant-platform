@@ -191,8 +191,11 @@ export default function TerminalPage() {
                 clearInterval(interval);
                 setRunning(false);
                 setProgress(0);
-                setActiveRunId(runId);
-                refreshHistory();
+                // Buffer to allow DB persistence to complete
+                setTimeout(() => {
+                    setActiveRunId(runId);
+                    refreshHistory();
+                }, 1000);
             }
         }, 1000);
     } catch (e) {

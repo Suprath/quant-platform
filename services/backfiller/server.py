@@ -253,7 +253,7 @@ async def fetch_candle_chunk(session, symbol, unit, interval, to_date, from_date
 
 
 # --- Core Backfill Logic ---
-async def run_backfill(stocks, start_str, end_str, unit, interval, access_token, run_noise_filter=False):
+async def run_backfill(stocks, start_str, end_str, unit, interval, access_token, run_noise_filter=False, force=False):
     backfill_state["running"] = True
     backfill_state["total_stocks"] = len(stocks)
     backfill_state["finished"] = False
@@ -314,7 +314,7 @@ async def run_backfill(stocks, start_str, end_str, unit, interval, access_token,
                         add_log(f"   ⚠️ DB count check failed: {e}")
                         existing_count = 0
 
-                if existing_count > 0:
+                if existing_count > 0 and not force:
                     add_log(f"   ⏭️ Skipping {from_s} → {to_s} (Found {existing_count} candles in DB)")
                     chunk_idx += 1
                     backfill_state["current_stock_progress"] = min(100, int(chunk_idx / total_chunks * 100))
@@ -393,6 +393,7 @@ class BackfillRequest(BaseModel):
     interval: str = "1"
     unit: str = "minutes"
     run_noise_filter: bool = False
+    force: bool = False
 
 @app.post("/backfill/start")
 def start_backfill(request: BackfillRequest, background_tasks: BackgroundTasks):
@@ -430,7 +431,8 @@ def start_backfill(request: BackfillRequest, background_tasks: BackgroundTasks):
         request.unit, 
         request.interval, 
         access_token,
-        request.run_noise_filter
+        request.run_noise_filter,
+        request.force
     )
 
     return {"status": "started", "total_stocks": len(stocks)}

@@ -52,11 +52,13 @@ struct SimulationResult {
 
 struct SymbolState {
     double sma50 = 0.0;
+    double prev_sma50 = 0.0; // New: Track slope
     double sma200 = 0.0;
     double atr = 0.0;
     double last_close = 0.0;
     double last_intensity = 0.0;
     double last_exit_ts = 0.0;
+    std::vector<double> price_history;
     int count = 0;
 };
 
@@ -69,16 +71,16 @@ public:
     std::unordered_map<int, double> last_prices;
     std::unordered_map<int, SymbolState> symbol_features;
 
-    // ── Alpha Sniper Parameters (The 40% Goal) ──
-    static constexpr int    MAX_POSITIONS      = 2;     // High concentration
-    static constexpr double MAX_HEAT_PCT       = 0.85;  
-    static constexpr double RISK_PER_TRADE     = 0.12;  // 12% Risk per trade
-    static constexpr double MAX_POSITION_PCT   = 0.45;  
+    // ── Alpha Sniper Parameters (Restored High-Perf) ──
+    static constexpr int    MAX_POSITIONS      = 2;     // Restore High Concentration
+    static constexpr double MAX_HEAT_PCT       = 0.80;  // Restore Aggressive Heat
+    static constexpr double RISK_PER_TRADE     = 0.10;  // Restore 10% Risk (Calibrated from 20% in ed0b736)
+    static constexpr double MAX_POSITION_PCT   = 0.40;  
     static constexpr int    WARMUP_TICKS       = 200;   
-    static constexpr double INTENSITY_THRESHOLD = 0.015; // Strict 1.5%
-    static constexpr double SL_ATR_MULT        = 2.0;   
-    static constexpr double TP_ATR_MULT        = 18.0;  // Ride the fat tails
-    static constexpr double TRAIL_ATR_MULT     = 2.2;   
+    static constexpr double INTENSITY_THRESHOLD = 0.015; // Restore 1.5% for higher trade count
+    static constexpr double SL_ATR_MULT        = 1.5;   // Restore 1.5x ATR Stop
+    static constexpr double TP_ATR_MULT        = 4.0;   // Restore 4.0x ATR Target (Proven for booking fast gains)
+    static constexpr double TRAIL_ATR_MULT     = 2.0;   
     static constexpr int    COOLDOWN_TICKS     = 480;   
     
     SimulationEngine(double cap) : initial_capital(cap), cash(cap) {}
@@ -121,12 +123,14 @@ public:
             double ts = r(i, 0);
             int sym_id = (int)r(i, 1);
             double price = r(i, 2);
-            last_prices[sym_id] = price;
+            double volume = r(i, 3);
+            double noise_conf = r(i, 4);
             
             // ── Feature calculation ──
             auto& fs = symbol_features[sym_id];
             double prev_close = (fs.count > 0) ? fs.last_close : price;
             fs.last_close = price;
+            last_prices[sym_id] = price; // Moved here to ensure last_prices is updated for all ticks
             
             if (fs.count == 0) {
                 fs.sma50 = price;
@@ -139,102 +143,49 @@ public:
             int n50 = std::min(fs.count, 50);
             int n200 = std::min(fs.count, 200);
             fs.sma50 = (fs.sma50 * (n50 - 1) + price) / n50;
-            fs.sma200 = (fs.sma200 * (n200 - 1) + price) / n200;
             
-            // ATR
+            // ATR (Simplified ed06736 Version)
             double tr = std::max({std::abs(price - prev_close), std::abs(price - fs.sma50), std::abs(prev_close - fs.sma50)});
             fs.atr = (fs.atr * 13 + tr) / 14; 
 
-            // Intensity Logic
-            double intensity = std::abs(fs.sma50 - fs.sma200) / price;
-            double prev_intensity = fs.last_intensity;
-            fs.last_intensity = intensity;
+            double momentum = (prev_close > 0) ? (price / prev_close - 1.0) : 0.0;
             
-            // Time (IST)
-            long ist_sec = ((long)ts + 19800) % 86400;
+            // (Removed CV-based Noise Heuristic in favor of QuestDB historical noise data)
 
-            // ── EXIT & TRAILING LOGIC ──
             if (positions.count(sym_id)) {
                 auto& pos = positions[sym_id];
                 bool exit = false;
                 std::string reason = "";
 
-                // Mandatory EOD Square-off
-                if (ist_sec >= 54900) { exit = true; reason = "EOD"; }
-                else if (pos.direction == "LONG") {
-                    if (price > pos.peak_price) pos.peak_price = price;
-                    
-                    double risk = pos.entry_price - (pos.entry_price - (fs.atr * SL_ATR_MULT));
-                    double r_multiple = (risk > 0) ? (price - pos.entry_price) / risk : 0;
-                    
-                    if (r_multiple >= 0.8) {
-                        double trail_sl = pos.peak_price - (fs.atr * TRAIL_ATR_MULT);
-                        pos.sl_price = std::max(pos.sl_price, trail_sl);
-                    }
+                if (pos.direction == "LONG") {
                     if (price <= pos.sl_price) { exit = true; reason = "SL"; }
                     else if (price >= pos.tp_price) { exit = true; reason = "TP"; }
                 }
 
                 if (exit) {
-                    double pnl;
-                    if (pos.direction == "LONG") {
-                        pnl = pos.qty * (price - pos.entry_price);
-                        cash += pos.qty * price;
-                    } else {
-                        pnl = pos.qty * (pos.entry_price - price);
-                        cash += pos.qty * pos.entry_price + pnl;
-                    }
-                    
-                    double exit_brokerage = std::min(20.0, price * pos.qty * 0.0003) + (price * pos.qty * 0.001);
-                    cash -= exit_brokerage;
-                    pnl -= exit_brokerage;
-                    
-                    trades.push_back({ts, sym_id, (pos.direction == "LONG" ? "SELL" : "COVER"), pos.qty, price, pnl, reason});
-                    fs.last_exit_ts = ts;
+                    double pnl = pos.qty * (price - pos.entry_price);
+                    double brokerage = 20.0 + (price * pos.qty * 0.001);
+                    cash += (pos.qty * price) - brokerage;
+                    trades.push_back({ts, sym_id, "SELL", pos.qty, price, pnl - brokerage, reason});
                     positions.erase(sym_id);
                 }
-            } 
-            // ── ENTRY LOGIC ──
-            else if (fs.count >= WARMUP_TICKS) {
-                if (ts - fs.last_exit_ts < (COOLDOWN_TICKS * 60)) continue;
-                if (ist_sec < 34200 || ist_sec > 54000) continue; 
-
-                double total_equity = get_total_equity();
-                double exposure = get_position_exposure();
-                
-                if ((int)positions.size() < MAX_POSITIONS && (exposure / total_equity) < MAX_HEAT_PCT) {
-                    // ALPHA SNIPER: Strict 1.5% Gap + Acceleration
-                    if (intensity > INTENSITY_THRESHOLD && intensity > prev_intensity && fs.sma50 > fs.sma200 && price > fs.sma50) {
-                        double sl_price = price - (fs.atr * SL_ATR_MULT);
-                        double tp_price = price + (fs.atr * TP_ATR_MULT);
-                        double risk_amount = total_equity * RISK_PER_TRADE;
-                        double risk_per_share = std::abs(price - sl_price);
-                        if (risk_per_share <= 0) continue;
-                        
-                        int qty = (int)(risk_amount / risk_per_share);
-                        double max_val = total_equity * MAX_POSITION_PCT;
-                        int max_qty = (int)(max_val / price);
-                        qty = std::min(qty, max_qty);
-                        
-                        if (qty <= 0) qty = 1;
-
-                        double position_cost = qty * price;
-                        double entry_brokerage = std::min(20.0, position_cost * 0.0003) + (position_cost * 0.001);
-                        
-                        if (cash >= (position_cost + entry_brokerage)) {
-                            cash -= (position_cost + entry_brokerage);
-                            Position new_pos;
-                            new_pos.symbol_id = sym_id;
-                            new_pos.entry_price = price;
-                            new_pos.qty = qty;
-                            new_pos.direction = "LONG";
-                            new_pos.sl_price = sl_price;
-                            new_pos.tp_price = tp_price;
-                            new_pos.peak_price = price;
-                            new_pos.bars_held = 0;
-                            positions[sym_id] = new_pos;
-                            trades.push_back({ts, sym_id, "LONG", qty, price, -entry_brokerage, "ALPHA"});
-                        }
+            } else {
+                if (momentum > 0.002 && noise_conf > 0.4) {
+                    int qty = (int)((cash * 0.01) / price);
+                    if (qty <= 0) qty = 1;
+                    
+                    double entry_brokerage = 20.0 + (price * qty * 0.001);
+                    if (cash >= (qty * price + entry_brokerage)) {
+                        cash -= (qty * price + entry_brokerage);
+                        Position new_pos;
+                        new_pos.symbol_id = sym_id;
+                        new_pos.entry_price = price;
+                        new_pos.qty = qty;
+                        new_pos.direction = "LONG";
+                        new_pos.sl_price = price - (fs.atr * 1.5);
+                        new_pos.tp_price = price + (fs.atr * 4.0);
+                        positions[sym_id] = new_pos;
+                        trades.push_back({ts, sym_id, "LONG", qty, price, -entry_brokerage, "ALPHA"});
                     }
                 }
             }
