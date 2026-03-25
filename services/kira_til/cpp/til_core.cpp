@@ -8,6 +8,7 @@
 #include <map>
 #include <unordered_map>
 #include <chrono>
+#include <iostream>
 #include <deque>
 
 namespace py = pybind11;
@@ -19,6 +20,8 @@ struct TradeRecord {
     int qty;
     double price;
     double pnl;
+    double raw_pnl;      // New: PnL before brokerage
+    double brokerage;    // New: Total commissions for this trade
     std::string reason;
 };
 
@@ -27,6 +30,7 @@ struct Position {
     double entry_price;
     double current_price;
     int qty;
+    double entry_brokerage; // New: Track entry cost for final PnL
     std::string direction;
     double sl_price;
     double tp_price;
@@ -39,6 +43,35 @@ struct Position {
 struct EquitySnapshot {
     double timestamp;
     double equity;
+};
+
+// --- ADVANCED MATH UTILITIES (Hedge Fund Grade) ---
+struct LinearRegression {
+    static double calculate_slope(const std::vector<double>& y) {
+        int n = y.size();
+        if (n < 2) return 0;
+        double x_sum = 0, y_sum = 0, xy_sum = 0, x2_sum = 0;
+        for (int i = 0; i < n; ++i) {
+            x_sum += i;
+            y_sum += y[i];
+            xy_sum += i * y[i];
+            x2_sum += i * i;
+        }
+        return (n * xy_sum - x_sum * y_sum) / (n * x2_sum - x_sum * x_sum);
+    }
+};
+
+struct RollingStats {
+    static double z_score(double val, const std::vector<double>& window) {
+        if (window.size() < 5) return 0;
+        double sum = 0;
+        for (double d : window) sum += d;
+        double mean = sum / window.size();
+        double sq_sum = 0;
+        for (double d : window) sq_sum += std::pow(d - mean, 2);
+        double stdev = std::sqrt(sq_sum / window.size());
+        return (stdev > 0) ? (val - mean) / stdev : 0;
+    }
 };
 
 struct SimulationResult {
@@ -56,10 +89,10 @@ struct SymbolState {
     double sma200 = 0.0;
     double atr = 0.0;
     double last_close = 0.0;
-    double last_intensity = 0.0;
-    double last_exit_ts = 0.0;
-    std::vector<double> price_history;
+    double sma5_vol = 0.0; 
     int count = 0;
+    std::vector<double> price_window; // 5-bar window for regression
+    std::vector<double> atr_window;   // 20-bar window for Z-score
 };
 
 class SimulationEngine {
@@ -144,34 +177,68 @@ public:
             int n200 = std::min(fs.count, 200);
             fs.sma50 = (fs.sma50 * (n50 - 1) + price) / n50;
             
-            // ATR (Simplified ed06736 Version)
+            // ATR (6% ROI Restore Phase)
             double tr = std::max({std::abs(price - prev_close), std::abs(price - fs.sma50), std::abs(prev_close - fs.sma50)});
             fs.atr = (fs.atr * 13 + tr) / 14; 
+            fs.atr_window.push_back(fs.atr);
+            if (fs.atr_window.size() > 20) fs.atr_window.erase(fs.atr_window.begin());
 
-            double momentum = (prev_close > 0) ? (price / prev_close - 1.0) : 0.0;
+            // Volume SMA5
+            fs.sma5_vol = (fs.sma5_vol * 4 + volume) / 5;
+
+            // Price Regression Window
+            fs.price_window.push_back(price);
+            if (fs.price_window.size() > 5) fs.price_window.erase(fs.price_window.begin());
+
+            // Phase 9 - Frequency Alpha (Optimization for 1 Cr+)
+            double slope = LinearRegression::calculate_slope(fs.price_window);
+            double velocity = (slope / price) * 100.0; 
+            double vol_z = RollingStats::z_score(fs.atr, fs.atr_window);
             
-            // (Removed CV-based Noise Heuristic in favor of QuestDB historical noise data)
+            // 1. REVERSION SIGNAL: Panic Drop (Velocity < -0.06%) + Solid Vol
+            bool panic_dip = (velocity < -0.06 && vol_z > 1.4);
+            
+            // 2. REVERSION SIGNAL: Rip Peak (Velocity > 0.06%)
+            bool rip_peak = (velocity > 0.06 && price > fs.sma50 * 1.005);
 
             if (positions.count(sym_id)) {
                 auto& pos = positions[sym_id];
-                bool exit = false;
-                std::string reason = "";
-
                 if (pos.direction == "LONG") {
-                    if (price <= pos.sl_price) { exit = true; reason = "SL"; }
-                    else if (price >= pos.tp_price) { exit = true; reason = "TP"; }
-                }
+                    bool should_exit = false;
+                    std::string exit_reason = "";
 
-                if (exit) {
-                    double pnl = pos.qty * (price - pos.entry_price);
-                    double brokerage = 20.0 + (price * pos.qty * 0.001);
-                    cash += (pos.qty * price) - brokerage;
-                    trades.push_back({ts, sym_id, "SELL", pos.qty, price, pnl - brokerage, reason});
-                    positions.erase(sym_id);
+                    if (price <= pos.sl_price) {
+                        should_exit = true;
+                        exit_reason = "STOP_LOSS";
+                    } else if (price >= pos.tp_price) {
+                        should_exit = true;
+                        exit_reason = "TAKE_PROFIT";
+                    } else if (rip_peak) {
+                        should_exit = true;
+                        exit_reason = "REVERT_EXIT";
+                    }
+
+                    if (should_exit) {
+                        double exit_brokerage = 20.0 + (price * pos.qty * 0.001);
+                        double total_brokerage = pos.entry_brokerage + exit_brokerage;
+                        double raw_pnl = (price - pos.entry_price) * pos.qty;
+                        double net_pnl = raw_pnl - total_brokerage;
+
+                        cash += (pos.qty * price - exit_brokerage);
+                        trades.push_back({ts, sym_id, pos.direction, pos.qty, price, net_pnl, raw_pnl, total_brokerage, exit_reason});
+                        positions.erase(sym_id);
+                    }
                 }
             } else {
-                if (momentum > 0.002 && noise_conf > 0.4) {
-                    int qty = (int)((cash * 0.01) / price);
+                // 3. FRICTION SHIELD (Relaxed for Scale)
+                double est_qty = (cash * 0.02 / price);
+                double est_brokerage = 40.0 + (price * est_qty * 0.0015);
+                double expected_profit = fs.atr * 4.0 * est_qty; 
+                bool friction_safe = (expected_profit > est_brokerage * 2.0); // Relaxed for Frequency
+
+                if (panic_dip && friction_safe && noise_conf < 0.6) {
+                    double risk_multiplier = std::max(2.0, std::min(8.0, std::abs(velocity) / 0.03)); 
+                    int qty = (int)((cash * 0.03 * risk_multiplier) / price); // Increased risk to 3% base
                     if (qty <= 0) qty = 1;
                     
                     double entry_brokerage = 20.0 + (price * qty * 0.001);
@@ -182,10 +249,11 @@ public:
                         new_pos.entry_price = price;
                         new_pos.qty = qty;
                         new_pos.direction = "LONG";
-                        new_pos.sl_price = price - (fs.atr * 1.5);
-                        new_pos.tp_price = price + (fs.atr * 4.0);
+                        new_pos.entry_brokerage = entry_brokerage;
+                        new_pos.sl_price = price - (fs.atr * 2.5); 
+                        new_pos.tp_price = price + (fs.atr * 6.0); // 6x target for consistency
                         positions[sym_id] = new_pos;
-                        trades.push_back({ts, sym_id, "LONG", qty, price, -entry_brokerage, "ALPHA"});
+                        trades.push_back({ts, sym_id, "LONG", qty, price, -entry_brokerage, 0, entry_brokerage, "QUANT_FREQ"});
                     }
                 }
             }
@@ -195,6 +263,23 @@ public:
                 equity_curve.push_back({ts, get_total_equity()});
             }
         }
+
+        double total_raw_pnl = 0;
+        double total_brokerage = 0;
+        int winners = 0;
+        for (const auto& t : trades) {
+            total_raw_pnl += t.raw_pnl;
+            total_brokerage += t.brokerage;
+            if (t.raw_pnl > 0) winners++;
+        }
+
+        std::cout << "FORENSIC_SUMMARY_FINAL: Trades=" << trades.size() 
+                  << " | RawPnL=" << total_raw_pnl 
+                  << " | Brokerage=" << total_brokerage 
+                  << " | NetPnL=" << (total_raw_pnl - total_brokerage)
+                  << " | WinRate=" << (trades.empty() ? 0 : (double)winners/trades.size() * 100.0) << "%"
+                  << " | ProfitFactor=" << (total_brokerage > 0 ? (total_raw_pnl / total_brokerage) : 0)
+                  << std::endl;
 
         result.final_cash = cash;
         double final_equity = get_total_equity();
@@ -227,6 +312,8 @@ PYBIND11_MODULE(til_core, m) {
         .def_readwrite("qty", &TradeRecord::qty)
         .def_readwrite("price", &TradeRecord::price)
         .def_readwrite("pnl", &TradeRecord::pnl)
+        .def_readwrite("raw_pnl", &TradeRecord::raw_pnl)
+        .def_readwrite("brokerage", &TradeRecord::brokerage)
         .def_readwrite("reason", &TradeRecord::reason);
 
     py::class_<EquitySnapshot>(m, "EquitySnapshot")
@@ -249,6 +336,7 @@ PYBIND11_MODULE(til_core, m) {
         .def_readwrite("entry_price", &Position::entry_price)
         .def_readwrite("current_price", &Position::current_price)
         .def_readwrite("qty", &Position::qty)
+        .def_readwrite("entry_brokerage", &Position::entry_brokerage)
         .def_readwrite("direction", &Position::direction)
         .def_readwrite("sl_price", &Position::sl_price)
         .def_readwrite("tp_price", &Position::tp_price)
