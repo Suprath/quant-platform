@@ -190,16 +190,16 @@ public:
             fs.price_window.push_back(price);
             if (fs.price_window.size() > 5) fs.price_window.erase(fs.price_window.begin());
 
-            // Phase 9 - Frequency Alpha (Optimization for 1 Cr+)
+            // Phase 8 - Institutional Golden Core (Restored for Stability)
             double slope = LinearRegression::calculate_slope(fs.price_window);
             double velocity = (slope / price) * 100.0; 
             double vol_z = RollingStats::z_score(fs.atr, fs.atr_window);
             
-            // 1. REVERSION SIGNAL: Panic Drop (Velocity < -0.06%) + Solid Vol
-            bool panic_dip = (velocity < -0.06 && vol_z > 1.4);
+            // 1. REVERSION SIGNAL: Price dropped very fast (Velocity < -0.12%) + Extreme Vol Burst
+            bool panic_dip = (velocity < -0.12 && vol_z > 1.8);
             
-            // 2. REVERSION SIGNAL: Rip Peak (Velocity > 0.06%)
-            bool rip_peak = (velocity > 0.06 && price > fs.sma50 * 1.005);
+            // 2. REVERSION SIGNAL: Price ripped very fast (Velocity > 0.12%)
+            bool rip_peak = (velocity > 0.12 && price > fs.sma50 * 1.01);
 
             if (positions.count(sym_id)) {
                 auto& pos = positions[sym_id];
@@ -215,7 +215,7 @@ public:
                         exit_reason = "TAKE_PROFIT";
                     } else if (rip_peak) {
                         should_exit = true;
-                        exit_reason = "REVERT_EXIT";
+                        exit_reason = "RIP_REVERT";
                     }
 
                     if (should_exit) {
@@ -230,15 +230,15 @@ public:
                     }
                 }
             } else {
-                // 3. FRICTION SHIELD (Relaxed for Scale)
+                // 3. FRICTION SHIELD (Institutional Entry - Strict)
                 double est_qty = (cash * 0.02 / price);
-                double est_brokerage = 40.0 + (price * est_qty * 0.0015);
-                double expected_profit = fs.atr * 4.0 * est_qty; 
-                bool friction_safe = (expected_profit > est_brokerage * 2.0); // Relaxed for Frequency
+                double est_brokerage = 40.0 + (price * est_qty * 0.002);
+                double expected_profit = fs.atr * 8.0 * est_qty; 
+                bool friction_safe = (expected_profit > est_brokerage * 5.0); // Strict for Quality
 
-                if (panic_dip && friction_safe && noise_conf < 0.6) {
-                    double risk_multiplier = std::max(2.0, std::min(8.0, std::abs(velocity) / 0.03)); 
-                    int qty = (int)((cash * 0.03 * risk_multiplier) / price); // Increased risk to 3% base
+                if (panic_dip && friction_safe && noise_conf < 0.5) {
+                    double risk_multiplier = std::max(1.5, std::min(6.0, std::abs(velocity) / 0.10)); 
+                    int qty = (int)((cash * 0.025 * risk_multiplier) / price); 
                     if (qty <= 0) qty = 1;
                     
                     double entry_brokerage = 20.0 + (price * qty * 0.001);
@@ -251,9 +251,9 @@ public:
                         new_pos.direction = "LONG";
                         new_pos.entry_brokerage = entry_brokerage;
                         new_pos.sl_price = price - (fs.atr * 2.5); 
-                        new_pos.tp_price = price + (fs.atr * 6.0); // 6x target for consistency
+                        new_pos.tp_price = price + (fs.atr * 8.0); // 8x target for institutional alpha
                         positions[sym_id] = new_pos;
-                        trades.push_back({ts, sym_id, "LONG", qty, price, -entry_brokerage, 0, entry_brokerage, "QUANT_FREQ"});
+                        trades.push_back({ts, sym_id, "LONG", qty, price, -entry_brokerage, 0, entry_brokerage, "QUANT_INSTITUTIONAL"});
                     }
                 }
             }
