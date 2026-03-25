@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from typing import List, Optional
 import requests
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Optional, Dict
 import json
@@ -12,6 +13,7 @@ from datetime import datetime, timedelta
 from confluent_kafka import Producer
 from kira_shared.kafka.schemas import KafkaEnvelope
 load_dotenv()
+
 
 app = FastAPI(
     title="Quant Platform API Gateway",
@@ -1242,7 +1244,7 @@ def get_backtest_status(run_id: str):
     """Proxy status request to TIL engine or strategy runtime."""
     try:
         response = requests.get(f"http://kira_til:8000/api/v1/til/backtest/status", timeout=5)
-        # Note: kira_til's status is currently global/latest. 
+        # Note: kira_til's status is currently global/latest.
         # If run_id matches current, return it.
         if response.status_code == 200:
             data = response.json()
@@ -1270,10 +1272,10 @@ def get_backtest_performance_snapshots(run_id: str, conn = Depends(get_pg_conn))
         rows = cur.fetchall()
         return [
             {
-                "time": r[0],
+                "time": r[0].isoformat() if hasattr(r[0], 'isoformat') else str(r[0]),
                 "heat": r[1],
                 "exposure": {"BANKING": r[2], "IT": r[3], "ENERGY": r[4], "FMCG": r[5]},
-                "equity": json.loads(r[6]).get("total_equity") if r[6] else 0
+                "equity": (r[6] if isinstance(r[6], dict) else json.loads(r[6] or '{}')).get("total_equity", 0)
             }
             for r in rows
         ]
@@ -1591,7 +1593,9 @@ def process_til_features(request: dict):
             return response.json()
         raise HTTPException(status_code=response.status_code, detail=response.text)
     except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"TIL Integrated Pipeline e Unavailable: {e}")@app.post("/api/v1/kira/til/validate")
+        raise HTTPException(status_code=503, detail=f"TIL Integrated Pipeline Unavailable: {e}")
+
+@app.post("/api/v1/kira/til/validate")
 def validate_til_portfolio(request: dict):
     """Proxy to KIRA TIL Portfolio Validation"""
     try:
@@ -1649,13 +1653,273 @@ def get_til_backtest_status_v1():
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"TIL Status Unavailable: {e}")
 
-@app.get("/api/v1/kira/til/portfolio/state")
-def get_til_portfolio_state():
-    """Proxy to KIRA TIL Portfolio State"""
-    try:
-        response = _http_session.get("http://kira_til:8000/api/v1/til/portfolio", timeout=2)
-        if response.status_code == 200:
-            return response.json()
-        raise HTTPException(status_code=response.status_code, detail=response.text)
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"TIL Portfolio Engine Unavailable: {e}")
+@app.get("/terminal", response_class=HTMLResponse)
+def get_terminal_ui():
+    """Standalone Bloomberg-style Terminal UI"""
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>KIRA | VEKTOR TERMINAL</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+        <style>
+            :root {
+                --bg: #0a0e14; --bg2: #0d1117; --bg3: #111820; --bg-panel: #131a24;
+                --text: #e6edf3; --text2: #8b949e; --dim: #484f58;
+                --amber: #ff9900; --green: #00ff88; --red: #ff4444;
+                --cyan: #00d4ff; --blue: #4488ff; --yellow: #ffcc00;
+                --border: #21262d; --font: 'JetBrains Mono', monospace;
+            }
+            * { box-sizing: border-box; }
+            body, html { 
+                margin: 0; padding: 0; background: var(--bg); color: var(--text); 
+                font-family: var(--font); font-size: 13px; height: 100vh; overflow: hidden;
+            }
+            .vt { display: flex; flex-direction: column; height: 100vh; position: relative; }
+            .vt::after {
+                content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 999;
+                background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.02) 2px, rgba(0,0,0,0.02) 4px);
+            }
+            .vt-header {
+                display: flex; align-items: center; justify-content: space-between;
+                padding: 6px 16px; background: var(--bg3); border-bottom: 1px solid var(--border);
+            }
+            .vt-logo { font-weight: 800; color: var(--amber); letter-spacing: 2px; }
+            .vt-body { flex: 1; overflow-y: auto; padding: 16px; scroll-behavior: smooth; }
+            .vt-block { margin-bottom: 4px; border-left: 2px solid transparent; padding-left: 8px; transition: border 0.2s; }
+            .vt-block:hover { border-left-color: var(--amber); }
+            .vt-cmd { color: var(--dim); margin-bottom: 2px; }
+            .vt-cmd span { color: var(--amber); font-weight: 600; margin-right: 6px; }
+            .vt-input { 
+                display: flex; align-items: center; padding: 10px 16px;
+                background: var(--bg2); border-top: 1px solid var(--border);
+            }
+            .vt-prompt { color: var(--amber); font-weight: 700; margin-right: 10px; }
+            input { 
+                flex: 1; background: transparent; border: none; outline: none; 
+                color: var(--text); font-family: var(--font); font-size: 14px;
+                caret-color: var(--amber);
+            }
+            .ta { color: var(--amber); } .tg { color: var(--green); } .tr { color: var(--red); }
+            .tc { color: var(--cyan); } .tw { color: #fff; font-weight: 600; } .td { color: var(--dim); }
+            .tbd { font-weight: 700; }
+            .vt-chart { 
+                margin: 12px 0; padding: 12px; background: var(--bg-panel); 
+                border: 1px solid var(--border); border-radius: 4px;
+            }
+            table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+            th { text-align: left; color: var(--amber); border-bottom: 1px solid var(--border); padding: 4px 8px; font-weight: 600; }
+            td { padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.02); }
+            .num { text-align: right; }
+            @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+            .ansi-fade { animation: fade 0.2s ease-out; }
+        </style>
+    </head>
+    <body class="vt">
+        <header class="vt-header">
+            <div class="vt-logo">KIRA // VEKTOR <span style="font-size: 9px; background: var(--amber); color: var(--bg); padding: 1px 4px; border-radius: 2px; margin-left:6px">STABLE</span></div>
+            <div id="status" class="td" style="font-size: 11px">SYSTEM READY</div>
+        </header>
+        <main class="vt-body" id="console">
+            <div class="vt-block">
+                <div class="ta tbd" style="font-size: 24px; margin-bottom: 10px">KIRA TRADING TERMINAL v1.2</div>
+                <div class="ts">Vectorized Engine: <span class="tg">CONNECTED</span> | Latency: <span class="tg">0.4ms</span></div>
+                <div class="td" style="margin-top: 10px">Type 'help' for a list of available commands.</div>
+            </div>
+        </main>
+        <div class="vt-input">
+            <div class="vt-prompt">KIRA:></div>
+            <input type="text" id="stdin" autofocus placeholder="Enter command..." autocomplete="off">
+        </div>
+
+        <script>
+            console.log("KIRA Terminal Script Loaded Successfully.");
+            const consoleEl = document.getElementById('console');
+            const stdin = document.getElementById('stdin');
+            const API_BASE = window.location.origin;
+
+            const fmtINR = (n) => `₹${Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
+
+            function buildEquitySVG(points, width = 700, height = 180) {
+                if (!points || points.length < 2) return '<div class="ts" style="padding:20px;text-align:center">No equity data. Run a backtest.</div>';
+                const equities = points.map(p => p.equity);
+                const minE = Math.min(...equities);
+                const maxE = Math.max(...equities);
+                const range = (maxE - minE) || 1;
+                const pad = 40;
+                const gW = width - pad * 2;
+                const gH = height - pad * 1.5;
+                const pts = points.map((p, i) => ({
+                    x: pad + (i / (points.length - 1)) * gW,
+                    y: pad / 2 + gH - ((p.equity - minE) / range) * gH
+                }));
+                const polyline = pts.map(p => `${p.x},${p.y}`).join(' ');
+                const lastE = equities[equities.length - 1];
+                const firstE = equities[0];
+                const totalRet = ((lastE - firstE) / firstE * 100);
+                const color = totalRet >= 0 ? '#00ff88' : '#ff4444';
+
+                return `
+                    <div class="vt-chart">
+                        <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:11px">
+                            <span class="ta tbd">EQUITY PROFILE</span>
+                            <span>Return: <span class="${totalRet >= 0 ? 'tg' : 'tr'}">${totalRet.toFixed(2)}%</span></span>
+                        </div>
+                        <svg width="100%" viewBox="0 0 ${width} ${height}" style="display:block">
+                            <polyline fill="none" stroke="${color}" stroke-width="2" points="${polyline}" stroke-linejoin="round"/>
+                            <rect x="${pad}" y="${pad/2}" width="${gW}" height="${gH}" fill="none" stroke="#222" stroke-width="0.5"/>
+                        </svg>
+                    </div>`;
+            }
+
+            function log(html, type = 'result') {
+                const block = document.createElement('div');
+                block.className = `vt-block ansi-fade`;
+                block.innerHTML = `<div class="vt-${type}">${html}</div>`;
+                consoleEl.appendChild(block);
+                consoleEl.scrollTop = consoleEl.scrollHeight;
+            }
+
+            async function handleCommand(cmd) {
+                const parts = cmd.toLowerCase().split(' ');
+                const command = parts[0];
+
+                log(`<span>$</span> ${cmd}`, 'cmd');
+
+                if (command === 'help') {
+                    log(`
+                        <div class="ta tbd">CORE COMMANDS:</div>
+                        <table>
+                            <tr><td class="tc">sys.status</td><td>System telemetry & health</td></tr>
+                            <tr><td class="tc">md.quote &lt;sym&gt;</td><td>Real-time market quote</td></tr>
+                            <tr><td class="tc">backtest.run</td><td>Trigger Alpha Sniper backtest</td></tr>
+                            <tr><td class="tc">backtest.monitor</td><td>Live simulation progress</td></tr>
+                            <tr><td class="tc">backtest.chart</td><td>Render equity curve of latest run</td></tr>
+                            <tr><td class="tc">backtest.history</td><td>Show recent run history</td></tr>
+                            <tr><td class="tc">clear</td><td>Reset console screen</td></tr>
+                        </table>
+                    `);
+                } else if (command === 'clear') {
+                    consoleEl.innerHTML = '';
+                } else if (command === 'sys.status') {
+                    log('<div class="tc">Polling telemetry...</div>');
+                    try {
+                        const res = await fetch(`${API_BASE}/health`);
+                        const data = await res.json();
+                        log(`<div class="tg">GATEWAY: ONLINE | VERSION: ${data.version}</div>`);
+                        const tilRes = await fetch(`${API_BASE}/api/v1/kira/til/health`);
+                        const tilData = await tilRes.json();
+                        log(`<div class="tc">TIL CORE: ${tilData.status.toUpperCase()} | ENGINE: VECTORIZED</div>`);
+                    } catch (e) { log(`<div class="tr">Telemetry Failure</div>`); }
+                } else if (command === 'md.quote') {
+                    const sym = parts[1] || 'RELIANCE';
+                    log(`<div class="tc">Fetching quote for ${sym}...</div>`);
+                    try {
+                        const res = await fetch(`${API_BASE}/api/v1/market/top-performers?limit=20`);
+                        const data = await res.json();
+                        const stock = data.find(s => s.name.toLowerCase() === sym.toLowerCase() || s.symbol.includes(sym.toUpperCase()));
+                        if (stock) {
+                            log(`
+                                <div style="font-size:16px"><span class="tw">${stock.name}</span> <span class="${stock.change_pct>=0?'tg':'tr'}">${stock.change_pct}%</span></div>
+                                <div class="td">LTP: ${fmtINR(stock.close)} | VOL: ${(stock.volume/1000).toFixed(1)}K</div>
+                            `);
+                        } else { log(`<div class="tr">Symbol ${sym} not found in universe</div>`); }
+                    } catch (e) { log(`<div class="tr">Market Service Offline</div>`); }
+                } else if (command === 'backtest.run') {
+                    log('<div class="tc">Initializing Alpha Sniper Simulation...</div>');
+                    try {
+                        const res = await fetch(`${API_BASE}/api/v1/til/backtest`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                symbols: ["RELIANCE", "HDFCBANK", "INFY", "TCS", "ICICIBANK", "SBIN", "BHARTIARTL", "AXISBANK", "LTIM", "ADANIENT", "LT", "ITC", "KOTAKBANK", "HINDUNILVR", "BAJFINANCE", "M&M", "SUNPHARMA", "TITAN", "ULTRACEMCO", "ADANIPORTS"],
+                                start_date: "2023-01-01",
+                                end_date: "2024-03-24",
+                                timeframe: "5m",
+                                initial_capital: 1000000
+                            })
+                        });
+                        const data = await res.json();
+                        log(`<div class="tg">BACKTEST STARTED [ID: ${data.run_id}]</div>`);
+                        
+                        // Auto-monitor
+                        let pollCount = 0;
+                        const poller = setInterval(async () => {
+                            pollCount++;
+                            const sRes = await fetch(`${API_BASE}/api/v1/til/backtest/status`);
+                            const s = await sRes.json();
+                            
+                            if (!s.is_running || pollCount > 100) {
+                                clearInterval(poller);
+                                log('<div class="tg">SIMULATION COMPLETE. ANALYZING...</div>');
+                                setTimeout(() => handleCommand('backtest.chart'), 500);
+                            } else {
+                                // Update progress in-place if possible, or just log
+                                if (pollCount === 1) log('<div class="td">Monitoring progress...</div>');
+                            }
+                        }, 500);
+
+                    } catch (e) { log(`<div class="tr">Execution Failed: ${e.message}</div>`); }
+
+                } else if (command === 'backtest.monitor') {
+                    try {
+                        const res = await fetch(`${API_BASE}/api/v1/til/backtest/status`);
+                        const data = await res.json();
+                        log(`
+                            <div class="vt-chart">
+                                <div class="ta tbd">ENGINE STATUS</div>
+                                <div>State: <span class="${data.running ? 'tg' : 'tr'}">${data.running ? 'ACTIVE' : 'IDLE'}</span></div>
+                                <div>Progress: ${Math.floor(data.progress || 0)}%</div>
+                                <div style="margin-top:8px; height:4px; background:#111; border-radius:2px">
+                                    <div style="width:${data.progress}%; height:100%; background:var(--amber); transition:width 0.3s"></div>
+                                </div>
+                            </div>
+                        `);
+                    } catch (e) { log(`<div class="tr">Engine Offline</div>`); }
+                } else if (command === 'backtest.chart') {
+                    log('<div class="tc">Generating equity profile...</div>');
+                    try {
+                        const hRes = await fetch(`${API_BASE}/api/v1/backtest/history`);
+                        const hData = await hRes.json();
+                        if (!hData.length) throw new Error("No runs found");
+                        const runId = hData[0].run_id;
+                        const pRes = await fetch(`${API_BASE}/api/v1/backtest/performance/snapshots/${runId}`);
+                        const points = await pRes.json();
+                        log(buildEquitySVG(points));
+                    } catch (e) { log(`<div class="tr">Chart Failed: ${e.message}</div>`); }
+                } else if (command === 'backtest.history') {
+                    try {
+                        const res = await fetch(`${API_BASE}/api/v1/backtest/history`);
+                        const data = await res.json();
+                        let html = '<table><tr><th>Date</th><th>ROI</th><th>Trades</th></tr>';
+                        data.slice(0, 10).forEach(r => {
+                            const roi = ((r.final_balance - r.initial_equity) / r.initial_equity * 100).toFixed(2);
+                            html += `<tr><td>${r.created_at.split('T')[0]}</td><td class="${roi >=0?'tg':'tr'}">${roi}%</td><td class="num">${r.trade_count}</td></tr>`;
+                        });
+                        html += '</table>';
+                        log(html);
+                    } catch (e) { log(`<div class="tr">History unavailable</div>`); }
+                } else {
+                    log('<span class="tr">ERR: Command not recognized.</span>');
+                }
+            }
+
+            stdin.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    console.log("Enter key caught. Processing command...");
+                    const cmd = stdin.value.trim();
+                    if (cmd) {
+                        handleCommand(cmd);
+                        stdin.value = '';
+                    }
+                }
+            });
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
