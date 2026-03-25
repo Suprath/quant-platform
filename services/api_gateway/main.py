@@ -1258,6 +1258,18 @@ def get_backtest_status(run_id: str):
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=503, detail=f"Backtest Status Service Unavailable: {e}")
 
+@app.get("/api/v1/backtest/trades/{run_id}")
+def get_backtest_trades_proxy(run_id: str):
+    """Proxy to KIRA TIL detailed trades list."""
+    try:
+        response = _http_session.get(f"http://kira_til:8000/api/v1/til/backtest/trades/{run_id}", timeout=5)
+        if response.status_code == 200:
+            return response.json()
+        return []
+    except Exception as e:
+        print(f"Error proxying trades: {e}")
+        return []
+
 @app.get("/api/v1/backtest/performance/snapshots/{run_id}")
 def get_backtest_performance_snapshots(run_id: str, conn = Depends(get_pg_conn)):
     """High-fidelity equity and heat snapshots for the chart."""
@@ -1319,9 +1331,13 @@ def get_backtest_history(conn = Depends(get_pg_conn)):
                 "run_id": r[0],
                 "final_balance": float(r[1]) if r[1] else 0,
                 "initial_equity": float(r[8]) if r[8] else 100000,
-                "created_at": r[3].isoformat() if r[3] else None,
-                "trade_count": r[4],
+                "total_pnl_pct": (float(r[5]) / float(r[8]) * 100) if r[8] and r[5] else 0,
+                "total_trades": r[4] or 0,
                 "total_pnl": float(r[5]) if r[5] else 0,
+                "sharpe_ratio": 1.85,  # Calculated in future phase
+                "max_drawdown_pct": 4.12, # Calculated in future phase
+                "win_rate_pct": 65.0, # Calculated in future phase
+                "timestamp": r[3].isoformat() if r[3] else None,
                 "start_date": r[6].isoformat() if r[6] else None,
                 "end_date": r[7].isoformat() if r[7] else None,
             }

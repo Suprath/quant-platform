@@ -41,7 +41,7 @@ export default function DashboardPage() {
         </div>
 
         <div className="flex items-center gap-2 md:gap-4 ml-auto">
-          <Link href="http://localhost:8080/terminal" className="hidden lg:block">
+          <Link href="/terminal" className="hidden lg:block">
             <Button variant="ghost" className="hover:bg-orange-500/10 text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 transition-colors">
               <Terminal className="mr-2 h-4 w-4" /> Vektor Terminal
             </Button>
@@ -104,7 +104,7 @@ export default function DashboardPage() {
               Build, backtest, and deploy high-frequency quantitative strategies at lightning speed. Powered by Vectorized Pandas, Fast API, and Next.js.
             </motion.p>
             <motion.div variants={fadeIn} className="flex flex-wrap justify-center gap-4 pt-4 px-4">
-              <Link href="http://localhost:8080/terminal" className="w-full sm:w-auto">
+              <Link href="/terminal" className="w-full sm:w-auto">
                 <Button size="lg" className="w-full h-12 px-8 font-semibold shadow-lg bg-orange-600 hover:bg-orange-700 text-white hover:scale-105 transition-transform text-md">
                    Vektor Terminal <Terminal className="ml-2 h-5 w-5" />
                 </Button>

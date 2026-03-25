@@ -460,6 +460,43 @@ async def trigger_backtest(req: BacktestRequest):
         logger.error(f"Error starting backtest: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/v1/til/backtest/trades/{run_id}")
+async def get_backtest_trades(run_id: str):
+    """Returns detailed trade log for a given backtest run."""
+    conn = None
+    try:
+        pg_host = os.getenv("POSTGRES_HOST", "postgres_metadata")
+        conn = psycopg2.connect(
+            host=pg_host, port=5432, user="admin", password="password123", database="quant_platform"
+        )
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT timestamp, symbol, transaction_type, quantity, price, pnl, mechanism 
+            FROM backtest_orders 
+            WHERE run_id = %s 
+            ORDER BY timestamp DESC
+        """, (run_id,))
+        rows = cur.fetchall()
+        trades = [
+            {
+                "time": r[0].isoformat() if r[0] else None,
+                "symbol": r[1],
+                "type": r[2],
+                "qty": int(r[3]),
+                "price": float(r[4]),
+                "pnl": float(r[5]),
+                "mechanism": r[6]
+            } for r in rows
+        ]
+        cur.close()
+        return trades
+    except Exception as e:
+        logger.error(f"Error fetching trades for {run_id}: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
 @app.get("/api/v1/til/backtest/status")
 async def get_backtest_status():
     """Returns the current progress of the backtest."""
