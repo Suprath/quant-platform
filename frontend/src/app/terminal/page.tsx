@@ -36,6 +36,14 @@ interface TradeLog {
   mechanism: string;
 }
 
+interface MechanismStats {
+  mechanism: string;
+  trades: number;
+  win_rate: number;
+  net_pnl: number;
+  profit_factor: number;
+}
+
 interface BacktestSummary {
   run_id: string;
   total_trades: number;
@@ -50,6 +58,7 @@ interface BacktestSummary {
   cagr: number;
   expectancy: number;
   timestamp: string;
+  mechanism_performance?: MechanismStats[];
 }
 
 interface StatCardProps {
@@ -427,8 +436,8 @@ export default function TerminalPage() {
           <Tabs defaultValue="trades" className="space-y-6">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
               <TabsList className="bg-zinc-900 border border-zinc-800 p-1 h-10">
-                <TabsTrigger value="trades" className="data-[state=active]:bg-zinc-800 text-xs">Detailed Trade Log</TabsTrigger>
-                <TabsTrigger value="mechanisms" className="data-[state=active]:bg-zinc-800 text-xs text-zinc-500 cursor-not-allowed">Mechanics Stats</TabsTrigger>
+                <TabsTrigger value="trades" className="data-[state=active]:bg-zinc-800 text-xs text-zinc-300">Detailed Trade Log</TabsTrigger>
+                <TabsTrigger value="mechanisms" className="data-[state=active]:bg-zinc-800 text-xs text-zinc-300">Mechanics Stats</TabsTrigger>
                 <TabsTrigger value="settings" className="data-[state=active]:bg-zinc-800 text-xs text-zinc-500 cursor-not-allowed">Run Configuration</TabsTrigger>
               </TabsList>
 
@@ -507,6 +516,54 @@ export default function TerminalPage() {
                         </TableBody>
                     </Table>
                 </div>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="mechanisms">
+              <Card className="bg-zinc-900/50 border-zinc-800 overflow-hidden">
+                <Table>
+                    <TableHeader>
+                        <TableRow className="border-zinc-800 hover:bg-transparent">
+                            <TableHead className="text-zinc-500 font-medium text-[11px] uppercase tracking-wider py-4">Mechanism</TableHead>
+                            <TableHead className="text-zinc-500 font-medium text-[11px] uppercase tracking-wider text-right">Trades</TableHead>
+                            <TableHead className="text-zinc-500 font-medium text-[11px] uppercase tracking-wider text-right">Win Rate</TableHead>
+                            <TableHead className="text-zinc-500 font-medium text-[11px] uppercase tracking-wider text-right">Net P&L</TableHead>
+                            <TableHead className="text-zinc-500 font-medium text-[11px] uppercase tracking-wider text-right">Profit Factor</TableHead>
+                            <TableHead className="text-zinc-500 font-medium text-[11px] uppercase tracking-wider">Status</TableHead>
+                        </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        {!currentSummary?.mechanism_performance || currentSummary.mechanism_performance.length === 0 ? (
+                            <TableRow>
+                                <TableCell colSpan={6} className="h-32 text-center text-zinc-500">
+                                    No mechanism stats available for this sequence.
+                                </TableCell>
+                            </TableRow>
+                        ) : (
+                            currentSummary.mechanism_performance.map((m, i) => (
+                                <TableRow key={i} className="border-zinc-800/30 hover:bg-zinc-800/20 transition-colors">
+                                    <TableCell className="py-4">
+                                        <div className="flex items-center gap-2">
+                                            <div className={`w-1.5 h-1.5 rounded-full ${m.net_pnl >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                                            <span className="font-bold text-zinc-200">{m.mechanism}</span>
+                                        </div>
+                                    </TableCell>
+                                    <TableCell className="text-right font-mono text-zinc-300">{m.trades}</TableCell>
+                                    <TableCell className="text-right font-mono text-zinc-300">{m.win_rate.toFixed(1)}%</TableCell>
+                                    <TableCell className={`text-right font-bold font-mono ${m.net_pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                        {m.net_pnl >= 0 ? '+' : ''}₹{m.net_pnl.toLocaleString()}
+                                    </TableCell>
+                                    <TableCell className="text-right font-mono text-zinc-300">{m.profit_factor.toFixed(2)}</TableCell>
+                                    <TableCell>
+                                        <Badge className={m.net_pnl >= 0 ? 'bg-emerald-500/10 text-emerald-400 border-none' : 'bg-rose-500/10 text-rose-400 border-none'}>
+                                            {m.net_pnl >= 0 ? 'PROFITABLE' : 'DRAGGING'}
+                                        </Badge>
+                                    </TableCell>
+                                </TableRow>
+                            ))
+                        )}
+                    </TableBody>
+                </Table>
               </Card>
             </TabsContent>
           </Tabs>
