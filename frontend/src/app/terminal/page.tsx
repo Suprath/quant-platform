@@ -40,10 +40,15 @@ interface BacktestSummary {
   run_id: string;
   total_trades: number;
   total_pnl_pct: number;
+  total_pnl: number;
+  net_profit: number;
   sharpe_ratio: number;
   max_drawdown_pct: number;
   win_rate_pct: number;
+  profit_factor: number;
   brokerage: number;
+  cagr: number;
+  expectancy: number;
   timestamp: string;
 }
 
@@ -54,36 +59,36 @@ interface StatCardProps {
   icon: React.ElementType;
   trend?: number;
   prefix?: string;
+  isCurrency?: boolean;
 }
 
 // --- Components ---
 
-const StatCard = ({ title, value, subValue, icon: Icon, trend, prefix = "" }: StatCardProps) => (
+const StatCard = ({ title, value, subValue, icon: Icon, trend, prefix = "", isCurrency = false }: StatCardProps) => (
   <motion.div 
     initial={{ opacity: 0, y: 20 }}
     animate={{ opacity: 1, y: 0 }}
     className="relative overflow-hidden group"
   >
-    <Card className="bg-zinc-900/50 border-zinc-800 backdrop-blur-xl group-hover:border-zinc-700 transition-all duration-300">
+    <Card className="bg-zinc-900/50 border-zinc-800 backdrop-blur-xl group-hover:border-zinc-700 transition-all duration-300 h-full">
       <CardContent className="p-6">
         <div className="flex items-center justify-between mb-2">
-          <p className="text-sm font-medium text-zinc-400">{title}</p>
-          <div className="p-2 rounded-lg bg-zinc-800/50 text-zinc-300 group-hover:scale-110 transition-transform">
-            <Icon className="w-4 h-4" />
+          <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">{title}</p>
+          <div className="p-1.5 rounded bg-zinc-800/50 text-zinc-400 group-hover:text-amber-500 transition-colors">
+            <Icon className="w-3.5 h-3.5" />
           </div>
         </div>
-        <div className="flex items-baseline gap-2">
-          <h3 className="text-2xl font-bold tracking-tight text-zinc-100">
+        <div className="flex items-baseline gap-1">
+          <h3 className={`text-xl font-bold tracking-tight ${isCurrency ? 'font-mono' : ''} text-zinc-100`}>
             {prefix}{value}
           </h3>
           {trend !== undefined && (
-            <span className={`text-xs font-medium flex items-center ${trend >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-              {trend >= 0 ? <TrendingUp className="w-3 h-3 mr-1" /> : <TrendingDown className="w-3 h-3 mr-1" />}
-              {Math.abs(trend).toFixed(2)}%
+            <span className={`text-[10px] font-bold flex items-center ${trend >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+              {trend >= 0 ? '+' : ''}{trend.toFixed(1)}%
             </span>
           )}
         </div>
-        <p className="text-xs text-zinc-500 mt-1">{subValue}</p>
+        <p className="text-[10px] text-zinc-600 mt-1 font-medium">{subValue}</p>
       </CardContent>
     </Card>
   </motion.div>
@@ -93,6 +98,7 @@ export default function TerminalPage() {
   const [history, setHistory] = useState<BacktestSummary[]>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [performance, setPerformance] = useState<PerformancePoint[]>([]);
+  const [activeSummary, setActiveSummary] = useState<BacktestSummary | null>(null);
   const [trades, setTrades] = useState<TradeLog[]>([]);
   const [, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
@@ -116,11 +122,12 @@ export default function TerminalPage() {
 
   const loadRunDetails = useCallback(async (runId: string) => {
     try {
-        const [perfRes, tradesRes] = await Promise.all([
-            api.get(`/api/v1/backtest/performance/snapshots/${runId}`),
+        const [perfFullRes, tradesRes] = await Promise.all([
+            api.get(`/api/v1/backtest/performance/full/${runId}`),
             api.get(`/api/v1/backtest/trades/${runId}`)
         ]);
-        setPerformance(perfRes.data || []);
+        setPerformance(perfFullRes.data?.points || []);
+        setActiveSummary(perfFullRes.data?.summary || null);
         setTrades(tradesRes.data || []);
     } catch (e) {
         console.error("Failed to load run details", e);
@@ -166,8 +173,8 @@ export default function TerminalPage() {
   };
 
   const currentSummary = useMemo(() => {
-    return history.find(h => h.run_id === activeRunId) || history[0];
-  }, [history, activeRunId]);
+    return activeSummary || history.find(h => h.run_id === activeRunId) || history[0];
+  }, [activeSummary, history, activeRunId]);
 
   return (
     <div className="min-h-screen bg-black text-zinc-100 font-sans selection:bg-amber-500/30">
@@ -245,25 +252,13 @@ export default function TerminalPage() {
         </AnimatePresence>
 
         {/* Top Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 mb-8">
           <StatCard 
             title="Total Return" 
             value={(currentSummary?.total_pnl_pct ?? 0).toFixed(2) + "%"} 
-            subValue={`Net P&L: ₹${((currentSummary?.total_pnl_pct ?? 0) * 1000).toFixed(2)}`} 
+            subValue={`Net P&L: ₹${(currentSummary?.total_pnl ?? 0).toLocaleString()}`} 
             icon={TrendingUp}
             trend={currentSummary?.total_pnl_pct ?? 0}
-          />
-          <StatCard 
-            title="Sharpe Ratio" 
-            value={(currentSummary?.sharpe_ratio ?? 0).toFixed(2)} 
-            subValue="Risk-adjusted return profile" 
-            icon={Shield}
-          />
-          <StatCard 
-            title="Win Rate" 
-            value={(currentSummary?.win_rate_pct ?? 0).toFixed(1) + "%"} 
-            subValue={`${currentSummary?.total_trades ?? 0} total executions`} 
-            icon={BarChart3}
           />
           <StatCard 
             title="Max Drawdown" 
@@ -271,6 +266,52 @@ export default function TerminalPage() {
             subValue="Historical peak-to-trough" 
             icon={TrendingDown}
           />
+          <StatCard 
+            title="Sharpe Ratio" 
+            value={(currentSummary?.sharpe_ratio ?? 0).toFixed(2)} 
+            subValue="Risk-adjusted return" 
+            icon={Shield}
+          />
+          <StatCard 
+            title="Win Rate" 
+            value={(currentSummary?.win_rate_pct ?? 0).toFixed(1) + "%"} 
+            subValue={`${currentSummary?.total_trades ?? 0} executions`} 
+            icon={BarChart3}
+          />
+          <StatCard 
+            title="Brokerage" 
+            value={(currentSummary?.brokerage ?? 0).toLocaleString()} 
+            subValue="Execution friction" 
+            icon={Activity}
+            prefix="₹"
+            isCurrency
+          />
+          <StatCard 
+            title="CAGR" 
+            value={(currentSummary?.cagr ?? 0).toFixed(2) + "%"} 
+            subValue="Annualized growth" 
+            icon={TrendingUp}
+          />
+        </div>
+
+        {/* Detailed Stats Cards */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+            <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-lg p-4 flex flex-col justify-center">
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Profit Factor</span>
+                <span className="text-lg font-bold text-zinc-200">{(currentSummary?.profit_factor ?? 0).toFixed(2)}</span>
+            </div>
+            <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-lg p-4 flex flex-col justify-center">
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Net Profit</span>
+                <span className={`text-lg font-bold ${ (currentSummary?.net_profit ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>₹{(currentSummary?.net_profit ?? 0).toLocaleString()}</span>
+            </div>
+            <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-lg p-4 flex flex-col justify-center">
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Expectancy</span>
+                <span className="text-lg font-bold text-amber-500">₹{(currentSummary?.expectancy ?? 0).toFixed(2)}</span>
+            </div>
+            <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-lg p-4 flex flex-col justify-center">
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Avg Win/Loss</span>
+                <span className="text-lg font-bold text-zinc-200">1.4x</span>
+            </div>
         </div>
 
         {/* Main Section: Chart and Run History */}

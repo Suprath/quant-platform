@@ -1296,6 +1296,18 @@ def get_backtest_performance_snapshots(run_id: str, conn = Depends(get_pg_conn))
 
 # --- BACKTEST HISTORY ---
 
+@app.get("/api/v1/backtest/performance/full/{run_id}")
+def get_backtest_performance_full(run_id: str):
+    """Proxy to KIRA TIL full performance (points + summary)."""
+    try:
+        response = _http_session.get(f"http://kira_til:8000/api/v1/til/performance?run_id={run_id}", timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        return {"points": [], "summary": {}}
+    except Exception as e:
+        print(f"Error proxying performance: {e}")
+        return {"points": [], "summary": {}}
+
 @app.get("/api/v1/backtest/history")
 def get_backtest_history(conn = Depends(get_pg_conn)):
     """List all backtest runs with summary stats"""
