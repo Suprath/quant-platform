@@ -4,7 +4,7 @@ import json
 import asyncio
 import math
 import psycopg2
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
@@ -68,10 +68,12 @@ backtest_controller = BacktestController()
 
 class BacktestRequest(BaseModel):
     symbols: List[str] = []
-    start_date: str
-    end_date: str
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
     timeframe: str = "5m"
     initial_capital: float = 100000.0
+    universe_size: Optional[int] = 10
+    trading_days: Optional[int] = 60
 
 @app.get("/health")
 async def health():
@@ -442,8 +444,19 @@ async def trigger_backtest(req: BacktestRequest):
         raise HTTPException(status_code=400, detail="A backtest is already in progress.")
         
     try:
+        # Resolve defaults if start/end dates are missing
+        if not req.start_date or not req.end_date:
+            end_dt = datetime.now()
+            start_dt = end_dt - timedelta(days=req.trading_days or 60)
+            req.start_date = start_dt.strftime("%Y-%m-%d")
+            req.end_date = end_dt.strftime("%Y-%m-%d")
+        
+        # Resolve symbols if missing
+        if not req.symbols:
+            req.symbols = list(SYMBOL_MAP.keys())[:req.universe_size or 10]
+
         # Prevent 0-trade runs by resolving human tickers to proper ISIN tokens
-        formatted_symbols = [normalize_symbol(s) for s in req.symbols] if req.symbols else []
+        formatted_symbols = [normalize_symbol(s) for s in req.symbols]
         
         # run_backtest now returns a dict with status and run_id
         result = await backtest_controller.run_backtest(

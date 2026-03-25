@@ -1663,12 +1663,15 @@ def get_til_performance_v1(run_id: Optional[str] = None):
 def trigger_til_backtest_v1(request: dict):
     """Trigger TIL Backtest Simulation"""
     try:
-        response = _http_session.post("http://kira_til:8000/api/v1/til/backtest", json=request, timeout=5)
+        response = _http_session.post("http://kira_til:8000/api/v1/til/backtest", json=request, timeout=10)
         if response.status_code == 200:
             return response.json()
-        raise HTTPException(status_code=response.status_code, detail=response.text)
+        # Surface actual status code and reason from TIL
+        raise HTTPException(status_code=response.status_code, detail=f"TIL Error: {response.text}")
+    except HTTPException as he:
+        raise he
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"TIL Unavailable: {e}")
+        raise HTTPException(status_code=503, detail=f"TIL Service Unavailable: {e}")
 
 @app.get("/api/v1/til/backtest/status")
 def get_til_backtest_status_v1():
