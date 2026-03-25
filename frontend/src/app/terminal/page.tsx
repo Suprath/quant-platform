@@ -5,8 +5,19 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   TrendingUp, TrendingDown, Activity, Shield, 
   BarChart3, Play, RefreshCw, ChevronRight, 
-  Search, Download, Info, CheckCircle2
+  Search, Download, Info, CheckCircle2,
+  Settings2
 } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, 
   ResponsiveContainer
@@ -112,6 +123,11 @@ export default function TerminalPage() {
   const [, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [backtestConfig, setBacktestConfig] = useState({
+    startDate: "2024-01-11",
+    endDate: "2026-02-17",
+    universeSize: 10
+  });
 
   // --- Data Fetching ---
 
@@ -158,7 +174,11 @@ export default function TerminalPage() {
     setRunning(true);
     setProgress(5);
     try {
-        const res = await api.post('/api/v1/til/backtest', { universe_size: 10, trading_days: 60 });
+        const res = await api.post('/api/v1/til/backtest', { 
+            start_date: backtestConfig.startDate,
+            end_date: backtestConfig.endDate,
+            universe_size: backtestConfig.universeSize 
+        });
         const runId = res.data.run_id;
         
         // Polling loop
@@ -214,6 +234,55 @@ export default function TerminalPage() {
           </div>
 
           <div className="flex items-center gap-3">
+            <Dialog>
+                <DialogTrigger asChild>
+                    <Button variant="outline" className="bg-zinc-900 border-zinc-800 text-zinc-400">
+                        <Settings2 className="mr-2 h-4 w-4" />
+                        Settings
+                    </Button>
+                </DialogTrigger>
+                <DialogContent className="bg-zinc-900 border-zinc-800 text-zinc-100">
+                    <DialogHeader>
+                        <DialogTitle>Simulation Parameters</DialogTitle>
+                        <DialogDescription className="text-zinc-500">
+                            Configure the historical window and universe size for the Alpha Sniper simulation.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-4 py-4">
+                        <div className="grid grid-cols-4 items-center gap-4">
+                            <Label htmlFor="startDate" className="text-right text-zinc-400">Start Date</Label>
+                            <Input 
+                                id="startDate" 
+                                type="date"
+                                value={backtestConfig.startDate} 
+                                onChange={(e) => setBacktestConfig({...backtestConfig, startDate: e.target.value})}
+                                className="col-span-3 bg-zinc-950 border-zinc-800 focus:border-amber-500/50" 
+                            />
+                        </div>
+                        <div className="grid grid-cols-4 items-center gap-4">
+                            <Label htmlFor="endDate" className="text-right text-zinc-400">End Date</Label>
+                            <Input 
+                                id="endDate" 
+                                type="date"
+                                value={backtestConfig.endDate} 
+                                onChange={(e) => setBacktestConfig({...backtestConfig, endDate: e.target.value})}
+                                className="col-span-3 bg-zinc-950 border-zinc-800 focus:border-amber-500/50" 
+                            />
+                        </div>
+                        <div className="grid grid-cols-4 items-center gap-4">
+                            <Label htmlFor="universe" className="text-right text-zinc-400">Universe</Label>
+                            <Input 
+                                id="universe" 
+                                type="number"
+                                value={backtestConfig.universeSize} 
+                                onChange={(e) => setBacktestConfig({...backtestConfig, universeSize: parseInt(e.target.value)})}
+                                className="col-span-3 bg-zinc-950 border-zinc-800 focus:border-amber-500/50" 
+                            />
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+
             <Button variant="outline" className="bg-zinc-900 border-zinc-800 text-zinc-400" onClick={refreshHistory}>
               <RefreshCw className="mr-2 h-4 w-4" />
               Refresh
