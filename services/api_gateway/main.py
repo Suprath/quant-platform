@@ -10,9 +10,31 @@ from pydantic import BaseModel
 from typing import Optional, Dict
 import json
 from datetime import datetime, timedelta
+import redis as redis_sync
+from fastapi import WebSocket, WebSocketDisconnect
+import asyncio
 from confluent_kafka import Producer
 from kira_shared.kafka.schemas import KafkaEnvelope
 load_dotenv()
+
+# --- REDIS CLIENT ---
+def _init_redis_client():
+    try:
+        r = redis_sync.Redis(
+            host=os.getenv("REDIS_HOST", "redis_state"),
+            port=int(os.getenv("REDIS_PORT", 6379)),
+            db=0,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=0.1,
+        )
+        r.ping()
+        return r
+    except Exception as e:
+        print(f"Warning: Redis unavailable: {e}")
+        return None
+
+redis_client = _init_redis_client()
 
 
 app = FastAPI(
@@ -1954,3 +1976,79 @@ def get_terminal_ui():
     </html>
     """
     return HTMLResponse(content=html_content)
+
+
+# ─── ORDER FLOW WEBSOCKET ───────────────────────────────────────────────────
+
+class _OrderFlowManager:
+    """Tracks connected WebSocket clients for /ws/orderflow."""
+    def __init__(self):
+        self.active: list = []
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.active.append(ws)
+
+    def disconnect(self, ws: WebSocket):
+        self.active = [c for c in self.active if c is not ws]
+
+    async def broadcast(self, payload: str):
+        dead = []
+        for ws in self.active:
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+
+_of_manager = _OrderFlowManager()
+
+
+def _read_all_microstructure() -> list:
+    """Read all microstructure:* keys from Redis synchronously."""
+    if redis_client is None:
+        return []
+    try:
+        _, keys = redis_client.scan(match="microstructure:*", count=1000)
+        if not keys:
+            return []
+        result = []
+        for key in keys:
+            raw = redis_client.hgetall(key)
+            if not raw:
+                continue
+            result.append({
+                "symbol": raw.get("symbol", key.split(":", 1)[-1]),
+                "alpha": float(raw.get("alpha", 0)),
+                "lambda_hawkes": float(raw.get("lambda_hawkes", 0)),
+                "cusum_c": float(raw.get("cusum_c", 0)),
+                "variance": float(raw.get("variance", 0)),
+                "q_star": int(float(raw.get("q_star", 0))),
+                "kyle_lambda": float(raw.get("kyle_lambda", 0)),
+                "ts_ms": int(float(raw.get("ts_ms", 0))),
+                "cusum_fired": False,
+            })
+        # Sort by |alpha| + lambda_hawkes/1e5 descending (watchlist order)
+        result.sort(
+            key=lambda s: abs(s["alpha"]) + s["lambda_hawkes"] / 1e5,
+            reverse=True,
+        )
+        return result
+    except Exception:
+        return []
+
+
+@app.websocket("/ws/orderflow")
+async def ws_orderflow(websocket: WebSocket):
+    """Stream microstructure state for all symbols every 50ms."""
+    await _of_manager.connect(websocket)
+    try:
+        while True:
+            loop = asyncio.get_event_loop()
+            states = await loop.run_in_executor(None, _read_all_microstructure)
+            await websocket.send_text(json.dumps(states))
+            await asyncio.sleep(0.05)  # 50ms cadence
+    except (WebSocketDisconnect, Exception):
+        _of_manager.disconnect(websocket)

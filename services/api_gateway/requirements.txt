@@ -5,3 +5,10 @@ python-dotenv
 pandas
 requests
 confluent-kafka
+redis>=4.6,<6
+sse-starlette
+websockets
+httpx
+pytest
+pytest-asyncio
+starlette[full]
