@@ -10,6 +10,7 @@
 #include <chrono>
 #include <iostream>
 #include <deque>
+#include "microstructure.h"
 
 namespace py = pybind11;
 
@@ -518,4 +519,24 @@ PYBIND11_MODULE(til_core, m) {
     py::class_<SimulationEngine>(m, "SimulationEngine")
         .def(py::init<double>())
         .def("run_vectorized_simulation", &SimulationEngine::run_vectorized_simulation);
+
+    // ── MicrostructureEngine bindings ──────────────────────────────────────────
+    py::class_<MicrostructureEngine>(m, "MicrostructureEngine")
+        .def(py::init<int>(), py::arg("n_symbols"))
+        .def("update_tick", &MicrostructureEngine::update_tick,
+             py::arg("symbol_id"), py::arg("actual_return"), py::arg("variance_hint"),
+             py::arg("volume"), py::arg("timestamp"))
+        .def("get_state", [](MicrostructureEngine& eng, int sym_id) {
+            auto& s = eng.get_state_ref(sym_id);
+            py::dict d;
+            d["alpha_kalman"]  = s.alpha_kalman;
+            d["lambda_hawkes"] = s.lambda_hawkes;
+            d["cusum_fired"]   = s.cusum_fired;
+            d["variance"]      = s.variance;
+            d["spread"]        = s.spread;
+            return d;
+        }, py::arg("symbol_id"))
+        .def("__len__", [](const MicrostructureEngine& eng) {
+            return eng.states.size();
+        });
 }
