@@ -3,3 +3,4 @@ pandas
 psycopg2-binary
 confluent_kafka
 python-dotenv
+sqlalchemy==2.0.30
