@@ -8,6 +8,21 @@ from confluent_kafka import Consumer
 from dotenv import load_dotenv
 
 import importlib
+import sys as _sys
+
+_sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'kira_til'))
+try:
+    import til_core as _til_core
+    _MICRO_ENGINE = _til_core.MicrostructureEngine(1000)
+    _HAS_MICRO_ENGINE = True
+except ImportError:
+    _HAS_MICRO_ENGINE = False
+    _MICRO_ENGINE = None
+
+from symbol_registry import SymbolRegistry
+from calculations import compute_kyle_lambda, kelly_with_market_impact
+
+_SYM_REGISTRY = SymbolRegistry(max_symbols=1000)
 
 # Internal Modules
 try:
@@ -120,6 +135,53 @@ def fetch_optimized_params(symbol: str) -> dict:
     except Exception as e:
         logger.debug(f"Could not fetch optimized params for {symbol}: {e}")
     return None  # Use strategy defaults
+
+
+def _process_tick_microstructure(tick: dict) -> None:
+    """Feed enriched tick into MicrostructureEngine. Logs CUSUM-triggered trade sizes."""
+    if not _HAS_MICRO_ENGINE:
+        return
+
+    instrument_key = str(tick.get("instrument_token") or tick.get("instrument_key", ""))
+    if not instrument_key:
+        return
+
+    sym_id = _SYM_REGISTRY.register(instrument_key)
+    if sym_id is None:
+        return
+
+    ltp = float(tick.get("ltp") or tick.get("last_price") or 0.0)
+    volume = float(tick.get("volume") or 0.0)
+    obi = float(tick.get("obi") or 0.0)
+    ts_ms = float(tick.get("exchange_timestamp") or 0)
+    ts_seconds = ts_ms / 1000.0
+
+    prev_price = float(tick.get("prev_price") or ltp)
+    actual_return = (ltp - prev_price) / prev_price if prev_price > 0 else 0.0
+
+    cusum_fired = _MICRO_ENGINE.update_tick(sym_id, actual_return, 0.0, volume, ts_seconds)
+
+    if cusum_fired:
+        state = _MICRO_ENGINE.get_state(sym_id)
+        atr = float(tick.get("atr") or 15.0)
+        kyle_lam = compute_kyle_lambda(atr=atr, avg_daily_volume=max(volume, 1.0))
+        bid = float(tick.get("bid_price") or 0.0)
+        ask = float(tick.get("ask_price") or 0.0)
+        spread = abs(ask - bid) if ask > bid else 0.05
+
+        q = kelly_with_market_impact(
+            alpha_kalman=state["alpha_kalman"],
+            lambda_hawkes=state["lambda_hawkes"],
+            obi=obi,
+            spread=spread,
+            kyle_lambda=kyle_lam,
+        )
+
+        logger.info(
+            "CUSUM FIRE | %s | q*=%d | alpha=%.5f | hawkes=%.1f",
+            instrument_key, q, state["alpha_kalman"], state["lambda_hawkes"]
+        )
+
 
 def run_engine():
     # 0. Wait for Kafka
@@ -298,6 +360,9 @@ def run_engine():
                     symbol_params = fetch_optimized_params(symbol)
                     if symbol_params:
                         strategy.set_symbol_params(symbol, symbol_params)
+
+                # === MICROSTRUCTURE ENGINE FEED ===
+                _process_tick_microstructure(tick)
 
                 # === STRATEGY EXECUTION ===
                 signal = strategy.on_tick(tick, current_qty, balance=balance, avg_price=avg_price)
