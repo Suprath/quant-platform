@@ -706,15 +706,15 @@ def kelly_with_market_impact(
 ) -> int:
     """
     Modified Kelly position size accounting for market impact (Kyle's Lambda).
-    q* = (alpha_kalman + alpha_hawkes_scaled) * OBI - spread / (2 * kyle_lambda)
+    q* = (alpha_kalman + alpha_hawkes_scaled) * OBI / (2 * kyle_lambda)
     Returns integer share count >= 0.
     """
     if kyle_lambda <= 1e-10:
         return 0
 
-    alpha_hawkes_scaled = lambda_hawkes / 1e4
+    alpha_hawkes_scaled = lambda_hawkes / 1e5
     combined_alpha = (alpha_kalman + alpha_hawkes_scaled) * obi
-    q_star = (combined_alpha - spread) / (2.0 * kyle_lambda)
+    q_star = combined_alpha / (2.0 * kyle_lambda)
 
     return max(0, int(q_star))
 
