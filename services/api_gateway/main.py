@@ -2030,9 +2030,9 @@ def _read_all_microstructure() -> list:
                 "ts_ms": int(float(raw.get("ts_ms", 0))),
                 "cusum_fired": False,
             })
-        # Sort by |alpha| + lambda_hawkes/1e5 descending (watchlist order)
+        # Sort by |alpha| + lambda_hawkes/1e5 + cusum_c/5 descending (watchlist order)
         result.sort(
-            key=lambda s: abs(s["alpha"]) + s["lambda_hawkes"] / 1e5,
+            key=lambda s: abs(s["alpha"]) + s["lambda_hawkes"] / 1e5 + s["cusum_c"] / 5,
             reverse=True,
         )
         return result
