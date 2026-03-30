@@ -2055,3 +2055,77 @@ async def ws_orderflow(websocket: WebSocket):
             await asyncio.sleep(0.05)  # 50ms cadence
     except (WebSocketDisconnect, Exception):
         _of_manager.disconnect(websocket)
+
+
+# ─── MARKET DEPTH WEBSOCKET ──────────────────────────────────────────────────
+
+def _parse_depth_frame(raw_bytes: bytes, target_symbol: str) -> dict | None:
+    """Parse a KafkaEnvelope bytes into a depth frame for target_symbol.
+    Returns None if the message is for a different symbol or has no depth.
+    """
+    try:
+        envelope = json.loads(raw_bytes.decode("utf-8"))
+        payload = envelope.get("payload", {})
+        symbol = payload.get("symbol", "")
+        if symbol != target_symbol:
+            return None
+        depth = payload.get("depth", {})
+        bids = depth.get("buy", [])
+        asks = depth.get("sell", [])
+        if not bids and not asks:
+            return None
+        return {
+            "symbol": symbol,
+            "ltp": float(payload.get("ltp", 0)),
+            "depth_levels": len(bids),
+            "bids": bids,
+            "asks": asks,
+            "ts_ms": int(payload.get("timestamp", 0)),
+        }
+    except Exception:
+        return None
+
+
+@app.websocket("/ws/depth/{symbol}")
+async def ws_depth(websocket: WebSocket, symbol: str):
+    """Stream Upstox V3 market depth for a single symbol."""
+    await websocket.accept()
+    from confluent_kafka import Consumer, KafkaError
+    import uuid as _uuid
+
+    group_id = f"ws-depth-{_uuid.uuid4().hex[:8]}"
+    conf = {
+        "bootstrap.servers": os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka_bus:9092"),
+        "group.id": group_id,
+        "auto.offset.reset": "latest",
+        "enable.auto.commit": True,
+    }
+
+    loop = asyncio.get_running_loop()
+
+    def _consume_one():
+        consumer = Consumer(conf)
+        consumer.subscribe(["market.equity.ticks"])
+        try:
+            while True:
+                msg = consumer.poll(0.05)
+                if msg is None:
+                    continue
+                if msg.error():
+                    if msg.error().code() == KafkaError._PARTITION_EOF:
+                        continue
+                    break
+                frame = _parse_depth_frame(msg.value(), symbol)
+                if frame is not None:
+                    return frame
+        finally:
+            consumer.close()
+        return None
+
+    try:
+        while True:
+            frame = await loop.run_in_executor(None, _consume_one)
+            if frame is not None:
+                await websocket.send_text(json.dumps(frame))
+    except (WebSocketDisconnect, Exception):
+        pass
