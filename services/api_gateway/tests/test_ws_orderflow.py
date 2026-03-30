@@ -51,3 +51,42 @@ def test_ws_orderflow_empty_when_redis_none():
             data = ws.receive_text()
             payload = json.loads(data)
             assert payload == []
+
+
+def test_ws_orderflow_skips_bad_field():
+    """Keys with malformed numeric fields are skipped, valid ones still returned."""
+    from starlette.testclient import TestClient
+    import main as app_module
+
+    good = _make_redis_hgetall(symbol="NSE_EQ|TCS")
+    bad = _make_redis_hgetall(alpha="not_a_number", symbol="NSE_EQ|BAD")
+
+    mock_redis = MagicMock()
+    mock_redis.scan.return_value = _make_redis_scan_response(["NSE_EQ|TCS", "NSE_EQ|BAD"])
+    mock_redis.hgetall.side_effect = lambda key: good if "TCS" in key else bad
+
+    with patch.object(app_module, 'redis_client', mock_redis):
+        client = TestClient(app_module.app)
+        with client.websocket_connect("/ws/orderflow") as ws:
+            data = ws.receive_text()
+            payload = json.loads(data)
+            symbols = [s["symbol"] for s in payload]
+            assert "NSE_EQ|TCS" in symbols
+            assert "NSE_EQ|BAD" not in symbols
+
+
+def test_ws_orderflow_skips_empty_hgetall():
+    """Keys that vanish between SCAN and HGETALL (empty dict) are silently skipped."""
+    from starlette.testclient import TestClient
+    import main as app_module
+
+    mock_redis = MagicMock()
+    mock_redis.scan.return_value = _make_redis_scan_response(["NSE_EQ|GHOST"])
+    mock_redis.hgetall.return_value = {}
+
+    with patch.object(app_module, 'redis_client', mock_redis):
+        client = TestClient(app_module.app)
+        with client.websocket_connect("/ws/orderflow") as ws:
+            data = ws.receive_text()
+            payload = json.loads(data)
+            assert payload == []

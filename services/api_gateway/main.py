@@ -26,7 +26,7 @@ def _init_redis_client():
             db=0,
             decode_responses=True,
             socket_connect_timeout=2,
-            socket_timeout=0.1,
+            socket_timeout=1.0,
         )
         r.ping()
         return r
@@ -2019,17 +2019,20 @@ def _read_all_microstructure() -> list:
             raw = redis_client.hgetall(key)
             if not raw:
                 continue
-            result.append({
-                "symbol": raw.get("symbol", key.split(":", 1)[-1]),
-                "alpha": float(raw.get("alpha", 0)),
-                "lambda_hawkes": float(raw.get("lambda_hawkes", 0)),
-                "cusum_c": float(raw.get("cusum_c", 0)),
-                "variance": float(raw.get("variance", 0)),
-                "q_star": int(float(raw.get("q_star", 0))),
-                "kyle_lambda": float(raw.get("kyle_lambda", 0)),
-                "ts_ms": int(float(raw.get("ts_ms", 0))),
-                "cusum_fired": False,
-            })
+            try:
+                result.append({
+                    "symbol": raw.get("symbol", key.split(":", 1)[-1]),
+                    "alpha": float(raw.get("alpha", 0)),
+                    "lambda_hawkes": float(raw.get("lambda_hawkes", 0)),
+                    "cusum_c": float(raw.get("cusum_c", 0)),
+                    "variance": float(raw.get("variance", 0)),
+                    "q_star": int(float(raw.get("q_star", 0))),
+                    "kyle_lambda": float(raw.get("kyle_lambda", 0)),
+                    "ts_ms": int(float(raw.get("ts_ms", 0))),
+                    "cusum_fired": False,
+                })
+            except (ValueError, TypeError):
+                continue
         # Sort by |alpha| + lambda_hawkes/1e5 + cusum_c/5 descending (watchlist order)
         result.sort(
             key=lambda s: abs(s["alpha"]) + s["lambda_hawkes"] / 1e5 + s["cusum_c"] / 5,
@@ -2046,9 +2049,9 @@ async def ws_orderflow(websocket: WebSocket):
     await _of_manager.connect(websocket)
     try:
         while True:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             states = await loop.run_in_executor(None, _read_all_microstructure)
-            await websocket.send_text(json.dumps(states))
+            await _of_manager.broadcast(json.dumps(states))
             await asyncio.sleep(0.05)  # 50ms cadence
     except (WebSocketDisconnect, Exception):
         _of_manager.disconnect(websocket)
