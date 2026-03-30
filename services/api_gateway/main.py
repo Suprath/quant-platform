@@ -2088,7 +2088,11 @@ def _parse_depth_frame(raw_bytes: bytes, target_symbol: str) -> dict | None:
 
 @app.websocket("/ws/depth/{symbol}")
 async def ws_depth(websocket: WebSocket, symbol: str):
-    """Stream Upstox V3 market depth for a single symbol."""
+    """Stream Upstox V3 market depth for a single symbol.
+
+    One Kafka Consumer is created per connection and closed exactly once on
+    disconnect, so we never churn consumer group memberships.
+    """
     await websocket.accept()
     from confluent_kafka import Consumer, KafkaError
     import uuid as _uuid
@@ -2102,30 +2106,28 @@ async def ws_depth(websocket: WebSocket, symbol: str):
     }
 
     loop = asyncio.get_running_loop()
+    consumer = Consumer(conf)
+    consumer.subscribe(["market.equity.ticks"])
 
-    def _consume_one():
-        consumer = Consumer(conf)
-        consumer.subscribe(["market.equity.ticks"])
-        try:
-            while True:
-                msg = consumer.poll(0.05)
-                if msg is None:
-                    continue
-                if msg.error():
-                    if msg.error().code() == KafkaError._PARTITION_EOF:
-                        continue
-                    break
-                frame = _parse_depth_frame(msg.value(), symbol)
-                if frame is not None:
-                    return frame
-        finally:
-            consumer.close()
-        return None
+    def _poll_once() -> "dict | None":
+        """Poll one message; return a parsed depth frame or None."""
+        msg = consumer.poll(0.1)
+        if msg is None:
+            return None
+        if msg.error():
+            if msg.error().code() == KafkaError._PARTITION_EOF:
+                return None
+            return None
+        return _parse_depth_frame(msg.value(), symbol)
 
     try:
         while True:
-            frame = await loop.run_in_executor(None, _consume_one)
+            frame = await loop.run_in_executor(None, _poll_once)
             if frame is not None:
                 await websocket.send_text(json.dumps(frame))
-    except (WebSocketDisconnect, Exception):
+    except WebSocketDisconnect:
         pass
+    except Exception as exc:
+        print(f"ws_depth error for {symbol}: {exc}")
+    finally:
+        consumer.close()
