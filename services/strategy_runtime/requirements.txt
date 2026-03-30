@@ -12,7 +12,7 @@ torchvision
 pybind11
 pytest
 pytest-mock
-redis
+redis>=4.6,<6
 pytest-asyncio
 pydantic
 aiokafka

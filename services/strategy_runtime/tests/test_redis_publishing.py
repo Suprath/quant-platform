@@ -48,6 +48,9 @@ def test_redis_hash_written_after_tick():
     assert "alpha" in mapping
     assert "lambda_hawkes" in mapping
     assert "cusum_c" in mapping
+    assert isinstance(mapping["alpha"], str)
+    assert isinstance(mapping["lambda_hawkes"], str)
+    assert isinstance(mapping["cusum_c"], str)
 
 
 def test_redis_cusum_fire_published():
@@ -94,3 +97,26 @@ def test_redis_none_does_not_crash():
          patch.object(ml, '_HAS_MICRO_ENGINE', True), \
          patch.object(ml, '_REDIS', None):
         ml._process_tick_microstructure(_make_tick())  # must not raise
+
+
+def test_redis_no_publish_on_normal_tick():
+    """When CUSUM does NOT fire, Redis publish is NOT called."""
+    import main_legacy as ml
+
+    mock_redis = MagicMock()
+    mock_engine = MagicMock()
+    mock_engine.update_tick.return_value = False  # no fire
+    mock_engine.get_state.return_value = {
+        "alpha_kalman": 0.001, "lambda_hawkes": 5000.0, "cusum_c": 1.2, "variance": 0.0001,
+    }
+    mock_registry = MagicMock()
+    mock_registry.register.return_value = 0
+
+    with patch.object(ml, '_MICRO_ENGINE', mock_engine), \
+         patch.object(ml, '_SYM_REGISTRY', mock_registry), \
+         patch.object(ml, '_HAS_MICRO_ENGINE', True), \
+         patch.object(ml, '_REDIS', mock_redis):
+        ml._process_tick_microstructure(_make_tick())
+
+    mock_redis.hset.assert_called_once()   # hset always runs
+    mock_redis.publish.assert_not_called() # publish only on fire

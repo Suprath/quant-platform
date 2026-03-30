@@ -35,11 +35,12 @@ def _init_redis() -> redis_lib.Redis | None:
             db=0,
             decode_responses=True,
             socket_connect_timeout=2,
+            socket_timeout=0.1,
         )
         r.ping()
         return r
     except Exception as e:
-        logger.warning("Redis unavailable, microstructure state will not be published: %s", e)
+        print(f"Redis unavailable, microstructure state will not be published: {e}")
         return None
 
 # Internal Modules
@@ -196,7 +197,6 @@ def _process_tick_microstructure(tick: dict) -> None:
 
     if _REDIS is not None:
         try:
-            import json as _json
             mapping = {
                 "alpha": str(state["alpha_kalman"]),
                 "lambda_hawkes": str(state["lambda_hawkes"]),
@@ -209,7 +209,7 @@ def _process_tick_microstructure(tick: dict) -> None:
             }
             _REDIS.hset(f"microstructure:{instrument_key}", mapping=mapping)
             if cusum_fired:
-                _REDIS.publish("cusum-fires", _json.dumps({
+                _REDIS.publish("cusum-fires", json.dumps({
                     "symbol": instrument_key,
                     "q_star": q,
                     "alpha": state["alpha_kalman"],
