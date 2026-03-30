@@ -683,3 +683,38 @@ def downsample_equity_curve(
         result.append(equity_curve[-1])
     return result
 
+
+# ── Market-Impact-Aware Execution ─────────────────────────────────────────────
+
+def compute_kyle_lambda(atr: float, avg_daily_volume: float, tick_size: float = 0.05) -> float:
+    """
+    Estimate Kyle's Lambda (market impact coefficient) from ATR and volume.
+    Formula: lambda = ATR / (avg_daily_volume * tick_size)
+    """
+    denominator = avg_daily_volume * tick_size
+    if denominator <= 0.0:
+        return 0.0
+    return atr / denominator
+
+
+def kelly_with_market_impact(
+    alpha_kalman: float,
+    lambda_hawkes: float,
+    obi: float,
+    spread: float,
+    kyle_lambda: float,
+) -> int:
+    """
+    Modified Kelly position size accounting for market impact (Kyle's Lambda).
+    q* = (alpha_kalman + alpha_hawkes_scaled) * OBI - spread / (2 * kyle_lambda)
+    Returns integer share count >= 0.
+    """
+    if kyle_lambda <= 1e-10:
+        return 0
+
+    alpha_hawkes_scaled = lambda_hawkes / 1e4
+    combined_alpha = (alpha_kalman + alpha_hawkes_scaled) * obi
+    q_star = (combined_alpha - spread) / (2.0 * kyle_lambda)
+
+    return max(0, int(q_star))
+
