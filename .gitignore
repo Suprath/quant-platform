@@ -37,3 +37,4 @@ context/
 
 # AI configuration files
 CLAUDE.md
+.worktrees/
