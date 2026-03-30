@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 import importlib
 import sys as _sys
+import redis as redis_lib
 
 _sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'kira_til'))
 try:
@@ -23,6 +24,23 @@ from symbol_registry import SymbolRegistry
 from calculations import compute_kyle_lambda, kelly_with_market_impact
 
 _SYM_REGISTRY = SymbolRegistry(max_symbols=1000)
+
+_REDIS: redis_lib.Redis | None = None
+
+def _init_redis() -> redis_lib.Redis | None:
+    try:
+        r = redis_lib.Redis(
+            host=os.getenv("REDIS_HOST", "redis_state"),
+            port=int(os.getenv("REDIS_PORT", 6379)),
+            db=0,
+            decode_responses=True,
+            socket_connect_timeout=2,
+        )
+        r.ping()
+        return r
+    except Exception as e:
+        logger.warning("Redis unavailable, microstructure state will not be published: %s", e)
+        return None
 
 # Internal Modules
 try:
@@ -138,7 +156,7 @@ def fetch_optimized_params(symbol: str) -> dict:
 
 
 def _process_tick_microstructure(tick: dict) -> None:
-    """Feed enriched tick into MicrostructureEngine. Logs CUSUM-triggered trade sizes."""
+    """Feed enriched tick into MicrostructureEngine. Publishes state to Redis."""
     if not _HAS_MICRO_ENGINE:
         return
 
@@ -160,23 +178,47 @@ def _process_tick_microstructure(tick: dict) -> None:
     actual_return = (ltp - prev_price) / prev_price if prev_price > 0 else 0.0
 
     cusum_fired = _MICRO_ENGINE.update_tick(sym_id, actual_return, 0.0, volume, ts_seconds)
+    state = _MICRO_ENGINE.get_state(sym_id)
+
+    atr = float(tick.get("atr") or 15.0)
+    kyle_lam = compute_kyle_lambda(atr=atr, avg_daily_volume=max(volume, 1.0))
+    bid = float(tick.get("bid_price") or 0.0)
+    ask = float(tick.get("ask_price") or 0.0)
+    spread = abs(ask - bid) if ask > bid else 0.05
+
+    q = kelly_with_market_impact(
+        alpha_kalman=state["alpha_kalman"],
+        lambda_hawkes=state["lambda_hawkes"],
+        obi=obi,
+        spread=spread,
+        kyle_lambda=kyle_lam,
+    )
+
+    if _REDIS is not None:
+        try:
+            import json as _json
+            mapping = {
+                "alpha": str(state["alpha_kalman"]),
+                "lambda_hawkes": str(state["lambda_hawkes"]),
+                "cusum_c": str(state["cusum_c"]),
+                "variance": str(state.get("variance", 0.0)),
+                "q_star": str(q),
+                "kyle_lambda": str(kyle_lam),
+                "symbol": instrument_key,
+                "ts_ms": str(int(ts_ms)),
+            }
+            _REDIS.hset(f"microstructure:{instrument_key}", mapping=mapping)
+            if cusum_fired:
+                _REDIS.publish("cusum-fires", _json.dumps({
+                    "symbol": instrument_key,
+                    "q_star": q,
+                    "alpha": state["alpha_kalman"],
+                    "ts_ms": int(ts_ms),
+                }))
+        except Exception:
+            pass  # never crash the tick pipeline
 
     if cusum_fired:
-        state = _MICRO_ENGINE.get_state(sym_id)
-        atr = float(tick.get("atr") or 15.0)
-        kyle_lam = compute_kyle_lambda(atr=atr, avg_daily_volume=max(volume, 1.0))
-        bid = float(tick.get("bid_price") or 0.0)
-        ask = float(tick.get("ask_price") or 0.0)
-        spread = abs(ask - bid) if ask > bid else 0.05
-
-        q = kelly_with_market_impact(
-            alpha_kalman=state["alpha_kalman"],
-            lambda_hawkes=state["lambda_hawkes"],
-            obi=obi,
-            spread=spread,
-            kyle_lambda=kyle_lam,
-        )
-
         logger.info(
             "CUSUM FIRE | %s | q*=%d | alpha=%.5f | hawkes=%.1f",
             instrument_key, q, state["alpha_kalman"], state["lambda_hawkes"]
@@ -184,6 +226,8 @@ def _process_tick_microstructure(tick: dict) -> None:
 
 
 def run_engine():
+    global _REDIS
+    _REDIS = _init_redis()
     # 0. Wait for Kafka
     wait_for_kafka()
     ensure_topics()
