@@ -34,3 +34,6 @@ context/
 
 # AI Agent folder
 .agent/
+
+# AI configuration files
+CLAUDE.md
