@@ -4,3 +4,4 @@ sqlalchemy==2.0.30
 psycopg2-binary==2.9.9
 apscheduler==3.10.4
 python-dotenv==1.0.1
+pytest>=8.0.0
