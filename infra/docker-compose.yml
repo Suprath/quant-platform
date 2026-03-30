@@ -275,6 +275,19 @@ services:
       - PYTHONPATH=/app:/kira-shared/src
     profiles: [ "replay" ] # Only start when explicitly requested
 
+  eod_ingestor:
+    build:
+      context: ../services/eod_ingestor
+      dockerfile: Dockerfile
+    container_name: eod_ingestor
+    env_file:
+      - ../.env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      - postgres
+    restart: always
+
   frontend:
     build: ../frontend
     container_name: quant_frontend
