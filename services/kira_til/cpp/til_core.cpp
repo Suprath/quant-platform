@@ -49,42 +49,62 @@ struct EquitySnapshot {
     double equity;
 };
 
-// --- HFT OPTIMIZED RING BUFFER ---
-struct PriceRingBuffer {
-    double data[50] = {0};
+// --- EXTREME HFT: FIXED RING BUFFER ---
+template<size_t N>
+struct FixedRingBuffer {
+    double data[N] = {0};
     int head = 0;
     int count = 0;
-    void push(double val) {
+    inline void push(double val) {
         data[head] = val;
-        head = (head + 1) % 50;
-        if (count < 50) count++;
+        head = (head + 1) % N;
+        if (count < N) count++;
     }
-    double front() const { return data[head]; } // Oldest element
-    int size() const { return count; }
+    inline double front() const { return data[head]; } // Oldest
+    inline int size() const { return count; }
 };
 
-struct MonotonicWindow {
-    std::deque<std::pair<double, int>> max_q, min_q;
-    int count = 0;
-    int window_size;
-
-    MonotonicWindow(int size) : window_size(size) {}
+// --- EXTREME HFT: STATIC MONOTONIC WINDOW (Zero-Deque Circular) ---
+template<size_t N>
+struct StaticMonotonicWindow {
+    struct Node { double val; int idx; };
+    Node max_q[N], min_q[N];
+    int max_head = 0, max_tail = 0, max_cnt = 0;
+    int min_head = 0, min_tail = 0, min_cnt = 0;
+    int total_count = 0;
 
     void push(double val) {
-        while (!max_q.empty() && max_q.back().first <= val) max_q.pop_back();
-        while (!min_q.empty() && min_q.back().first >= val) min_q.pop_back();
-        
-        max_q.push_back({val, count});
-        min_q.push_back({val, count});
-        
-        if (count - max_q.front().second >= window_size) max_q.pop_front();
-        if (count - min_q.front().second >= window_size) min_q.pop_front();
-        count++;
-    }
+        // Max Queue
+        while (max_cnt > 0 && max_q[(max_tail + N - 1) % N].val <= val) {
+            max_tail = (max_tail + N - 1) % N;
+            max_cnt--;
+        }
+        max_q[max_tail] = {val, total_count};
+        max_tail = (max_tail + 1) % N;
+        max_cnt++;
 
-    double get_max() const { return max_q.empty() ? 0.0 : max_q.front().first; }
-    double get_min() const { return min_q.empty() ? 0.0 : min_q.front().first; }
-    size_t size() const { return (size_t)std::min(count, window_size); }
+        // Min Queue
+        while (min_cnt > 0 && min_q[(min_tail + N - 1) % N].val >= val) {
+            min_tail = (min_tail + N - 1) % N;
+            min_cnt--;
+        }
+        min_q[min_tail] = {val, total_count};
+        min_tail = (min_tail + 1) % N;
+        min_cnt++;
+        
+        // Eviction
+        if (total_count - max_q[max_head].idx >= (int)N) {
+            max_head = (max_head + 1) % N;
+            max_cnt--;
+        }
+        if (total_count - min_q[min_head].idx >= (int)N) {
+            min_head = (min_head + 1) % N;
+            min_cnt--;
+        }
+        total_count++;
+    }
+    inline double get_max() const { return max_q[max_head].val; }
+    inline double get_min() const { return min_q[min_head].val; }
 };
 
 struct SimulationResult {
@@ -114,13 +134,15 @@ struct SymbolState {
     long last_exit_tick = 0;
     bool deactivated = false;
     
-    // Rolling Regression Accumulators (O(1))
+    // O(1) Accumulators
     double sum_y = 0.0;
     double sum_xy = 0.0;
+    double sum_a = 0.0;  // ATR sum
+    double sum_a2 = 0.0; // ATR sq sum
     
-    PriceRingBuffer price_window; 
-    std::deque<double> atr_window;  
-    MonotonicWindow tick_range_window{30}; 
+    FixedRingBuffer<50> price_window; 
+    FixedRingBuffer<50> atr_window;  
+    StaticMonotonicWindow<30> tick_range_window; 
 };
 
 class SimulationEngine {
@@ -130,6 +152,12 @@ public:
     double current_equity;
     double current_exposure = 0.0; // O(1) tracking
     
+    // Performance Trackers for Kelly Formula
+    int64_t win_count = 0;
+    int64_t loss_count = 0;
+    double  win_sum = 0.0;
+    double  loss_sum = 0.0;
+
     std::vector<Position> positions;
     std::vector<bool> has_position;
     std::vector<double> last_prices;
@@ -138,7 +166,7 @@ public:
 
     static constexpr int    MAX_POSITIONS      = 10;
     static constexpr double MAX_HEAT_PCT       = 4.0; 
-    static constexpr double RISK_PER_TRADE_PCT = 0.02; 
+    static constexpr double RISK_PER_TRADE_PCT = 0.02; // Initial/Fallback risk
     static constexpr double BROKERAGE_RATE     = 0.0005; 
     static constexpr int    COOLDOWN_TICKS     = 300;    
     static constexpr int    MAX_SYMBOLS        = 20000; 
@@ -150,6 +178,24 @@ public:
         has_position.assign(MAX_SYMBOLS, false);
         last_prices.assign(MAX_SYMBOLS, 0.0);
         symbol_features.resize(MAX_SYMBOLS);
+    }
+
+    double get_kelly_fraction() const {
+        // Require at least 5 trades for statistical significance
+        if (win_count + loss_count < 5) return RISK_PER_TRADE_PCT; 
+        
+        double p = (double)win_count / (win_count + loss_count);
+        double avg_win = win_sum / (win_count > 0 ? win_count : 1);
+        double avg_loss = std::abs(loss_sum / (loss_count > 0 ? loss_count : 1));
+        
+        // b = Win/Loss Ratio
+        double b = (avg_loss > 0) ? avg_win / avg_loss : 1.0;
+        
+        // Kelly Formula: f* = (p*b - (1-p)) / b
+        double f_star = (p * b - (1.0 - p)) / std::max(0.1, b);
+        
+        // Institutional Guardrails: 0.5 * Kelly (Half-Kelly)
+        return std::max(0.005, std::min(0.08, f_star * 0.5));
     }
 
     void update_equity(int sym_id, double new_price) {
@@ -202,37 +248,36 @@ public:
                 fs.sma50_sum = price * 50; 
                 fs.sma200 = price;
                 fs.atr = 0.01 * price;
-                // Pre-fill ring buffer to avoid cold-start branching
-                for(int j=0; j<50; ++j) fs.price_window.push(price);
+                // Pre-fill ring buffers (Zero-Deque)
+                for(int j=0; j<50; ++j) {
+                    fs.price_window.push(price);
+                    fs.atr_window.push(fs.atr);
+                }
                 fs.sum_y = price * 50;
                 fs.sum_xy = 0;
                 for(int j=0; j<50; ++j) fs.sum_xy += j * price;
+                
+                fs.sum_a = fs.atr * 50;
+                fs.sum_a2 = (fs.atr * fs.atr) * 50;
             }
             fs.count++;
 
             update_equity(sym_id, price);
             
-            // --- O(1) ROLLING SMA50 (CRITICAL BUG FIX #2) ---
-            double outgoing_sma = fs.price_window.front();
-            fs.sma50_sum -= outgoing_sma;
-            fs.sma50_sum += price;
+            // --- O(1) ROLLING SMA50 ---
+            double outgoing_p = fs.price_window.front();
+            fs.sma50_sum = fs.sma50_sum - outgoing_p + price;
             fs.sma50 = fs.sma50_sum / 50.0;
 
-            // --- O(1) ROLLING REGRESSION (PERF OPT) ---
-            // sum_xy_new = sum_xy_old - sum_y_old + N * price_new - price_new
-            fs.sum_xy = fs.sum_xy - (fs.sum_y - outgoing_sma) + 49.0 * price;
-            fs.sum_y = fs.sum_y - outgoing_sma + price;
-            
+            // --- O(1) ROLLING REGRESSION ---
+            fs.sum_xy = fs.sum_xy - (fs.sum_y - outgoing_p) + 49.0 * price;
+            fs.sum_y = fs.sum_y - outgoing_p + price;
             fs.price_window.push(price);
             
-            // 50 * sum_xy - sum_x * sum_y / denominator
-            // sum_x = 1225, denominator = 50 * 40425 - 1225*1225 = 520625
             double velocity = (50.0 * fs.sum_xy - 1225.0 * fs.sum_y) / 520625.0 / price * 100.0;
-
-            // SMA200 (Bias-Corrected EMA for O(1) memory)
             fs.sma200 = fs.sma200 * 0.995 + price * 0.005;
 
-            // 4. DRAWDOWN SHIELD
+            // DRAWDOWN SHIELD
             long current_day = (long)(ts / 86400); 
             if (current_day != fs.last_day) {
                 fs.daily_pnl = 0.0;
@@ -240,7 +285,7 @@ public:
                 fs.last_day = current_day;
             }
             
-            // 5. O(1) ATR (Monotonic Window)
+            // --- O(1) ATR + VOL_Z (ZERO-DEQUE) ---
             fs.tick_range_window.push(price);
             double tr = std::max({
                 fs.tick_range_window.get_max() - fs.tick_range_window.get_min(),
@@ -248,16 +293,14 @@ public:
             });
             fs.atr = (fs.atr * 19.0 + tr) / 20.0; 
             
-            fs.atr_window.push_back(fs.atr);
-            if (fs.atr_window.size() > 50) fs.atr_window.pop_front();
-            double vol_z = 0; // Simplified for speed or implement O(1) variance
-            if (fs.atr_window.size() >= 50) {
-                double a_sum = 0, a_sq_sum = 0;
-                for(double a : fs.atr_window) { a_sum += a; a_sq_sum += a*a; }
-                double a_mean = a_sum / 50.0;
-                double a_stdev = std::sqrt(std::max(0.0, (a_sq_sum / 50.0) - (a_mean * a_mean)));
-                vol_z = (a_stdev > 0.0001) ? (fs.atr - a_mean) / a_stdev : 0;
-            }
+            double outgoing_a = fs.atr_window.front();
+            fs.sum_a = fs.sum_a - outgoing_a + fs.atr;
+            fs.sum_a2 = fs.sum_a2 - (outgoing_a * outgoing_a) + (fs.atr * fs.atr);
+            fs.atr_window.push(fs.atr);
+
+            double a_mean = fs.sum_a / 50.0;
+            double a_var = (fs.sum_a2 / 50.0) - (a_mean * a_mean);
+            double vol_z = (a_var > 1e-9) ? (fs.atr - a_mean) / std::sqrt(a_var) : 0;
 
             // --- ALPHA SNIPER GATING ---
             bool strong_long_trend = (price > fs.sma200 * 1.005);
@@ -318,6 +361,15 @@ public:
 
                     if (fs.daily_pnl < -(initial_capital / MAX_POSITIONS) * 0.010) fs.deactivated = true;
 
+                    // Update Kelly Metrics
+                    if (net_pnl > 0) {
+                        win_count++;
+                        win_sum += net_pnl;
+                    } else {
+                        loss_count++;
+                        loss_sum += net_pnl;
+                    }
+
                     // O(1) Cash & Exposure Settlement
                     if (pos.direction == Direction::LONG) {
                         current_cash += (pos.qty * price - exit_brokerage);
@@ -342,7 +394,8 @@ public:
 
                     if (dir != Direction::NONE) {
                         double risk_mult = std::max(1.5, std::min(6.0, std::abs(velocity) / 0.05)); // Branchless clamp
-                        int qty = (int)((initial_capital * RISK_PER_TRADE_PCT * risk_mult) / price);
+                        double kelly_pct = get_kelly_fraction();
+                        int qty = (int)((current_equity * kelly_pct * risk_mult) / price);
                         if (qty <= 0) qty = 1;
                         double entry_brokerage = price * qty * BROKERAGE_RATE;
                         
