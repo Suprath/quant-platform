@@ -2237,15 +2237,29 @@ def _build_ranked_list(conn) -> list:
 
 
 @app.get("/api/conviction/stream")
-async def conviction_stream(conn=Depends(get_pg_conn)):
-    """SSE stream: sends ranked list at connect + on each CUSUM fire."""
+async def conviction_stream():
+    """SSE stream: sends ranked list at connect + on each CUSUM fire.
+
+    Acquires its own DB connections inside the generator so they are not
+    released by FastAPI's Depends lifecycle before the long-lived stream runs.
+    """
     import json as _j
 
+    def _ranked_with_fresh_conn() -> list:
+        """Acquire, use, and release a DB connection within a single call."""
+        if pg_pool is None:
+            return []
+        conn = pg_pool.getconn()
+        try:
+            return _build_ranked_list(conn)
+        finally:
+            pg_pool.putconn(conn)
+
     async def _generator():
+        loop = asyncio.get_running_loop()
+
         # 1. Initial snapshot
-        ranked = await asyncio.get_running_loop().run_in_executor(
-            None, _build_ranked_list, conn
-        )
+        ranked = await loop.run_in_executor(None, _ranked_with_fresh_conn)
         yield {"event": "ranked_list", "data": _j.dumps(ranked)}
 
         # 2. Listen for CUSUM fires via Redis pub/sub and re-send on each fire
@@ -2256,21 +2270,19 @@ async def conviction_stream(conn=Depends(get_pg_conn)):
         pubsub.subscribe("cusum-fires")
         try:
             while True:
-                message = await asyncio.get_running_loop().run_in_executor(
+                message = await loop.run_in_executor(
                     None, lambda: pubsub.get_message(timeout=30)
                 )
                 if message and message["type"] == "message":
                     fire_data = _j.loads(message["data"])
                     yield {"event": "cusum_fire", "data": _j.dumps(fire_data)}
-                    # Re-send updated ranked list
-                    ranked = await asyncio.get_running_loop().run_in_executor(
-                        None, _build_ranked_list, conn
-                    )
+                    ranked = await loop.run_in_executor(None, _ranked_with_fresh_conn)
                     yield {"event": "ranked_list", "data": _j.dumps(ranked)}
         except Exception:
             pass
         finally:
             pubsub.unsubscribe("cusum-fires")
+            pubsub.close()
 
     return EventSourceResponse(_generator())
 
@@ -2293,5 +2305,7 @@ async def ws_live(websocket: WebSocket):
                 data = {"status": "stopped", "message": "Runtime unavailable"}
             await websocket.send_text(_j.dumps(data))
             await asyncio.sleep(1.0)
-    except (WebSocketDisconnect, Exception):
+    except WebSocketDisconnect:
         pass
+    except Exception as exc:
+        print(f"ws_live error: {exc}")
