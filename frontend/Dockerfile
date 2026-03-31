@@ -10,8 +10,12 @@ FROM node:18-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Environment variables must be present at build time
-ENV NEXT_TELEMETRY_DISABLED 1
+# NEXT_PUBLIC_* variables are baked in at build time
+ARG NEXT_PUBLIC_API_URL=http://localhost:8080
+ARG NEXT_PUBLIC_API_HOST=localhost:8080
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_HOST=$NEXT_PUBLIC_API_HOST
+ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 # 3. Production image, copy all the files and run next

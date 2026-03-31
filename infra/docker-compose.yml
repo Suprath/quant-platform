@@ -289,13 +289,14 @@ services:
     restart: always
 
   frontend:
-    build: ../frontend
+    build:
+      context: ../frontend
+      args:
+        - NEXT_PUBLIC_API_URL=http://localhost:8080
+        - NEXT_PUBLIC_API_HOST=localhost:8080
     container_name: quant_frontend
     ports:
       - "3001:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8080
-      - API_INTERNAL_URL=http://api_gateway:8000
     depends_on:
       - api_gateway
     restart: always
