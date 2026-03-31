@@ -2133,3 +2133,165 @@ async def ws_depth(websocket: WebSocket, symbol: str):
         print(f"ws_depth error for {symbol}: {exc}")
     finally:
         consumer.close()
+
+
+# ─── CONVICTION REST + SSE ───────────────────────────────────────────────────
+from sse_starlette.sse import EventSourceResponse
+
+_TREND_CACHE_TTL = 1800  # 30 minutes
+
+
+@app.get("/api/conviction/trend/{symbol}")
+def conviction_trend(symbol: str, conn=Depends(get_pg_conn)):
+    """Return 20 trading days of EOD bhavcopy data for a symbol. Redis-cached 30 min."""
+    cache_key = f"conviction_trend:{symbol}"
+
+    if redis_client is not None:
+        cached = redis_client.get(cache_key)
+        if cached:
+            import json as _j
+            return _j.loads(cached)
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT trade_date, symbol, conviction_score, total_volume, delivery_qty
+            FROM eod_bhavcopy
+            WHERE symbol = %s
+            ORDER BY trade_date DESC
+            LIMIT 20
+            """,
+            (symbol,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        result = [
+            {
+                "trade_date": str(r[0]),
+                "symbol": r[1],
+                "conviction_score": float(r[2]) if r[2] is not None else 0.0,
+                "total_volume": int(r[3]) if r[3] else 0,
+                "delivery_qty": int(r[4]) if r[4] else 0,
+            }
+            for r in rows
+        ]
+        if redis_client is not None:
+            import json as _j
+            redis_client.set(cache_key, _j.dumps(result), ex=_TREND_CACHE_TTL)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _build_ranked_list(conn) -> list:
+    """Query eod_bhavcopy + Redis microstructure states, return sorted ranking."""
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT symbol,
+                   AVG(conviction_score) AS avg_conv,
+                   MAX(trade_date)       AS latest_date
+            FROM eod_bhavcopy
+            WHERE trade_date >= CURRENT_DATE - INTERVAL '5 days'
+            GROUP BY symbol
+            ORDER BY avg_conv DESC
+            LIMIT 200
+            """,
+        )
+        rows = cur.fetchall()
+        cur.close()
+    except Exception:
+        rows = []
+
+    result = []
+    for r in rows:
+        symbol, avg_conv, latest_date = r[0], float(r[1] or 0), str(r[2])
+        micro: dict = {}
+        if redis_client is not None:
+            try:
+                raw = redis_client.hgetall(f"microstructure:{symbol}")
+                if raw:
+                    micro = {
+                        "alpha": float(raw.get("alpha", 0)),
+                        "lambda_hawkes": float(raw.get("lambda_hawkes", 0)),
+                        "cusum_c": float(raw.get("cusum_c", 0)),
+                        "q_star": int(float(raw.get("q_star", 0))),
+                    }
+            except Exception:
+                pass
+        result.append({
+            "symbol": symbol,
+            "avg_conviction": avg_conv,
+            "latest_date": latest_date,
+            **micro,
+        })
+
+    # Sort: avg_conviction × sign(alpha) desc
+    result.sort(
+        key=lambda x: x["avg_conviction"] * (1 if x.get("alpha", 0) >= 0 else -1),
+        reverse=True,
+    )
+    return result
+
+
+@app.get("/api/conviction/stream")
+async def conviction_stream(conn=Depends(get_pg_conn)):
+    """SSE stream: sends ranked list at connect + on each CUSUM fire."""
+    import json as _j
+
+    async def _generator():
+        # 1. Initial snapshot
+        ranked = await asyncio.get_running_loop().run_in_executor(
+            None, _build_ranked_list, conn
+        )
+        yield {"event": "ranked_list", "data": _j.dumps(ranked)}
+
+        # 2. Listen for CUSUM fires via Redis pub/sub and re-send on each fire
+        if redis_client is None:
+            return
+
+        pubsub = redis_client.pubsub()
+        pubsub.subscribe("cusum-fires")
+        try:
+            while True:
+                message = await asyncio.get_running_loop().run_in_executor(
+                    None, lambda: pubsub.get_message(timeout=30)
+                )
+                if message and message["type"] == "message":
+                    fire_data = _j.loads(message["data"])
+                    yield {"event": "cusum_fire", "data": _j.dumps(fire_data)}
+                    # Re-send updated ranked list
+                    ranked = await asyncio.get_running_loop().run_in_executor(
+                        None, _build_ranked_list, conn
+                    )
+                    yield {"event": "ranked_list", "data": _j.dumps(ranked)}
+        except Exception:
+            pass
+        finally:
+            pubsub.unsubscribe("cusum-fires")
+
+    return EventSourceResponse(_generator())
+
+
+# ─── LIVE WS (replaces 2s polling in /dashboard/live) ───────────────────────
+
+@app.websocket("/ws/live")
+async def ws_live(websocket: WebSocket):
+    """Stream live trading status every 1s for the live dashboard."""
+    await websocket.accept()
+    import json as _j
+    try:
+        while True:
+            try:
+                resp = _http_session.get(
+                    "http://strategy_runtime:8000/live/status", timeout=2
+                )
+                data = resp.json() if resp.status_code == 200 else {"status": "stopped"}
+            except Exception:
+                data = {"status": "stopped", "message": "Runtime unavailable"}
+            await websocket.send_text(_j.dumps(data))
+            await asyncio.sleep(1.0)
+    except (WebSocketDisconnect, Exception):
+        pass
