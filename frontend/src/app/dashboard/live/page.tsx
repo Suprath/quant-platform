@@ -94,66 +94,87 @@ export default function ProfessionalLiveDashboard() {
         fetchInitial();
     }, [API_URL]);
 
-    // Polling Function
-    const pollStatus = React.useCallback(async () => {
-        try {
-            const res = await fetch(`${API_URL}/api/v1/live/status`);
-            const data = await res.json();
-            setStatus(data);
-
-            if (data.status === 'running') {
-                const now = new Date().toLocaleTimeString('en-US', { hour12: false });
-
-                // Update Chart
-                setEquityHistory(prev => {
-                    // Prevent duplicate consecutive entries with same value to keep chart clean
-                    if (prev.length > 0 && prev[prev.length - 1].equity === data.equity) {
-                        return prev;
-                    }
-                    const newHist = [...prev, { time: now, equity: data.equity }];
-                    if (newHist.length > 60) newHist.shift(); // Keep last 60 points
-                    return newHist;
-                });
-
-                // Simulated Live System Activity Logs
-                if (Math.random() > 0.7) {
-                    const actions = [
-                        `Analyzed market depth for active instruments.`,
-                        `Heartbeat OK. Latency: ${Math.floor(Math.random() * 40 + 10)}ms`,
-                        `Re-calculated strategy trailing stops.`,
-                        `Awaiting entry signals...`,
-                        `Received updated options chain data.`
-                    ];
-                    addLog(actions[Math.floor(Math.random() * actions.length)], 'info');
-                }
-            }
-
-            // Always fetch trades to keep order book fresh
-            const resTrades = await fetch(`${API_URL}/api/v1/live/trades`);
-            if (resTrades.ok) {
-                const dataTrades = await resTrades.json();
-                setTrades(dataTrades);
-                // Simple realtime UI brokerage estimation
-                const brk = dataTrades.reduce((acc: number, t: Trade) => {
-                    const turnover = t.price * Math.abs(t.quantity);
-                    const flat = Math.min(20, turnover * 0.0003);
-                    const stt = t.side === 'SELL' ? turnover * 0.00025 : 0;
-                    const gst = flat * 0.18;
-                    return acc + flat + stt + gst;
-                }, 0);
-                setBrokeragePaid(brk);
-            }
-
-        } catch {
-            // silent fail on poll
-        }
-    }, [API_URL]);
-
-    // Setup Polling Interval
+    // WebSocket for live status — replaces setInterval polling
     useEffect(() => {
-        const interval = setInterval(pollStatus, 2000);
-        return () => clearInterval(interval);
-    }, [pollStatus]);
+        const API_HOST = process.env.NEXT_PUBLIC_API_HOST || 'localhost:8080';
+        const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        const wsUrl = `${proto}://${API_HOST}/ws/live`;
+        let ws: WebSocket | null = null;
+        let retryDelay = 1000;
+        let cancelled = false;
+
+        // Keep fetching trades via REST (low frequency, no need for WS)
+        const fetchTrades = async () => {
+            try {
+                const res = await fetch(`${API_URL}/api/v1/live/trades`);
+                if (res.ok) {
+                    const data = await res.json();
+                    setTrades(data);
+                    // Simple realtime UI brokerage estimation
+                    const brk = data.reduce((acc: number, t: Trade) => {
+                        const turnover = t.price * Math.abs(t.quantity);
+                        const flat = Math.min(20, turnover * 0.0003);
+                        const stt = t.side === 'SELL' ? turnover * 0.00025 : 0;
+                        const gst = flat * 0.18;
+                        return acc + flat + stt + gst;
+                    }, 0);
+                    setBrokeragePaid(brk);
+                }
+            } catch { /* ignore */ }
+        };
+
+        const tradesInterval = setInterval(fetchTrades, 10000);
+        fetchTrades();
+
+        function connect() {
+            if (cancelled) return;
+            ws = new WebSocket(wsUrl);
+            ws.onopen = () => { retryDelay = 1000; };
+            ws.onmessage = (evt) => {
+                try {
+                    const data = JSON.parse(evt.data);
+                    setStatus(data);
+                    setLoading(false);
+
+                    if (data.status === 'running') {
+                        const now = new Date().toLocaleTimeString('en-US', { hour12: false });
+                        setEquityHistory(prev => {
+                            if (prev.length > 0 && prev[prev.length - 1].equity === data.equity) {
+                                return prev;
+                            }
+                            const newHist = [...prev, { time: now, equity: data.equity }];
+                            if (newHist.length > 60) newHist.shift();
+                            return newHist;
+                        });
+
+                        if (Math.random() > 0.7) {
+                            const actions = [
+                                `Analyzed market depth for active instruments.`,
+                                `Heartbeat OK. Latency: ${Math.floor(Math.random() * 40 + 10)}ms`,
+                                `Re-calculated strategy trailing stops.`,
+                                `Awaiting entry signals...`,
+                                `Received updated options chain data.`
+                            ];
+                            addLog(actions[Math.floor(Math.random() * actions.length)], 'info');
+                        }
+                    }
+                } catch { /* skip */ }
+            };
+            ws.onerror = () => ws?.close();
+            ws.onclose = () => {
+                if (cancelled) return;
+                setTimeout(connect, Math.min(retryDelay, 30000) + Math.random() * 200);
+                retryDelay *= 2;
+            };
+        }
+
+        connect();
+        return () => {
+            cancelled = true;
+            clearInterval(tradesInterval);
+            ws?.close();
+        };
+    }, [API_URL]);
 
     // Auto-scroll terminal
     useEffect(() => {
@@ -192,7 +213,6 @@ export default function ProfessionalLiveDashboard() {
             } else {
                 addLog(`Strategy ${selectedStrategy} successfully deployed to runtime engine.`, 'success');
                 setEquityHistory([]); // reset chart
-                pollStatus(); // force immediate refresh
             }
         } catch (err: unknown) {
             if (err instanceof Error) addLog(`Connection error: ${err.message}`, 'error');
@@ -210,7 +230,6 @@ export default function ProfessionalLiveDashboard() {
         try {
             await fetch(`${API_URL}/api/v1/live/stop`, { method: 'POST' });
             addLog(`Strategy stopped successfully.`, 'success');
-            pollStatus();
         } catch (err: unknown) {
             if (err instanceof Error) addLog(`Stop failed: ${err.message}`, 'error');
         } finally {
@@ -322,7 +341,7 @@ export default function ProfessionalLiveDashboard() {
                                 <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Running:</span>
                                 <span className="text-sm font-mono text-white">{status.strategy?.split('.').pop()}</span>
                             </div>
-                            <Button variant="outline" size="sm" onClick={pollStatus} className="border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 h-9">
+                            <Button variant="outline" size="sm" onClick={async () => { try { const r = await fetch(`${API_URL}/api/v1/live/status`); if (r.ok) setStatus(await r.json()); } catch { /* ignore */ } }} className="border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 h-9">
                                 <RefreshCw className="mr-2 h-4 w-4" /> Sync
                             </Button>
                             <Button
