@@ -15,6 +15,7 @@ export function CusumBar({ value, threshold = 5.0, fired = false }: Props) {
     if (fired && !prevFired.current) {
       setFlash(true);
       const t = setTimeout(() => setFlash(false), 600);
+      prevFired.current = fired;
       return () => clearTimeout(t);
     }
     prevFired.current = fired;

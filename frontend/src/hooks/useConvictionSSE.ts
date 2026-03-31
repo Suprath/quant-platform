@@ -40,7 +40,7 @@ export function useConvictionSSE() {
         setSseStatus('disconnected');
         const delay = Math.min(retryDelayRef.current, 30000);
         retryDelayRef.current = delay * 2;
-        retryRef.current = setTimeout(connect, delay + Math.random() * 200);
+        retryRef.current = setTimeout(connect, delay * (0.8 + Math.random() * 0.4));
       };
     }
 

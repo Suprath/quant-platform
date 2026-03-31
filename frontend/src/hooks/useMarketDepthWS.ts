@@ -12,7 +12,7 @@ export function useMarketDepthWS(symbol: string | null) {
   const wsRef = useRef<WebSocket | null>(null);
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryDelayRef = useRef(1000);
-  const { setDepthData } = useOrderFlowStore();
+  const { setDepthData, setWsStatus } = useOrderFlowStore();
 
   useEffect(() => {
     if (!symbol) return;
@@ -20,8 +20,14 @@ export function useMarketDepthWS(symbol: string | null) {
 
     function connect() {
       if (cancelled) return;
+      setWsStatus('connecting');
       const ws = new WebSocket(DEPTH_WS_URL(symbol!));
       wsRef.current = ws;
+
+      ws.onopen = () => {
+        retryDelayRef.current = 1000;
+        setWsStatus('connected');
+      };
 
       ws.onmessage = (evt) => {
         try {
@@ -36,9 +42,10 @@ export function useMarketDepthWS(symbol: string | null) {
 
       ws.onclose = () => {
         if (cancelled) return;
+        setWsStatus('disconnected');
         const delay = Math.min(retryDelayRef.current, 30000);
         retryDelayRef.current = delay * 2;
-        retryRef.current = setTimeout(connect, delay + Math.random() * 200);
+        retryRef.current = setTimeout(connect, delay * (0.8 + Math.random() * 0.4));
       };
     }
 
@@ -48,5 +55,5 @@ export function useMarketDepthWS(symbol: string | null) {
       if (retryRef.current) clearTimeout(retryRef.current);
       wsRef.current?.close();
     };
-  }, [symbol, setDepthData]);
+  }, [symbol, setDepthData, setWsStatus]);
 }
