@@ -1981,13 +1981,20 @@ def get_terminal_ui():
 # ─── ORDER FLOW WEBSOCKET ───────────────────────────────────────────────────
 
 class _OrderFlowManager:
-    """Tracks connected WebSocket clients for /ws/orderflow."""
+    """Tracks connected WebSocket clients for /ws/orderflow.
+
+    A single background task reads Redis and broadcasts to all clients.
+    WS connections only register/unregister — they do not run their own loops.
+    """
     def __init__(self):
         self.active: list = []
+        self._task: asyncio.Task | None = None
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
         self.active.append(ws)
+        if self._task is None or self._task.done():
+            self._task = asyncio.get_running_loop().create_task(self._broadcast_loop())
 
     def disconnect(self, ws: WebSocket):
         self.active = [c for c in self.active if c is not ws]
@@ -2001,6 +2008,18 @@ class _OrderFlowManager:
                 dead.append(ws)
         for ws in dead:
             self.disconnect(ws)
+
+    async def _broadcast_loop(self):
+        """Single loop: read Redis every 50ms, broadcast to all active clients."""
+        loop = asyncio.get_running_loop()
+        while self.active:
+            try:
+                states = await loop.run_in_executor(None, _read_all_microstructure)
+                if self.active:
+                    await self.broadcast(json.dumps(states))
+            except Exception:
+                pass
+            await asyncio.sleep(0.05)
 
 
 _of_manager = _OrderFlowManager()
@@ -2029,7 +2048,7 @@ def _read_all_microstructure() -> list:
                     "q_star": int(float(raw.get("q_star", 0))),
                     "kyle_lambda": float(raw.get("kyle_lambda", 0)),
                     "ts_ms": int(float(raw.get("ts_ms", 0))),
-                    "cusum_fired": False,
+                    "cusum_fired": raw.get("cusum_fired", "0") not in ("0", "", "false", "False"),
                 })
             except (ValueError, TypeError):
                 continue
@@ -2045,14 +2064,15 @@ def _read_all_microstructure() -> list:
 
 @app.websocket("/ws/orderflow")
 async def ws_orderflow(websocket: WebSocket):
-    """Stream microstructure state for all symbols every 50ms."""
+    """Stream microstructure state for all symbols every 50ms.
+
+    The broadcast loop is shared across all connections (single background task).
+    Each connection just waits for disconnect.
+    """
     await _of_manager.connect(websocket)
     try:
         while True:
-            loop = asyncio.get_running_loop()
-            states = await loop.run_in_executor(None, _read_all_microstructure)
-            await _of_manager.broadcast(json.dumps(states))
-            await asyncio.sleep(0.05)  # 50ms cadence
+            await websocket.receive_text()  # keep alive; client never sends, but disconnect raises
     except (WebSocketDisconnect, Exception):
         _of_manager.disconnect(websocket)
 

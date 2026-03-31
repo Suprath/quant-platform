@@ -1,6 +1,7 @@
 'use client';
 import { useState, useMemo, useRef } from 'react';
 import { useOrderFlowStore } from '@/stores/orderflowStore';
+import { useConvictionStore } from '@/stores/convictionStore';
 import { useOrderFlowWS } from '@/hooks/useOrderFlowWS';
 import { useMarketDepthWS } from '@/hooks/useMarketDepthWS';
 import { AlphaAreaChart } from '@/components/charts/AlphaAreaChart';
@@ -14,6 +15,7 @@ const BG = '#0a0a0f';
 const PANEL_BG = '#0d1117';
 const BORDER = '#1f2937';
 const MONO = 'ui-monospace, "Geist Mono", monospace';
+const ROW_H = 52;
 
 function useAlphaHistory(symbols: Record<string, SymbolState>, selectedSymbol: string | null) {
   const historyRef = useRef<Record<string, { ts_ms: number; alpha: number }[]>>({});
@@ -42,7 +44,10 @@ export default function OrderFlowPage() {
   useOrderFlowWS();
   const { symbols, watchlist, selectedSymbol, signalFeed, cusumFires,
           depthData, wsStatus, setSelectedSymbol } = useOrderFlowStore();
+  const { rankedSymbols } = useConvictionStore();
   const [drillTab, setDrillTab] = useState<DrillTab>('drilldown');
+  const [watchlistScrollTop, setWatchlistScrollTop] = useState(0);
+  const scrollRafRef = useRef<number | null>(null);
 
   useMarketDepthWS(drillTab === 'depth' ? selectedSymbol : null);
 
@@ -79,40 +84,63 @@ export default function OrderFlowPage() {
       <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr 220px',
         flex: 1, overflow: 'hidden', gap: 0 }}>
 
-        {/* ── Watchlist ── */}
-        <div style={{ borderRight: `1px solid ${BORDER}`, overflowY: 'auto', background: PANEL_BG }}>
+        {/* ── Watchlist (virtualized) ── */}
+        <div style={{ borderRight: `1px solid ${BORDER}`, background: PANEL_BG, display: 'flex', flexDirection: 'column' }}>
           <div style={{ padding: '4px 8px', borderBottom: `1px solid ${BORDER}`,
-            fontSize: 8, color: '#4b5563', fontWeight: 700, letterSpacing: '0.1em' }}>
+            fontSize: 8, color: '#4b5563', fontWeight: 700, letterSpacing: '0.1em', flexShrink: 0 }}>
             WATCHLIST ↑ α+λ/1e5
           </div>
-          {sorted.map((sym) => {
-            const s = symbols[sym];
-            if (!s) return null;
-            const fired = cusumFires.slice(0, 20).some((f) => f.symbol === sym);
-            return (
-              <div key={sym} onClick={() => setSelectedSymbol(sym)}
-                style={{
-                  padding: '4px 8px', cursor: 'pointer', borderBottom: `1px solid ${BORDER}`,
-                  background: fired
-                    ? 'rgba(248,113,113,0.10)'
-                    : selectedSymbol === sym ? '#111827' : 'transparent',
-                }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
-                  <span style={{ fontSize: 10, fontWeight: 700,
-                    color: fired ? '#f87171' : selectedSymbol === sym ? '#60a5fa' : '#9ca3af' }}>
-                    {sym.replace('NSE_EQ|', '')}
-                  </span>
-                  <span style={{ fontSize: 9, color: s.alpha >= 0 ? '#34d399' : '#f87171' }}>
-                    {s.alpha >= 0 ? '+' : ''}{s.alpha.toFixed(4)}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ fontSize: 8, color: '#f59e0b' }}>{s.lambda_hawkes.toFixed(0)} λ</span>
-                  <span style={{ fontSize: 8, color: '#6b7280' }}>{s.cusum_c.toFixed(1)}/5.0</span>
-                </div>
-              </div>
-            );
-          })}
+          <div
+            style={{ overflowY: 'auto', height: '100%', position: 'relative' }}
+            onScroll={(e) => {
+              const top = (e.currentTarget as HTMLDivElement).scrollTop;
+              if (scrollRafRef.current !== null) cancelAnimationFrame(scrollRafRef.current);
+              scrollRafRef.current = requestAnimationFrame(() => setWatchlistScrollTop(top));
+            }}
+          >
+            {(() => {
+              const scrollTop = watchlistScrollTop;
+              const startIdx = Math.floor(scrollTop / ROW_H);
+              const endIdx = Math.min(startIdx + 8, sorted.length);
+              const topSpacer = startIdx * ROW_H;
+              const bottomSpacer = (sorted.length - endIdx) * ROW_H;
+              return (
+                <>
+                  <div style={{ height: topSpacer }} />
+                  {sorted.slice(startIdx, endIdx).map((sym) => {
+                    const s = symbols[sym];
+                    if (!s) return null;
+                    const fired = cusumFires.slice(0, 20).some((f) => f.symbol === sym);
+                    return (
+                      <div key={sym} onClick={() => setSelectedSymbol(sym)}
+                        style={{
+                          padding: '4px 8px', cursor: 'pointer', borderBottom: `1px solid ${BORDER}`,
+                          height: ROW_H, boxSizing: 'border-box',
+                          background: fired
+                            ? 'rgba(248,113,113,0.12)'
+                            : selectedSymbol === sym ? '#111827' : 'transparent',
+                        }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                          <span style={{ fontSize: 10, fontWeight: 700,
+                            color: fired ? '#f87171' : selectedSymbol === sym ? '#60a5fa' : '#9ca3af' }}>
+                            {sym.replace('NSE_EQ|', '')}
+                          </span>
+                          <span style={{ fontSize: 9, color: s.alpha >= 0 ? '#34d399' : '#f87171' }}>
+                            {s.alpha >= 0 ? '+' : ''}{s.alpha.toFixed(4)}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ fontSize: 8, color: '#f59e0b' }}>{s.lambda_hawkes.toFixed(0)} λ</span>
+                          <span style={{ fontSize: 8, color: '#6b7280' }}>{s.cusum_c.toFixed(1)}/5.0</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div style={{ height: bottomSpacer }} />
+                </>
+              );
+            })()}
+          </div>
         </div>
 
         {/* ── Drilldown / Depth ── */}
@@ -179,19 +207,26 @@ export default function OrderFlowPage() {
           </div>
           {selected ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {[
-                { label: 'KALMAN α', value: selected.alpha.toFixed(5),
-                  color: selected.alpha >= 0 ? '#34d399' : '#f87171' },
-                { label: 'HAWKES λ', value: selected.lambda_hawkes.toFixed(0), color: '#f59e0b' },
-                { label: 'CUSUM C', value: `${selected.cusum_c.toFixed(2)} / 5.0`,
-                  color: selected.cusum_c > 4 ? '#f87171' : '#9ca3af' },
-                { label: 'σ² VAR', value: selected.variance.toFixed(6), color: '#a78bfa' },
-                { label: 'KYLE λ', value: selected.kyle_lambda.toFixed(4), color: '#60a5fa' },
-                { label: 'q* SIZE', value: String(selected.q_star),
-                  color: selected.q_star > 0 ? '#34d399' : '#6b7280' },
-                { label: 'FIRES TODAY', value: String(firedToday),
-                  color: firedToday > 0 ? '#f87171' : '#6b7280' },
-              ].map(({ label, value, color }) => (
+              {(() => {
+                const convEntry = rankedSymbols.find((r) => r.symbol === selectedSymbol);
+                const eodConv = convEntry !== undefined
+                  ? (convEntry.avg_conviction * 100).toFixed(1) + '%'
+                  : '—';
+                return [
+                  { label: 'KALMAN α', value: selected.alpha.toFixed(5),
+                    color: selected.alpha >= 0 ? '#34d399' : '#f87171' },
+                  { label: 'HAWKES λ', value: selected.lambda_hawkes.toFixed(0), color: '#f59e0b' },
+                  { label: 'CUSUM C', value: `${selected.cusum_c.toFixed(2)} / 5.0`,
+                    color: selected.cusum_c > 4 ? '#f87171' : '#9ca3af' },
+                  { label: 'σ² VAR', value: selected.variance.toFixed(6), color: '#a78bfa' },
+                  { label: 'KYLE λ', value: selected.kyle_lambda.toFixed(4), color: '#60a5fa' },
+                  { label: 'q* SIZE', value: String(selected.q_star),
+                    color: selected.q_star > 0 ? '#34d399' : '#6b7280' },
+                  { label: 'FIRES TODAY', value: String(firedToday),
+                    color: firedToday > 0 ? '#f87171' : '#6b7280' },
+                  { label: 'EOD conv %', value: eodConv, color: '#a78bfa' },
+                ];
+              })().map(({ label, value, color }) => (
                 <div key={label} style={{ borderBottom: `1px solid ${BORDER}`, paddingBottom: 5 }}>
                   <div style={{ fontSize: 7, color: '#4b5563', marginBottom: 1 }}>{label}</div>
                   <div style={{ fontSize: 13, fontWeight: 700, color }}>{value}</div>
@@ -212,7 +247,7 @@ export default function OrderFlowPage() {
         <div style={{ display: 'flex', gap: 24, animation: 'scroll 30s linear infinite',
           fontSize: 8, whiteSpace: 'nowrap', padding: '0 12px' }}>
           {signalFeed.map((e, i) => (
-            <span key={i} style={{ color: e.side === 'FIRE' ? '#f87171' : e.side === 'BUY' ? '#34d399' : '#f87171' }}>
+            <span key={i} style={{ color: e.side === 'FIRE' ? '#f59e0b' : e.side === 'BUY' ? '#34d399' : '#f87171' }}>
               {new Date(e.ts_ms).toTimeString().slice(0, 8)}{' '}
               {e.symbol.replace('NSE_EQ|', '')}{' '}
               {e.side === 'FIRE' ? '⚡ FIRE' : e.side}{' '}

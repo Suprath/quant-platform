@@ -76,3 +76,9 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Signal ticker scroll animation for orderflow dashboard */
+@keyframes scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}

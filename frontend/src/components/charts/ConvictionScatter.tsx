@@ -1,5 +1,5 @@
 'use client';
-import { ScatterChart, Scatter, XAxis, YAxis, Tooltip, ReferenceLine } from 'recharts';
+import { ScatterChart, Scatter, XAxis, YAxis, Tooltip, ReferenceLine, Customized } from 'recharts';
 import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent';
 import type { RankedSymbol } from '@/types/conviction';
 
@@ -7,6 +7,50 @@ interface Props {
   symbols: RankedSymbol[];
   width?: number;
   height?: number;
+}
+
+interface CustomizedProps {
+  xAxisMap?: Record<number, { scale: (v: number) => number; domain: number[] }>;
+  yAxisMap?: Record<number, { scale: (v: number) => number; domain: number[] }>;
+}
+
+function RegressionLine(props: CustomizedProps) {
+  const { xAxisMap, yAxisMap } = props;
+  if (!xAxisMap || !yAxisMap) return null;
+  const xScale = xAxisMap[0]?.scale;
+  const yScale = yAxisMap[0]?.scale;
+  if (!xScale || !yScale) return null;
+
+  // Retrieve data from closure — passed via regressionData prop workaround
+  const pts = (props as unknown as { regressionData?: { x: number; y: number }[] }).regressionData;
+  if (!pts || pts.length < 2) return null;
+
+  const n = pts.length;
+  const sumX = pts.reduce((s, p) => s + p.x, 0);
+  const sumY = pts.reduce((s, p) => s + p.y, 0);
+  const sumXY = pts.reduce((s, p) => s + p.x * p.y, 0);
+  const sumX2 = pts.reduce((s, p) => s + p.x * p.x, 0);
+  const denom = n * sumX2 - sumX * sumX;
+  if (denom === 0) return null;
+  const slope = (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
+
+  const xMin = Math.min(...pts.map((p) => p.x));
+  const xMax = Math.max(...pts.map((p) => p.x));
+  const yAtXmin = slope * xMin + intercept;
+  const yAtXmax = slope * xMax + intercept;
+
+  const x1 = xScale(xMin);
+  const x2 = xScale(xMax);
+  const y1 = yScale(yAtXmin);
+  const y2 = yScale(yAtXmax);
+
+  return (
+    <line
+      x1={x1} y1={y1} x2={x2} y2={y2}
+      stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 2"
+    />
+  );
 }
 
 export function ConvictionScatter({ symbols, width = 400, height = 200 }: Props) {
@@ -29,7 +73,12 @@ export function ConvictionScatter({ symbols, width = 400, height = 200 }: Props)
         formatter={(v: ValueType | undefined, name: NameType | undefined) => [typeof v === 'number' ? v.toFixed(3) : String(v ?? ''), String(name ?? '')]}
       />
       <ReferenceLine y={0.6} stroke="#f59e0b" strokeDasharray="4 4" strokeWidth={1} />
-      <Scatter data={data} fill="#60a5fa" opacity={0.7} />
+      <Scatter data={data} fill="#60a5fa" opacity={0.7} isAnimationActive={false} />
+      {data.length >= 2 && (
+        <Customized component={(p: CustomizedProps) => (
+          <RegressionLine {...p} {...{ regressionData: data } as object} />
+        )} />
+      )}
     </ScatterChart>
   );
 }
