@@ -146,17 +146,6 @@ export default function ProfessionalLiveDashboard() {
                             if (newHist.length > 60) newHist.shift();
                             return newHist;
                         });
-
-                        if (Math.random() > 0.7) {
-                            const actions = [
-                                `Analyzed market depth for active instruments.`,
-                                `Heartbeat OK. Latency: ${Math.floor(Math.random() * 40 + 10)}ms`,
-                                `Re-calculated strategy trailing stops.`,
-                                `Awaiting entry signals...`,
-                                `Received updated options chain data.`
-                            ];
-                            addLog(actions[Math.floor(Math.random() * actions.length)], 'info');
-                        }
                     }
                 } catch { /* skip */ }
             };

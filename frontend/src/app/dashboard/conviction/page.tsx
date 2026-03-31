@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useConvictionStore } from '@/stores/convictionStore';
+import { useOrderFlowStore } from '@/stores/orderflowStore';
 import { useConvictionSSE } from '@/hooks/useConvictionSSE';
 import { useConvictionTrend } from '@/hooks/useConvictionTrend';
 import { ConvictionScatter } from '@/components/charts/ConvictionScatter';
@@ -80,8 +81,11 @@ function SelectionTab({ symbols, onSelect, selectedSymbol }:
 export default function ConvictionPage() {
   useConvictionSSE();
   const { rankedSymbols, sseStatus } = useConvictionStore();
+  const { cusumFires } = useOrderFlowStore();
   const [activeTab, setActiveTab] = useState<ConvTab>('selection');
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
+  const [lookback, setLookback] = useState<5 | 10 | 20>(5);
+  const [topN, setTopN] = useState<20 | 50 | 100>(20);
   const trendRows = useConvictionTrend(activeTab === 'trend' ? selectedSymbol : null);
 
   const tabs: { id: ConvTab; label: string }[] = [
@@ -127,11 +131,44 @@ export default function ConvictionPage() {
       <div style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
 
         {activeTab === 'selection' && (
-          <SelectionTab
-            symbols={rankedSymbols}
-            onSelect={(s) => { setSelectedSymbol(s); }}
-            selectedSymbol={selectedSymbol}
-          />
+          <>
+            {/* Filter bar */}
+            <div style={{ display: 'flex', gap: 16, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                <span style={{ fontSize: 8, color: '#4b5563', marginRight: 4 }}>LOOKBACK</span>
+                {([5, 10, 20] as const).map((d) => (
+                  <button key={d} onClick={() => setLookback(d)}
+                    style={{
+                      padding: '2px 8px', fontSize: 8, cursor: 'pointer', fontFamily: MONO,
+                      background: '#111827', color: lookback === d ? '#f59e0b' : '#6b7280',
+                      border: lookback === d ? '1px solid #f59e0b' : '1px solid #1f2937',
+                      borderRadius: 3,
+                    }}>
+                    {d}d
+                  </button>
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                <span style={{ fontSize: 8, color: '#4b5563', marginRight: 4 }}>TOP N</span>
+                {([20, 50, 100] as const).map((n) => (
+                  <button key={n} onClick={() => setTopN(n)}
+                    style={{
+                      padding: '2px 8px', fontSize: 8, cursor: 'pointer', fontFamily: MONO,
+                      background: '#111827', color: topN === n ? '#f59e0b' : '#6b7280',
+                      border: topN === n ? '1px solid #f59e0b' : '1px solid #1f2937',
+                      borderRadius: 3,
+                    }}>
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <SelectionTab
+              symbols={rankedSymbols.slice(0, topN)}
+              onSelect={(s) => { setSelectedSymbol(s); }}
+              selectedSymbol={selectedSymbol}
+            />
+          </>
         )}
 
         {activeTab === 'correlation' && (
@@ -140,14 +177,30 @@ export default function ConvictionPage() {
               SCATTER: Today&apos;s CUSUM C (x) vs EOD Conviction Score (y) — {rankedSymbols.length} symbols
             </div>
             <ConvictionScatter symbols={rankedSymbols} width={560} height={220} />
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginTop: 12 }}>
-              {[
-                { label: 'SYMBOLS TRACKED', value: String(rankedSymbols.length), color: '#60a5fa' },
-                { label: 'HIGH CONV (>0.6)', value: String(rankedSymbols.filter(s => s.avg_conviction > 0.6).length), color: '#34d399' },
-                { label: 'AVG CONVICTION', value: rankedSymbols.length > 0
-                  ? (rankedSymbols.reduce((s, r) => s + r.avg_conviction, 0) / rankedSymbols.length).toFixed(3)
-                  : '—', color: '#f59e0b' },
-              ].map(({ label, value, color }) => (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginTop: 12 }}>
+              {(() => {
+                const pts = rankedSymbols.filter((s) => s.alpha !== undefined);
+                let pearsonR = '—';
+                if (pts.length >= 2) {
+                  const n = pts.length;
+                  const sumX = pts.reduce((s, p) => s + (p.alpha ?? 0), 0);
+                  const sumY = pts.reduce((s, p) => s + p.avg_conviction, 0);
+                  const sumXY = pts.reduce((s, p) => s + (p.alpha ?? 0) * p.avg_conviction, 0);
+                  const sumX2 = pts.reduce((s, p) => s + (p.alpha ?? 0) ** 2, 0);
+                  const sumY2 = pts.reduce((s, p) => s + p.avg_conviction ** 2, 0);
+                  const num = n * sumXY - sumX * sumY;
+                  const den = Math.sqrt((n * sumX2 - sumX ** 2) * (n * sumY2 - sumY ** 2));
+                  if (den !== 0) pearsonR = `r = ${(num / den).toFixed(2)}`;
+                }
+                return [
+                  { label: 'SYMBOLS TRACKED', value: String(rankedSymbols.length), color: '#60a5fa' },
+                  { label: 'HIGH CONV (>0.6)', value: String(rankedSymbols.filter(s => s.avg_conviction > 0.6).length), color: '#34d399' },
+                  { label: 'AVG CONVICTION', value: rankedSymbols.length > 0
+                    ? (rankedSymbols.reduce((s, r) => s + r.avg_conviction, 0) / rankedSymbols.length).toFixed(3)
+                    : '—', color: '#f59e0b' },
+                  { label: 'PEARSON r', value: pearsonR, color: '#a78bfa' },
+                ];
+              })().map(({ label, value, color }) => (
                 <div key={label} style={{ background: '#111827', border: `1px solid ${BORDER}`,
                   borderRadius: 3, padding: '8px 10px' }}>
                   <div style={{ fontSize: 7, color: '#4b5563', marginBottom: 2 }}>{label}</div>
@@ -166,7 +219,16 @@ export default function ConvictionPage() {
                 : 'Click a symbol in Stock Selection to view its 20-day trend'}
             </div>
             {selectedSymbol && trendRows && trendRows.length > 0 && (
-              <DeliveryTrendChart rows={trendRows} width={480} height={120} />
+              <DeliveryTrendChart
+                rows={trendRows}
+                width={480}
+                height={120}
+                firedays={Array.from(new Set(
+                  cusumFires
+                    .filter((f) => f.symbol === selectedSymbol)
+                    .map((f) => new Date(f.ts_ms).toISOString().slice(0, 10))
+                ))}
+              />
             )}
             {selectedSymbol && trendRows && trendRows.length === 0 && (
               <div style={{ color: '#4b5563', fontSize: 9 }}>No delivery data found for {selectedSymbol}</div>
