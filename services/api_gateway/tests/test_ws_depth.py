@@ -70,3 +70,30 @@ def test_depth_frame_no_depth_returns_none():
     raw = _make_envelope(depth_buy=[], depth_sell=[])
     frame = app_module._parse_depth_frame(raw, "NSE_EQ|TCS")
     assert frame is None
+
+
+def test_depth_frame_malformed_bytes_returns_none():
+    """_parse_depth_frame returns None on non-UTF-8 or invalid JSON bytes."""
+    import main as app_module
+
+    assert app_module._parse_depth_frame(b"\xff\xfe invalid", "NSE_EQ|TCS") is None
+    assert app_module._parse_depth_frame(b"not json at all", "NSE_EQ|TCS") is None
+    assert app_module._parse_depth_frame(b"{}", "NSE_EQ|TCS") is None  # missing payload
+
+
+def test_depth_frame_depth_levels_uses_max_side():
+    """depth_levels is max(len(bids), len(asks)), not just bid count."""
+    import main as app_module
+
+    # Ask side has more levels than bid side
+    raw = _make_envelope(
+        depth_buy=[{"price": 3819.0, "quantity": 500}],
+        depth_sell=[
+            {"price": 3820.0, "quantity": 400},
+            {"price": 3820.5, "quantity": 300},
+            {"price": 3821.0, "quantity": 200},
+        ],
+    )
+    frame = app_module._parse_depth_frame(raw, "NSE_EQ|TCS")
+    assert frame is not None
+    assert frame["depth_levels"] == 3  # max(1, 3)

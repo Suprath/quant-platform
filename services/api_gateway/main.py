@@ -2077,7 +2077,7 @@ def _parse_depth_frame(raw_bytes: bytes, target_symbol: str) -> dict | None:
         return {
             "symbol": symbol,
             "ltp": float(payload.get("ltp", 0)),
-            "depth_levels": len(bids),
+            "depth_levels": max(len(bids), len(asks)),
             "bids": bids,
             "asks": asks,
             "ts_ms": int(payload.get("timestamp", 0)),
@@ -2115,8 +2115,8 @@ async def ws_depth(websocket: WebSocket, symbol: str):
         if msg is None:
             return None
         if msg.error():
-            if msg.error().code() == KafkaError._PARTITION_EOF:
-                return None
+            if msg.error().code() != KafkaError._PARTITION_EOF:
+                print(f"ws_depth Kafka error for {symbol}: {msg.error()}")
             return None
         return _parse_depth_frame(msg.value(), symbol)
 
@@ -2125,6 +2125,8 @@ async def ws_depth(websocket: WebSocket, symbol: str):
             frame = await loop.run_in_executor(None, _poll_once)
             if frame is not None:
                 await websocket.send_text(json.dumps(frame))
+            else:
+                await asyncio.sleep(0)  # yield to event loop when no matching frame
     except WebSocketDisconnect:
         pass
     except Exception as exc:
