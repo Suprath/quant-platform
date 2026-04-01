@@ -44,7 +44,7 @@ export function useOrderFlowWS() {
               addCusumFire(fire);
               const event: SignalEvent = {
                 symbol: s.symbol,
-                side: s.alpha >= 0 ? 'BUY' : 'SELL',
+                side: 'FIRE',
                 q_star: s.q_star,
                 alpha: s.alpha,
                 ts_ms: s.ts_ms,
