@@ -28,9 +28,9 @@ export function AlphaAreaChart({ data, width = 320, height = 80 }: Props) {
         </linearGradient>
       </defs>
       <XAxis dataKey="ts_ms" hide />
-      <YAxis tick={{ fontSize: 8, fill: '#4b5563' }} width={30} />
+      <YAxis tick={{ fontSize: 11, fill: '#4b5563' }} width={35} />
       <Tooltip
-        contentStyle={{ background: '#111827', border: '1px solid #1f2937', fontSize: 10 }}
+        contentStyle={{ background: '#111827', border: '1px solid #1f2937', fontSize: 12 }}
         formatter={(v: ValueType | undefined) => [typeof v === 'number' ? v.toFixed(5) : String(v ?? ''), 'α']}
         labelFormatter={() => ''}
       />

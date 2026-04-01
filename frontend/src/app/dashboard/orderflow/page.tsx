@@ -15,7 +15,7 @@ const BG = '#0a0a0f';
 const PANEL_BG = '#0d1117';
 const BORDER = '#1f2937';
 const MONO = 'ui-monospace, "Geist Mono", monospace';
-const ROW_H = 52;
+const ROW_H = 64;
 
 function useAlphaHistory(symbols: Record<string, SymbolState>, selectedSymbol: string | null) {
   const historyRef = useRef<Record<string, { ts_ms: number; alpha: number }[]>>({});
@@ -70,24 +70,24 @@ export default function OrderFlowPage() {
       {/* Status Strip */}
       <div style={{ background: '#111827', borderBottom: `1px solid ${BORDER}`,
         padding: '4px 12px', display: 'flex', gap: 16, alignItems: 'center', flexShrink: 0 }}>
-        <span style={{ color: wsStatus === 'connected' ? '#34d399' : '#f87171', fontSize: 9, fontWeight: 700 }}>
+        <span style={{ color: wsStatus === 'connected' ? '#34d399' : '#f87171', fontSize: 11, fontWeight: 700 }}>
           ⬤ {wsStatus.toUpperCase()}
         </span>
-        <span style={{ color: '#60a5fa', fontSize: 9 }}>{watchlist.length} SYMBOLS</span>
-        <span style={{ color: '#f87171', fontSize: 9 }}>⚡ {cusumFires.length} FIRES TODAY</span>
-        <span style={{ color: '#6b7280', fontSize: 9, marginLeft: 'auto' }}>
+        <span style={{ color: '#60a5fa', fontSize: 11 }}>{watchlist.length} SYMBOLS</span>
+        <span style={{ color: '#f87171', fontSize: 11 }}>⚡ {cusumFires.length} FIRES TODAY</span>
+        <span style={{ color: '#6b7280', fontSize: 11, marginLeft: 'auto' }}>
           ⚡ /dashboard/orderflow
         </span>
       </div>
 
       {/* Main 3-column layout */}
-      <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr 220px',
+      <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr 260px',
         flex: 1, overflow: 'hidden', gap: 0 }}>
 
         {/* ── Watchlist (virtualized) ── */}
         <div style={{ borderRight: `1px solid ${BORDER}`, background: PANEL_BG, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ padding: '4px 8px', borderBottom: `1px solid ${BORDER}`,
-            fontSize: 8, color: '#4b5563', fontWeight: 700, letterSpacing: '0.1em', flexShrink: 0 }}>
+          <div style={{ padding: '6px 12px', borderBottom: `1px solid ${BORDER}`,
+            fontSize: 10, color: '#4b5563', fontWeight: 700, letterSpacing: '0.1em', flexShrink: 0 }}>
             WATCHLIST ↑ α+λ/1e5
           </div>
           <div
@@ -121,17 +121,17 @@ export default function OrderFlowPage() {
                             : selectedSymbol === sym ? '#111827' : 'transparent',
                         }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
-                          <span style={{ fontSize: 10, fontWeight: 700,
+                          <span style={{ fontSize: 12, fontWeight: 700,
                             color: fired ? '#f87171' : selectedSymbol === sym ? '#60a5fa' : '#9ca3af' }}>
                             {sym.replace('NSE_EQ|', '')}
                           </span>
-                          <span style={{ fontSize: 9, color: s.alpha >= 0 ? '#34d399' : '#f87171' }}>
+                          <span style={{ fontSize: 12, color: s.alpha >= 0 ? '#34d399' : '#f87171' }}>
                             {s.alpha >= 0 ? '+' : ''}{s.alpha.toFixed(4)}
                           </span>
                         </div>
                         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <span style={{ fontSize: 8, color: '#f59e0b' }}>{s.lambda_hawkes.toFixed(0)} λ</span>
-                          <span style={{ fontSize: 8, color: '#6b7280' }}>{s.cusum_c.toFixed(1)}/5.0</span>
+                          <span style={{ fontSize: 10, color: '#f59e0b' }}>{s.lambda_hawkes.toFixed(0)} λ</span>
+                          <span style={{ fontSize: 10, color: '#6b7280' }}>{s.cusum_c.toFixed(1)}/5.0</span>
                         </div>
                       </div>
                     );
@@ -150,7 +150,7 @@ export default function OrderFlowPage() {
             {(['drilldown', 'depth'] as DrillTab[]).map((tab) => (
               <button key={tab} onClick={() => setDrillTab(tab)}
                 style={{
-                  padding: '5px 14px', fontSize: 9, fontWeight: 700, cursor: 'pointer',
+                  padding: '6px 16px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
                   border: 'none', outline: 'none', fontFamily: MONO,
                   background: drillTab === tab ? BG : PANEL_BG,
                   color: drillTab === tab ? '#60a5fa' : '#6b7280',
@@ -160,7 +160,7 @@ export default function OrderFlowPage() {
               </button>
             ))}
             {selectedSymbol && (
-              <span style={{ marginLeft: 12, alignSelf: 'center', fontSize: 9,
+              <span style={{ marginLeft: 12, alignSelf: 'center', fontSize: 11,
                 color: '#4b5563' }}>{selectedSymbol.replace('NSE_EQ|', '')}</span>
             )}
           </div>
@@ -168,22 +168,22 @@ export default function OrderFlowPage() {
           <div style={{ flex: 1, padding: 10, overflowY: 'auto', background: BG }}>
             {drillTab === 'drilldown' ? (
               <>
-                <div style={{ marginBottom: 8 }}>
-                  <div style={{ fontSize: 8, color: '#4b5563', marginBottom: 3 }}>KALMAN α — last 200 ticks</div>
-                  <AlphaAreaChart data={alphaHistory} width={480} height={80} />
-                </div>
-                <div style={{ marginBottom: 8 }}>
-                  <div style={{ fontSize: 8, color: '#4b5563', marginBottom: 3 }}>HAWKES λ DECAY</div>
-                  <HawkesLineChart data={hawkesHistory} width={480} height={60} />
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 10, color: '#4b5563', marginBottom: 4 }}>KALMAN α — last 200 ticks</div>
+                  <AlphaAreaChart data={alphaHistory} width={480} height={100} />
                 </div>
                 <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 10, color: '#4b5563', marginBottom: 4 }}>HAWKES λ DECAY</div>
+                  <HawkesLineChart data={hawkesHistory} width={480} height={80} />
+                </div>
+                <div style={{ marginBottom: 16 }}>
                   <CusumBar
                     value={selected?.cusum_c ?? 0}
                     fired={selected?.cusum_fired ?? false}
                   />
                 </div>
                 <div>
-                  <div style={{ fontSize: 8, color: '#4b5563', marginBottom: 4 }}>
+                  <div style={{ fontSize: 10, color: '#4b5563', marginBottom: 6 }}>
                     α HEATMAP — {watchlist.length} symbols
                   </div>
                   <AlphaHeatmap
@@ -201,8 +201,8 @@ export default function OrderFlowPage() {
         {/* ── Detail Panel ── */}
         <div style={{ borderLeft: `1px solid ${BORDER}`, background: PANEL_BG,
           padding: 10, overflowY: 'auto' }}>
-          <div style={{ fontSize: 8, color: '#4b5563', fontWeight: 700,
-            letterSpacing: '0.1em', marginBottom: 8 }}>
+          <div style={{ fontSize: 11, color: '#4b5563', fontWeight: 700,
+            letterSpacing: '0.1em', marginBottom: 12 }}>
             {selected ? selected.symbol.replace('NSE_EQ|', '') : 'SELECT SYMBOL'}
           </div>
           {selected ? (
@@ -227,9 +227,9 @@ export default function OrderFlowPage() {
                   { label: 'EOD conv %', value: eodConv, color: '#a78bfa' },
                 ];
               })().map(({ label, value, color }) => (
-                <div key={label} style={{ borderBottom: `1px solid ${BORDER}`, paddingBottom: 5 }}>
-                  <div style={{ fontSize: 7, color: '#4b5563', marginBottom: 1 }}>{label}</div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color }}>{value}</div>
+                <div key={label} style={{ borderBottom: `1px solid ${BORDER}`, paddingBottom: 6 }}>
+                  <div style={{ fontSize: 10, color: '#4b5563', marginBottom: 2 }}>{label}</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color }}>{value}</div>
                 </div>
               ))}
             </div>
@@ -242,10 +242,10 @@ export default function OrderFlowPage() {
       </div>
 
       {/* Signal Ticker */}
-      <div style={{ height: 22, background: '#111827', borderTop: `1px solid ${BORDER}`,
+      <div style={{ height: 26, background: '#111827', borderTop: `1px solid ${BORDER}`,
         overflow: 'hidden', display: 'flex', alignItems: 'center', flexShrink: 0 }}>
         <div style={{ display: 'flex', gap: 24, animation: 'scroll 30s linear infinite',
-          fontSize: 8, whiteSpace: 'nowrap', padding: '0 12px' }}>
+          fontSize: 11, whiteSpace: 'nowrap', padding: '0 12px' }}>
           {signalFeed.map((e, i) => (
             <span key={i} style={{ color: e.side === 'FIRE' ? '#f59e0b' : e.side === 'BUY' ? '#34d399' : '#f87171' }}>
               {new Date(e.ts_ms).toTimeString().slice(0, 8)}{' '}

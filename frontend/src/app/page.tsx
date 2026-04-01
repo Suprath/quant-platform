@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { ServiceHealth } from "@/components/ServiceHealth";
 import { TopPerformersTable } from "@/components/dashboard/TopPerformersTable";
-import { Code, Terminal, Book, Settings, Activity, Zap, Shield, Layers } from 'lucide-react';
+import { Code, Terminal, Book, Settings, Activity, Zap, Shield, Layers, TrendingUp } from 'lucide-react';
 
 const fadeIn = {
   hidden: { opacity: 0, y: 20 },
@@ -55,6 +55,11 @@ export default function DashboardPage() {
           <Link href="/dashboard/live" className="hidden lg:block">
             <Button variant="ghost" className="hover:bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors">
               <Activity className="mr-2 h-4 w-4" /> Live Trading
+            </Button>
+          </Link>
+          <Link href="/dashboard/orderflow" className="hidden lg:block">
+            <Button variant="ghost" className="hover:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 transition-colors">
+              <TrendingUp className="mr-2 h-4 w-4" /> Order Flow
             </Button>
           </Link>
           <Link href="/dashboard/edge" className="hidden sm:block">

@@ -1,0 +1,450 @@
+Here is the complete implementation guide and documentation formatted as a single Markdown file. You can copy the code block below and save it as KIRA_Architecture.md.
+
+code
+Markdown
+download
+content_copy
+expand_less
+# KIRA: High-Frequency Quantitative Trading Pipeline
+## Complete Implementation Blueprint & Documentation
+
+---
+
+## Part 1: The Context — What Are We Building?
+
+The Indian retail trading landscape is dominated by 1970s technical analysis (Moving Averages, RSI, MACD). These indicators lag the market and fail to capture the actual mechanics of price discovery: **Order Flow** and **Institutional Footprints**. 
+
+**KIRA** is an institutional-grade, zero-latency quantitative trading engine designed explicitly for the Indian equities and derivatives market (NSE). 
+
+Instead of predicting prices, KIRA **detects hidden alpha** using stochastic calculus. It is built to exploit the structural edge of the Indian market: retail traders irrationally chasing momentum in F&O, while institutional "smart money" leaves massive, detectable footprints in Level 2 order books and End-of-Day (EOD) delivery volumes.
+
+**The Objective:**
+Build a system capable of tracking 1,500 symbols live via the Upstox API, processing up to 300 million ticks per second, and executing dynamic mathematical models (Kalman Filters, Hawkes Processes) without succumbing to Python's inherent latency bottlenecks.
+
+---
+
+## Part 2: The Python + C++ Hybrid Architecture
+
+To achieve microsecond latency while maintaining rapid strategy development, KIRA uses a **Bifurcated Hybrid Architecture**. 
+
+Python is too slow for tick-by-tick microstructure math due to the Global Interpreter Lock (GIL) and memory allocation overhead. C++ is too rigid for rapid portfolio iteration and API management. We combine the best of both worlds.
+
+### How the Hybrid Approach Works
+
+1. **The C++ Core (The Hot Loop):** 
+   Written in C++, this engine pre-allocates a contiguous block of memory (a Flat Buffer or `std::vector` of Plain Old Data structs) for all 1,500 symbols. When a tick arrives from the broker, C++ processes it in $O(1)$ time, updating the mathematical state entirely inside the CPU's L1 Cache. 
+2. **PyBind11 & GIL Management:** 
+   The C++ engine is wrapped into a Python module using `pybind11`. Before the tick loop starts, the C++ engine *explicitly releases the Python GIL*. The Python interpreter goes to sleep, allocating 100% of CPU resources to the C++ math.
+3. **Zero-Copy Memory Handoff:** 
+   Once the C++ engine detects a breakout or finishes processing a "time window," it re-acquires the GIL and wakes Python up. It passes the memory array of 1,500 symbols directly to Python as a **MemoryView**. Python (via NumPy) reads this data instantly with *zero copying or serialization*.
+4. **The Python Orchestrator:** 
+   Python uses vectorized NumPy operations to calculate portfolio sizing (Kelly Criterion), check risk parameters, and send the REST API execution requests to Upstox.
+
+---
+
+## Part 3: The Mathematical Engine & Implementation
+
+The core of KIRA replaces traditional indicators with **Recursive State Estimators**. These equations are implemented as $O(1)$ structs in C++, meaning they only need the *current tick* and the *previous state* to calculate, requiring no historical lookback loops.
+
+### 1. The Kalman Filter (Extracting True Alpha)
+**The Concept:** Stock returns are 99% random walk noise and 1% true edge (Alpha). The Kalman filter dynamically adjusts to market volatility, ignoring noisy price spikes and extracting the true, hidden trend.
+
+**The Formula:**
+*   **Predict:** $P_t = P_{t-1} + Q$  *(Update Uncertainty)*
+*   **Kalman Gain:** $K_t = \frac{P_t}{P_t + R_t}$ *(How much to trust the new tick vs our prediction)*
+*   **Update:** $\hat{\alpha}_t = \hat{\alpha}_{t-1} + K_t \cdot (\text{Actual Return} - \text{Expected Drift} - \hat{\alpha}_{t-1})$
+*   **Uncertainty Update:** $P_t = (1 - K_t) \cdot P_t$
+
+**Implementation in C++ (`kira_engine.h`):**
+```cpp
+struct KalmanState {
+    double alpha_hat = 0.0;
+    double P = 1.0;     // Internal Uncertainty
+    double Q = 1e-5;    // Process Noise
+    double R = 1e-2;    // Measurement Noise (Provided by GARCH)
+
+    inline void update(double actual_return, double expected_drift) {
+        P += Q;
+        double K = P / (P + R);
+        double surprise = actual_return - expected_drift - alpha_hat;
+        alpha_hat += K * surprise;
+        P *= (1.0 - K);
+    }
+};
+2. The Hawkes Process (Unreacted Order Flow)
+
+The Concept: Institutional block trades trigger a cascade of follow-up algorithmic orders. A Hawkes Process models this "self-exciting" behavior. It acts as a fading memory of volume shocks.
+
+The Formula:
+
+𝜆
+(
+𝑡
+)
+=
+𝜆
+(
+𝑡
+−
+1
+)
+⋅
+𝑒
+−
+𝜅
+Δ
+𝑡
++
+Trade Volume
+λ(t)=λ(t−1)⋅e
+−κΔt
++Trade Volume
+
+Where 
+𝜆
+λ
+ is the current intensity of order flow, and 
+𝜅
+κ
+ is the decay rate.
+
+Implementation in C++ (kira_engine.h):
+
+code
+C++
+download
+content_copy
+expand_less
+struct HawkesState {
+    double lambda = 0.0;
+    
+    inline void update(double time_delta, double volume, double kappa) {
+        lambda = lambda * std::exp(-kappa * time_delta); // Decay old flow
+        lambda += volume;                                // Add new shock
+    }
+};
+3. The CUSUM Detector (Regime Change Trigger)
+
+The Concept: Instead of crossing a moving average, CUSUM mathematically detects the exact microsecond a structural shift occurs in the asset's return profile.
+
+The Formula:
+
+𝐶
+𝑡
+=
+max
+⁡
+(
+0
+,
+𝐶
+𝑡
+−
+1
++
+𝛼
+⋅
+𝑟
+𝑡
+𝜎
+2
+−
+𝛼
+2
+2
+𝜎
+2
+)
+C
+t
+	​
+
+=max(0,C
+t−1
+	​
+
++
+σ
+2
+α⋅r
+t
+	​
+
+	​
+
+−
+2σ
+2
+α
+2
+	​
+
+)
+
+Implementation in C++ (kira_engine.h):
+
+code
+C++
+download
+content_copy
+expand_less
+struct CusumState {
+    double C = 0.0;
+    
+    inline bool update(double signal, double variance, double threshold) {
+        double log_likelihood = (signal / variance) - (signal * signal / (2 * variance));
+        C = std::max(0.0, C + log_likelihood);
+        if (C >= threshold) {
+            C = 0.0; // Reset after firing
+            return true;
+        }
+        return false;
+    }
+};
+4. The Present-Time Alpha & Kelly Execution (Python Side)
+
+Once the C++ CUSUM detector fires, it wakes up Python. Python combines these states to calculate the optimal bet size using a modified Kelly Criterion factoring in Market Impact (Kyle's Lambda).
+
+The Formula:
+
+𝑞
+∗
+=
+(
+𝛼
+^
+Kalman
++
+𝛼
+Hawkes
+)
+⋅
+VPIN
+−
+Spread
+2
+⋅
+𝜆
+Kyle
+q
+∗
+=
+2⋅λ
+Kyle
+	​
+
+(
+α
+^
+Kalman
++α
+Hawkes
+)⋅VPIN−Spread
+	​
+
+
+Implementation in Python (strategy.py):
+
+code
+Python
+download
+content_copy
+expand_less
+import numpy as np
+
+def on_window(states_memoryview):
+    # Zero-copy mapping from C++ flat buffer
+    df = np.array(states_memoryview, copy=False)
+    
+    # Filter only symbols where CUSUM fired
+    triggered = df[df['cusum_triggered'] == True]
+    if len(triggered) == 0:
+        return
+    
+    # Combine Alpha sources
+    total_alpha = triggered['alpha_kalman'] + triggered['alpha_unreacted']
+    
+    # Vectorized Kelly sizing across all triggered symbols
+    KYLE_LAMBDA = 0.05 # Historical market impact constant
+    q_star = (total_alpha * triggered['vpin'] - triggered['spread']) / (2 * KYLE_LAMBDA)
+    
+    # Execute valid orders
+    for i in range(len(triggered)):
+        trade_size = int(q_star[i])
+        symbol_id = triggered['instrument_id'][i]
+        if trade_size > 0:
+            execute_buy_order(symbol_id, trade_size)
+Part 4: The Data Pipeline — NSE EOD & QuestDB
+
+Institutional alpha in India begins with End-Of-Day (EOD) data. The NSE provides raw delivery data daily, revealing whether volume was intraday speculation or long-term institutional accumulation. High-frequency live data requires a dedicated time-series database.
+
+Step 1: Automated NSE Bhavcopy Ingestion (EOD)
+
+Every day at 18:30 IST, your system must download the day's activity to find Delivery Volume Alpha.
+
+Python Implementation (eod_ingestor.py):
+
+code
+Python
+download
+content_copy
+expand_less
+import requests
+import pandas as pd
+from sqlalchemy import create_engine
+import datetime
+
+def download_nse_bhavcopy():
+    # Format date (e.g., 24032026 for DDMMYYYY)
+    date_str = datetime.datetime.now().strftime("%d%m%Y")
+    url = f"https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{date_str}.csv"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    print(f"Downloading Bhavcopy for {date_str}...")
+    response = requests.get(url, headers=headers)
+    
+    if response.status_code != 200:
+        print("Bhavcopy not published yet or download failed.")
+        return
+        
+    with open("bhavcopy.csv", "wb") as f:
+        f.write(response.content)
+        
+    df = pd.read_csv("bhavcopy.csv")
+    df.columns = df.columns.str.strip() # Clean headers
+    
+    # Filter for Equities (EQ)
+    df_eq = df[df['SERIES'] == 'EQ'].copy()
+    
+    # Calculate Institutional Conviction Score (Delivery %)
+    # Prevent division by zero
+    df_eq['TOT_TRD_QTY'] = pd.to_numeric(df_eq['TOT_TRD_QTY'], errors='coerce')
+    df_eq['DELIV_QTY'] = pd.to_numeric(df_eq['DELIV_QTY'], errors='coerce')
+    df_eq['conviction_score'] = df_eq['DELIV_QTY'] / df_eq['TOT_TRD_QTY'].replace(0, 1)
+    
+    # Push to Postgres
+    engine = create_engine('postgresql://quant:strongpassword@localhost:5432/kira_state')
+    df_eq.to_sql('eod_bhavcopy', engine, if_exists='append', index=False)
+    print("Bhavcopy successfully ingested.")
+
+if __name__ == "__main__":
+    download_nse_bhavcopy()
+Step 2: High-Frequency Tick Ingestion (QuestDB)
+
+During market hours, you subscribe to the Upstox WebSocket for your selected 1,500 symbols. To avoid crashing your disk, batch ticks in memory and write them to QuestDB using the InfluxDB Line Protocol (ILP).
+
+Python Implementation (hft_persistor.py):
+
+code
+Python
+download
+content_copy
+expand_less
+import asyncio
+from questdb.ingress import Sender, IngressError
+
+async def questdb_persistor_worker(tick_queue: asyncio.Queue):
+    """Consumes parsed ticks and writes to QuestDB via ILP port 9009."""
+    conf = 'tcp::localhost:9009;'
+    
+    with Sender.from_conf(conf) as sender:
+        while True:
+            # Wait for a batch of ticks
+            ticks = await tick_queue.get()
+            try:
+                for tick in ticks:
+                    sender.row(
+                        'ticks',
+                        symbols={'instrument_token': tick['instrument_token']},
+                        columns={
+                            'ltp': float(tick['last_price']),
+                            'volume': int(tick['volume']),
+                            'oi': int(tick.get('oi', 0))
+                        },
+                        # QuestDB expects time in nanoseconds
+                        at=int(tick['exchange_timestamp'] * 1000000) 
+                    )
+                sender.flush() # Flush batch to disk instantly
+            except IngressError as e:
+                print(f"QuestDB Write Error: {e}")
+Part 5: Step-by-Step Implementation Roadmap
+
+Follow this exact sequence to build and deploy KIRA from scratch.
+
+Phase 1: Infrastructure Setup
+
+Dockerized Databases: Create a docker-compose.yml deploying PostgreSQL (Port 5432) for relational EOD data and QuestDB (Port 9000 & 9009) for high-frequency tick data.
+
+Database Schemas:
+
+Connect to Postgres and create the instruments master list and eod_bhavcopy tables.
+
+Connect to QuestDB (localhost:9000) and create the partitioned ticks table (CREATE TABLE ticks (...) TIMESTAMP(ts) PARTITION BY DAY WAL;).
+
+Phase 2: The EOD Batch Pipeline
+
+Instrument Master Sync: Write a script that hits the Upstox API /v2/market-quote/instruments at 08:00 IST daily to map active Upstox instrument_tokens to NSE symbols.
+
+Bhavcopy Downloader: Implement the NSE Bhavcopy script. Schedule this to run via a CRON job at 18:30 IST daily.
+
+Target Selection: Write an SQL query that ranks the top 500 stocks based on the previous day's conviction_score to feed into your live 1,500 WebSocket allocation.
+
+Phase 3: The C++ Core & PyBind11
+
+Define the POD Structs: In your C++ header file (kira_engine.h), define the KalmanState, HawkesState, and CusumState structs.
+
+Pre-Allocate Memory: Create std::vector<InstrumentState> market_state(1500); in C++ that maps integer IDs to the respective mathematical states.
+
+Write the Hot Loop: Implement the 
+𝑂
+(
+1
+)
+O(1)
+ tick processing loop that iterates over incoming ticks and updates the structs without allocating new heap memory.
+
+Compile the Bindings: Use pybind11 and CMake to compile the C++ engine into a shared library (.so or .pyd), making it importable in Python as import kira_core.
+
+Phase 4: The Live Python Orchestrator
+
+Upstox WebSocket Connection: Implement the Upstox Python SDK to connect to the live stream using the LTPC and full_d30 modes for your targeted 1,500 symbols.
+
+The Fast Path Bridge: As ticks arrive in the Python on_message callback, immediately pass the array of ticks into the C++ engine function.
+
+The Strategy Callback (on_window): Write the Python callback function that receives the zero-copy NumPy array from C++. Apply the Kelly Criterion math and utilize the Upstox REST API to fire live orders.
+
+Async Logging: Dispatch a background asyncio task to write executed trade metadata to PostgreSQL, ensuring the main trading loop never blocks for network I/O.
+
+Phase 5: Testing & Simulation
+
+Dry Run (Paper Trading): Run the system live from 09:15 IST to 15:30 IST with the Upstox REST API execution disabled. Log the triggered q_star sizes to a CSV.
+
+Reconciliation: At 16:00 IST, compare your system's simulated trades against the actual NSE tick charts. Verify that the CUSUM detector fired exactly when the Kalman Alpha crossed the threshold.
+
+Live Deployment: Once the mathematical expectancy (
+𝐸
+[
+𝑅
+]
+E[R]
+) is positive over a 20-day paper trading window, enable live API execution with a 
+0.1
+𝑥
+0.1x
+ fractional multiplier on the Kelly fraction (
+𝑓
+∗
+/
+10
+f
+∗
+/10
+) for ultimate safety against initial live slippage.
+
+code
+Code
+download
+content_copy
+expand_less

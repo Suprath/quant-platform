@@ -2,6 +2,9 @@ FROM kira-python-base
 
 WORKDIR /app
 
+COPY services/api_gateway/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
 # Copy kira-shared (provided in build context)
 COPY kira-shared /app/kira-shared
 RUN pip install -e /app/kira-shared

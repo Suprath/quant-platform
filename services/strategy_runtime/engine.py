@@ -13,10 +13,104 @@ from paper_exchange import PaperExchange
 from schema import ensure_schema
 from db import get_db_connection, release_db_connection, DB_CONF
 from kira_shared.kafka.schemas import KafkaEnvelope
+from symbol_registry import SymbolRegistry
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("AlgorithmEngine")
+
+# ── Microstructure publishing (feeds /ws/orderflow and /api/conviction/stream) ──
+try:
+    import til_core as _til_core
+    _MICRO_ENGINE = _til_core.MicrostructureEngine(1000)
+    _HAS_MICRO_ENGINE = True
+except ImportError:
+    _HAS_MICRO_ENGINE = False
+    _MICRO_ENGINE = None
+
+_SYM_REGISTRY = SymbolRegistry(max_symbols=1000)
+
+try:
+    import redis as _redis_lib
+    _REDIS = _redis_lib.Redis(
+        host=os.getenv("REDIS_HOST", "redis_state"),
+        port=int(os.getenv("REDIS_PORT", 6379)),
+        db=0,
+        decode_responses=True,
+        socket_connect_timeout=2,
+        socket_timeout=0.1,
+    )
+    _REDIS.ping()
+except Exception as _e:
+    logger.warning(f"Redis unavailable — microstructure state will not be published: {_e}")
+    _REDIS = None
+
+
+def _publish_microstructure(tick: dict) -> None:
+    """Feed enriched tick into MicrostructureEngine and publish state to Redis."""
+    if not _HAS_MICRO_ENGINE or _REDIS is None:
+        return
+
+    instrument_key = str(tick.get("instrument_token") or tick.get("instrument_key") or tick.get("symbol") or "")
+    if not instrument_key:
+        return
+
+    sym_id = _SYM_REGISTRY.register(instrument_key)
+    if sym_id is None:
+        return
+
+    ltp = float(tick.get("ltp") or tick.get("last_price") or 0.0)
+    volume = float(tick.get("volume") or 0.0)
+    obi = float(tick.get("obi") or 0.0)
+    ts_ms = float(tick.get("exchange_timestamp") or 0)
+    ts_seconds = ts_ms / 1000.0
+
+    prev_price = float(tick.get("prev_price") or ltp)
+    actual_return = (ltp - prev_price) / prev_price if prev_price > 0 else 0.0
+
+    cusum_fired = _MICRO_ENGINE.update_tick(sym_id, actual_return, 0.0, volume, ts_seconds)
+    state = _MICRO_ENGINE.get_state(sym_id)
+
+    atr = float(tick.get("atr") or 15.0)
+    kyle_lam = calculations.compute_kyle_lambda(atr=atr, avg_daily_volume=max(volume, 1.0))
+    bid = float(tick.get("bid_price") or 0.0)
+    ask = float(tick.get("ask_price") or 0.0)
+    spread = abs(ask - bid) if ask > bid else 0.05
+
+    q = calculations.kelly_with_market_impact(
+        alpha_kalman=state["alpha_kalman"],
+        lambda_hawkes=state["lambda_hawkes"],
+        obi=obi,
+        spread=spread,
+        kyle_lambda=kyle_lam,
+    )
+
+    try:
+        mapping = {
+            "symbol": instrument_key,
+            "alpha": str(state["alpha_kalman"]),
+            "lambda_hawkes": str(state["lambda_hawkes"]),
+            "cusum_c": str(state.get("cusum_c", 0.0)),
+            "variance": str(state["variance"]),
+            "q_star": str(int(q)),
+            "kyle_lambda": str(kyle_lam),
+            "cusum_fired": "1" if cusum_fired else "0",
+            "ts_ms": str(int(ts_ms)),
+        }
+        _REDIS.hset(f"microstructure:{instrument_key}", mapping=mapping)
+        if cusum_fired:
+            _REDIS.publish("cusum-fires", json.dumps({
+                "symbol": instrument_key,
+                "q_star": int(q),
+                "alpha": state["alpha_kalman"],
+                "ts_ms": int(ts_ms),
+            }))
+            logger.info(
+                "CUSUM FIRE | %s | q*=%d | alpha=%.5f | hawkes=%.1f",
+                instrument_key, int(q), state["alpha_kalman"], state["lambda_hawkes"],
+            )
+    except Exception:
+        pass
 
 class SubscriptionManager:
     def __init__(self):
@@ -710,11 +804,13 @@ class AlgorithmEngine:
                 try:
                     envelope = KafkaEnvelope.from_bytes(msg.value())
                     self.ProcessTick(envelope.payload)
+                    _publish_microstructure(envelope.payload)
                 except Exception as e:
                     # Fallback for old bare JSON if necessary, or just log error
                     try:
                         data = json.loads(msg.value().decode('utf-8'))
                         self.ProcessTick(data)
+                        _publish_microstructure(data)
                     except:
                         logger.error(f"Failed to parse Kafka message: {e}")
 

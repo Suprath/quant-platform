@@ -16,10 +16,10 @@ logger = logging.getLogger("DB")
 
 DB_CONF = {
     "host": os.getenv("POSTGRES_HOST", "postgres_metadata"),
-    "port": 5432,
-    "user": "admin",
-    "password": "password123",
-    "database": "quant_platform"
+    "port": int(os.getenv("POSTGRES_PORT", 5432)),
+    "user": os.getenv("POSTGRES_USER", "admin"),
+    "password": os.getenv("POSTGRES_PASSWORD", "changeme123"),
+    "database": os.getenv("POSTGRES_DB", "quant_platform"),
 }
 
 _POOL = None

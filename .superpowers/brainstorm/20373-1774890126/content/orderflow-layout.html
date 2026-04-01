@@ -1,0 +1,188 @@
+<h2>Order Flow Dashboard — Panel Layout</h2>
+<p class="subtitle">Bloomberg style confirmed. Now: how should the Order Flow dashboard divide its screen real-estate?</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="A" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#0a0a0f;padding:10px;font-family:monospace;min-height:200px;border-radius:6px 6px 0 0;">
+      <!-- Layout A: Top strip + 3 columns -->
+      <div style="background:#111827;border:1px solid #1f2937;border-radius:3px;padding:5px 8px;margin-bottom:6px;display:flex;gap:16px;align-items:center;">
+        <span style="color:#34d399;font-size:9px;font-weight:700;">⬤ NSE LIVE</span>
+        <span style="color:#60a5fa;font-size:9px;">RELIANCE α+0.0042</span>
+        <span style="color:#f59e0b;font-size:9px;">λ=14820</span>
+        <span style="color:#f87171;font-size:9px;animation:pulse 1s infinite;">⚡ TCS FIRE q*=82</span>
+        <span style="color:#6b7280;font-size:9px;margin-left:auto;">09:24:31 IST</span>
+      </div>
+      <div style="display:grid;grid-template-columns:2fr 1.5fr 1fr;gap:5px;height:150px;">
+        <!-- Left: main chart -->
+        <div style="background:#111827;border:1px solid #1f2937;border-radius:3px;padding:6px;display:flex;flex-direction:column;">
+          <div style="color:#4b5563;font-size:8px;margin-bottom:3px;">KALMAN α + HAWKES λ — live 500 symbols</div>
+          <div style="flex:1;display:flex;align-items:flex-end;gap:1px;">
+            <div style="flex:1;background:#1e3a5f;height:45%;border-radius:1px;"></div><div style="flex:1;background:#1e3a5f;height:60%;border-radius:1px;"></div><div style="flex:1;background:#1e4a2f;height:80%;border-radius:1px;"></div><div style="flex:1;background:#34d399;height:95%;border-radius:1px;border:1px solid #34d399;"></div><div style="flex:1;background:#1e4a2f;height:70%;border-radius:1px;"></div><div style="flex:1;background:#3a1e1e;height:35%;border-radius:1px;"></div><div style="flex:1;background:#f87171;height:50%;border-radius:1px;"></div><div style="flex:1;background:#1e3a5f;height:40%;border-radius:1px;"></div><div style="flex:1;background:#1e4a2f;height:65%;border-radius:1px;"></div><div style="flex:1;background:#34d399;height:88%;border-radius:1px;"></div>
+          </div>
+          <div style="display:flex;gap:4px;margin-top:3px;">
+            <div style="flex:1;background:#0f1923;border:1px solid #1f2937;border-radius:2px;padding:2px 4px;"><div style="color:#4b5563;font-size:7px;">SYMBOL HEATMAP 500×</div><div style="display:grid;grid-template-columns:repeat(12,1fr);gap:1px;margin-top:2px;"><div style="height:5px;background:#34d399;opacity:0.9;"></div><div style="height:5px;background:#1e3a5f;"></div><div style="height:5px;background:#f87171;opacity:0.7;"></div><div style="height:5px;background:#34d399;opacity:0.6;"></div><div style="height:5px;background:#1e3a5f;opacity:0.5;"></div><div style="height:5px;background:#f59e0b;opacity:0.8;"></div><div style="height:5px;background:#34d399;opacity:0.4;"></div><div style="height:5px;background:#f87171;opacity:0.6;"></div><div style="height:5px;background:#1e3a5f;"></div><div style="height:5px;background:#34d399;opacity:0.8;"></div><div style="height:5px;background:#f87171;opacity:0.5;"></div><div style="height:5px;background:#34d399;opacity:0.7;"></div></div></div>
+          </div>
+        </div>
+        <!-- Middle: signal waterfall -->
+        <div style="background:#111827;border:1px solid #1f2937;border-radius:3px;padding:6px;overflow:hidden;">
+          <div style="color:#4b5563;font-size:8px;margin-bottom:4px;">CUSUM SIGNAL WATERFALL</div>
+          <div style="font-size:8px;line-height:1.7;">
+            <div style="color:#34d399;">09:24:31 <span style="color:#d1fae5;">RELIANCE</span> BUY α+0.00423 q*=45</div>
+            <div style="color:#f87171;">09:24:28 <span style="color:#fee2e2;">TCS</span> SELL α-0.00198 q*=12</div>
+            <div style="color:#34d399;">09:24:25 <span style="color:#d1fae5;">INFY</span> BUY α+0.00312 q*=33</div>
+            <div style="color:#f59e0b;">09:24:19 <span style="color:#fef3c7;">HDFC</span> WATCH λ=8420</div>
+            <div style="color:#34d399;">09:24:15 <span style="color:#d1fae5;">WIPRO</span> BUY α+0.00201 q*=18</div>
+            <div style="color:#6b7280;font-style:italic;">09:24:10 BAJFIN quiet</div>
+            <div style="color:#34d399;">09:24:06 <span style="color:#d1fae5;">LT</span> BUY α+0.00156 q*=22</div>
+          </div>
+        </div>
+        <!-- Right: stats -->
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          <div style="background:#111827;border:1px solid #1f2937;border-radius:3px;padding:5px;flex:1;">
+            <div style="color:#4b5563;font-size:7px;">ACTIVE SIGNALS</div>
+            <div style="color:#34d399;font-size:16px;font-weight:700;">23</div>
+            <div style="color:#6b7280;font-size:7px;">LONG</div>
+          </div>
+          <div style="background:#111827;border:1px solid #3a1e1e;border-radius:3px;padding:5px;flex:1;">
+            <div style="color:#4b5563;font-size:7px;">FIRES TODAY</div>
+            <div style="color:#f87171;font-size:16px;font-weight:700;">47</div>
+            <div style="color:#6b7280;font-size:7px;">CUSUM</div>
+          </div>
+          <div style="background:#111827;border:1px solid #1f2937;border-radius:3px;padding:5px;flex:1;">
+            <div style="color:#4b5563;font-size:7px;">CONVICTION TOP</div>
+            <div style="color:#a78bfa;font-size:11px;font-weight:700;">RELIANCE</div>
+            <div style="color:#6b7280;font-size:7px;">76.2% deliv</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — Wide Chart + Waterfall + Stats</h3>
+      <p>Large alpha/Hawkes chart left, scrolling CUSUM signal feed center, stat counters right. Best for watching the signal flow while tracking the big picture.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="B" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#0a0a0f;padding:10px;font-family:monospace;min-height:200px;border-radius:6px 6px 0 0;">
+      <!-- Layout B: 2x2 grid + bottom feed -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:4px;height:155px;margin-bottom:4px;">
+        <div style="background:#111827;border:1px solid #1f2937;border-radius:3px;padding:5px;">
+          <div style="color:#4b5563;font-size:7px;">KALMAN α SURFACE</div>
+          <div style="display:grid;grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(4,1fr);gap:1px;height:calc(100% - 14px);margin-top:2px;">
+            <div style="background:#34d399;opacity:0.9;border-radius:1px;"></div><div style="background:#1e4a2f;opacity:0.7;border-radius:1px;"></div><div style="background:#1e3a5f;opacity:0.5;border-radius:1px;"></div><div style="background:#f87171;opacity:0.6;border-radius:1px;"></div><div style="background:#34d399;opacity:0.8;border-radius:1px;"></div><div style="background:#1e3a5f;opacity:0.4;border-radius:1px;"></div><div style="background:#f59e0b;opacity:0.7;border-radius:1px;"></div><div style="background:#34d399;opacity:0.5;border-radius:1px;"></div>
+            <div style="background:#1e3a5f;opacity:0.6;border-radius:1px;"></div><div style="background:#34d399;opacity:0.7;border-radius:1px;"></div><div style="background:#f87171;opacity:0.8;border-radius:1px;"></div><div style="background:#1e3a5f;opacity:0.3;border-radius:1px;"></div><div style="background:#34d399;opacity:0.9;border-radius:1px;"></div><div style="background:#1e4a2f;opacity:0.6;border-radius:1px;"></div><div style="background:#1e3a5f;opacity:0.5;border-radius:1px;"></div><div style="background:#f87171;opacity:0.4;border-radius:1px;"></div>
+            <div style="background:#f59e0b;opacity:0.5;border-radius:1px;"></div><div style="background:#1e3a5f;opacity:0.7;border-radius:1px;"></div><div style="background:#34d399;opacity:0.6;border-radius:1px;"></div><div style="background:#f87171;opacity:0.5;border-radius:1px;"></div><div style="background:#1e3a5f;opacity:0.4;border-radius:1px;"></div><div style="background:#34d399;opacity:0.8;border-radius:1px;"></div><div style="background:#1e3a5f;opacity:0.6;border-radius:1px;"></div><div style="background:#f59e0b;opacity:0.9;border-radius:1px;"></div>
+            <div style="background:#1e3a5f;opacity:0.5;border-radius:1px;"></div><div style="background:#f87171;opacity:0.6;border-radius:1px;"></div><div style="background:#1e4a2f;opacity:0.7;border-radius:1px;"></div><div style="background:#34d399;opacity:0.9;border-radius:1px;"></div><div style="background:#f87171;opacity:0.4;border-radius:1px;"></div><div style="background:#1e3a5f;opacity:0.8;border-radius:1px;"></div><div style="background:#34d399;opacity:0.7;border-radius:1px;"></div><div style="background:#1e3a5f;opacity:0.3;border-radius:1px;"></div>
+          </div>
+        </div>
+        <div style="background:#111827;border:1px solid #1f2937;border-radius:3px;padding:5px;">
+          <div style="color:#4b5563;font-size:7px;">HAWKES λ INTENSITY — top 20</div>
+          <div style="display:flex;flex-direction:column;gap:2px;margin-top:3px;">
+            <div style="display:flex;align-items:center;gap:3px;"><span style="color:#9ca3af;font-size:7px;width:30px;">RELIANCE</span><div style="flex:1;background:#1f2937;border-radius:1px;height:5px;"><div style="width:85%;background:#f59e0b;height:100%;border-radius:1px;"></div></div><span style="color:#f59e0b;font-size:7px;">14.8k</span></div>
+            <div style="display:flex;align-items:center;gap:3px;"><span style="color:#9ca3af;font-size:7px;width:30px;">TCS</span><div style="flex:1;background:#1f2937;border-radius:1px;height:5px;"><div style="width:62%;background:#f59e0b;height:100%;border-radius:1px;"></div></div><span style="color:#f59e0b;font-size:7px;">10.2k</span></div>
+            <div style="display:flex;align-items:center;gap:3px;"><span style="color:#9ca3af;font-size:7px;width:30px;">INFY</span><div style="flex:1;background:#1f2937;border-radius:1px;height:5px;"><div style="width:48%;background:#f59e0b;height:100%;border-radius:1px;"></div></div><span style="color:#f59e0b;font-size:7px;">7.9k</span></div>
+            <div style="display:flex;align-items:center;gap:3px;"><span style="color:#9ca3af;font-size:7px;width:30px;">HDFC</span><div style="flex:1;background:#1f2937;border-radius:1px;height:5px;"><div style="width:35%;background:#f59e0b;height:100%;border-radius:1px;"></div></div><span style="color:#f59e0b;font-size:7px;">5.7k</span></div>
+          </div>
+        </div>
+        <div style="background:#111827;border:1px solid #1f2937;border-radius:3px;padding:5px;">
+          <div style="color:#4b5563;font-size:7px;">CUSUM STATE — 500 symbols</div>
+          <div style="display:flex;align-items:center;gap:6px;height:calc(100% - 16px);margin-top:2px;">
+            <div style="text-align:center;">
+              <div style="color:#34d399;font-size:20px;font-weight:700;line-height:1;">23</div>
+              <div style="color:#4b5563;font-size:6px;">ARMED</div>
+            </div>
+            <div style="text-align:center;">
+              <div style="color:#f87171;font-size:20px;font-weight:700;line-height:1;">3</div>
+              <div style="color:#4b5563;font-size:6px;">FIRED</div>
+            </div>
+            <div style="text-align:center;">
+              <div style="color:#6b7280;font-size:20px;font-weight:700;line-height:1;">474</div>
+              <div style="color:#4b5563;font-size:6px;">QUIET</div>
+            </div>
+          </div>
+        </div>
+        <div style="background:#111827;border:1px solid #1f2937;border-radius:3px;padding:5px;">
+          <div style="color:#4b5563;font-size:7px;">KELLY q* SIZING</div>
+          <div style="font-size:7px;margin-top:3px;">
+            <div style="display:flex;justify-content:space-between;color:#9ca3af;margin-bottom:2px;"><span>RELIANCE</span><span style="color:#34d399;">BUY 45 sh</span></div>
+            <div style="display:flex;justify-content:space-between;color:#9ca3af;margin-bottom:2px;"><span>TCS</span><span style="color:#f87171;">SELL 12 sh</span></div>
+            <div style="display:flex;justify-content:space-between;color:#9ca3af;"><span>INFY</span><span style="color:#34d399;">BUY 33 sh</span></div>
+          </div>
+        </div>
+      </div>
+      <div style="background:#111827;border:1px solid #1f2937;border-radius:3px;padding:4px 6px;height:28px;overflow:hidden;">
+        <div style="display:flex;gap:8px;font-size:7px;color:#6b7280;white-space:nowrap;overflow:hidden;">
+          <span style="color:#34d399;">09:24:31 RELIANCE BUY q*=45</span>
+          <span style="color:#f87171;">09:24:28 TCS SELL q*=12</span>
+          <span style="color:#34d399;">09:24:25 INFY BUY q*=33</span>
+          <span style="color:#f59e0b;">09:24:19 HDFC WATCH</span>
+          <span style="color:#34d399;">09:24:15 WIPRO BUY q*=18</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — 2×2 Quad Panels + Ticker</h3>
+      <p>Four equal panels: Kalman heatmap, Hawkes bar chart, CUSUM state counts, Kelly sizing. Bottom ticker scrolls signal feed. Best for seeing all four models simultaneously.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="C" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#0a0a0f;padding:10px;font-family:monospace;min-height:200px;border-radius:6px 6px 0 0;">
+      <!-- Layout C: Left sidebar + main + right panel -->
+      <div style="display:grid;grid-template-columns:80px 1fr 90px;gap:4px;height:175px;">
+        <!-- Left sidebar -->
+        <div style="background:#111827;border:1px solid #1f2937;border-radius:3px;padding:5px;overflow:hidden;">
+          <div style="color:#4b5563;font-size:7px;margin-bottom:4px;">WATCHLIST</div>
+          <div style="font-size:7px;line-height:2;">
+            <div style="display:flex;justify-content:space-between;border-bottom:1px solid #1f2937;padding-bottom:1px;"><span style="color:#34d399;">RELIANCE</span><span style="color:#34d399;">▲</span></div>
+            <div style="display:flex;justify-content:space-between;border-bottom:1px solid #1f2937;padding-bottom:1px;background:#1a0d0d;padding:1px 2px;border-radius:2px;"><span style="color:#f87171;">TCS</span><span style="color:#f87171;">⚡</span></div>
+            <div style="display:flex;justify-content:space-between;border-bottom:1px solid #1f2937;padding-bottom:1px;"><span style="color:#34d399;">INFY</span><span style="color:#34d399;">▲</span></div>
+            <div style="display:flex;justify-content:space-between;border-bottom:1px solid #1f2937;padding-bottom:1px;"><span style="color:#9ca3af;">HDFC</span><span style="color:#6b7280;">–</span></div>
+            <div style="display:flex;justify-content:space-between;border-bottom:1px solid #1f2937;padding-bottom:1px;"><span style="color:#34d399;">WIPRO</span><span style="color:#34d399;">▲</span></div>
+            <div style="display:flex;justify-content:space-between;"><span style="color:#9ca3af;">BAJFIN</span><span style="color:#6b7280;">–</span></div>
+          </div>
+        </div>
+        <!-- Main chart area -->
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          <div style="background:#111827;border:1px solid #1f2937;border-radius:3px;padding:5px;flex:2;">
+            <div style="color:#4b5563;font-size:7px;margin-bottom:3px;">TCS — KALMAN α + CUSUM C (selected symbol)</div>
+            <div style="position:relative;height:calc(100% - 14px);">
+              <div style="display:flex;align-items:flex-end;gap:1px;height:100%;">
+                <div style="flex:1;background:#1e3a5f;height:30%;border-radius:1px;"></div><div style="flex:1;background:#1e3a5f;height:45%;border-radius:1px;"></div><div style="flex:1;background:#1e4a2f;height:60%;border-radius:1px;"></div><div style="flex:1;background:#1e4a2f;height:55%;border-radius:1px;"></div><div style="flex:1;background:#1e4a2f;height:70%;border-radius:1px;"></div><div style="flex:1;background:#1e4a2f;height:80%;border-radius:1px;"></div><div style="flex:1;background:#34d399;height:95%;border-radius:1px;border:1px solid #34d399;"></div><div style="flex:1;background:#1e4a2f;height:75%;border-radius:1px;"></div><div style="flex:1;background:#1e3a5f;height:50%;border-radius:1px;"></div><div style="flex:1;background:#3a1e1e;height:35%;border-radius:1px;"></div>
+              </div>
+              <div style="position:absolute;top:0;right:0;background:#1a0d0d;border:1px solid #5f1e1e;border-radius:2px;padding:2px 4px;">
+                <div style="color:#f87171;font-size:7px;">⚡ CUSUM FIRE</div>
+                <div style="color:#fca5a5;font-size:9px;font-weight:700;">09:24:28</div>
+              </div>
+            </div>
+          </div>
+          <div style="background:#111827;border:1px solid #1f2937;border-radius:3px;padding:4px 5px;flex:1;">
+            <div style="color:#4b5563;font-size:7px;margin-bottom:2px;">HAWKES λ DECAY — TCS</div>
+            <div style="display:flex;align-items:flex-end;gap:1px;height:calc(100% - 14px);">
+              <div style="flex:1;background:#f59e0b;height:90%;opacity:0.8;border-radius:1px;"></div><div style="flex:1;background:#f59e0b;height:75%;opacity:0.7;border-radius:1px;"></div><div style="flex:1;background:#f59e0b;height:60%;opacity:0.6;border-radius:1px;"></div><div style="flex:1;background:#f59e0b;height:48%;opacity:0.5;border-radius:1px;"></div><div style="flex:1;background:#f59e0b;height:38%;opacity:0.4;border-radius:1px;"></div><div style="flex:1;background:#f59e0b;height:30%;opacity:0.35;border-radius:1px;"></div><div style="flex:1;background:#f59e0b;height:24%;opacity:0.3;border-radius:1px;"></div><div style="flex:1;background:#f59e0b;height:90%;opacity:0.8;border-radius:1px;"></div><div style="flex:1;background:#f59e0b;height:70%;opacity:0.65;border-radius:1px;"></div><div style="flex:1;background:#f59e0b;height:55%;opacity:0.55;border-radius:1px;"></div>
+            </div>
+          </div>
+        </div>
+        <!-- Right panel -->
+        <div style="background:#111827;border:1px solid #1f2937;border-radius:3px;padding:5px;">
+          <div style="color:#4b5563;font-size:7px;margin-bottom:4px;">TCS SIGNAL</div>
+          <div style="font-size:7px;line-height:1.9;">
+            <div style="color:#6b7280;">Kalman α</div><div style="color:#34d399;font-weight:700;margin-bottom:2px;">-0.00198</div>
+            <div style="color:#6b7280;">Hawkes λ</div><div style="color:#f59e0b;font-weight:700;margin-bottom:2px;">10,240</div>
+            <div style="color:#6b7280;">CUSUM C</div><div style="color:#f87171;font-weight:700;margin-bottom:2px;">5.0 🔥</div>
+            <div style="color:#6b7280;">σ²</div><div style="color:#a78bfa;font-weight:700;margin-bottom:2px;">0.000142</div>
+            <div style="color:#6b7280;">Kyle λ</div><div style="color:#9ca3af;font-weight:700;margin-bottom:2px;">0.00031</div>
+            <div style="color:#6b7280;">q*</div><div style="color:#f87171;font-weight:700;">SELL 12</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C — Watchlist + Drilldown + Detail Panel</h3>
+      <p>Left: scannable symbol list with live status icons. Center: full Kalman/Hawkes charts for selected symbol. Right: all 6 model values for that symbol. Click to drill into any stock.</p>
+    </div>
+  </div>
+
+</div>
+<p class="subtitle" style="margin-top:12px;font-size:12px;">Click your preferred layout for the Order Flow dashboard main screen.</p>

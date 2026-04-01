@@ -154,7 +154,7 @@ services:
       - ../kira-shared:/kira-shared
       - ../services/position_sizer/src:/position_sizer
       - ../services/noise_filter/src:/noise_filter
-      - ../services/kira_til/src:/kira_til
+      - ../services/kira_til:/kira_til
     restart: always
     deploy:
       resources:

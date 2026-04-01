@@ -100,6 +100,7 @@ class QuantProcessor:
         elif best_bid > 0 and ltp <= best_bid:
             aggressor = "SELL"
 
+        exchange_ts = tick.get('timestamp', int(timesync.now_ist().timestamp()*1000))
         return {
             "symbol": self.symbol,
             "ltp": ltp,
@@ -113,7 +114,10 @@ class QuantProcessor:
             "spread": spread,
             "obi": obi,
             "aggressor": aggressor,
-            "timestamp": tick.get('timestamp', int(timesync.now_ist().timestamp()*1000))
+            "bid_price": best_bid,
+            "ask_price": best_ask,
+            "exchange_timestamp": exchange_ts,
+            "timestamp": exchange_ts,
         }
 
 def ensure_topics():
@@ -182,6 +186,9 @@ def run():
 
             try:
                 raw_tick = json.loads(msg.value().decode('utf-8'))
+                # Unwrap KafkaEnvelope if present
+                if 'payload' in raw_tick:
+                    raw_tick = raw_tick['payload']
                 sym = raw_tick.get('symbol')
 
                 if sym not in processors:

@@ -1,0 +1,80 @@
+<h2>KIRA Frontend — Scope & Decomposition</h2>
+<p class="subtitle">This is a large request. Here's how I'd break it into independent deliverables.</p>
+
+<div class="section">
+  <div class="label">Current State</div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px;">
+    <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:12px;font-size:13px;">
+      <div style="color:#60a5fa;font-weight:600;margin-bottom:6px;">/ Home</div>
+      <div style="color:#9ca3af;">Bento grid, health check, top movers</div>
+    </div>
+    <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:12px;font-size:13px;">
+      <div style="color:#60a5fa;font-weight:600;margin-bottom:6px;">/dashboard/live</div>
+      <div style="color:#9ca3af;">Polling every 2s, mock positions</div>
+    </div>
+    <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:12px;font-size:13px;">
+      <div style="color:#60a5fa;font-weight:600;margin-bottom:6px;">/dashboard/backtest</div>
+      <div style="color:#9ca3af;">Results viewer, equity curve</div>
+    </div>
+    <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:12px;font-size:13px;">
+      <div style="color:#60a5fa;font-weight:600;margin-bottom:6px;">/dashboard/edge</div>
+      <div style="color:#9ca3af;">Pattern analysis, S/R levels</div>
+    </div>
+    <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:12px;font-size:13px;">
+      <div style="color:#60a5fa;font-weight:600;margin-bottom:6px;">/dashboard/options</div>
+      <div style="color:#9ca3af;">Greeks chain, IV surface</div>
+    </div>
+    <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:12px;font-size:13px;">
+      <div style="color:#60a5fa;font-weight:600;margin-bottom:6px;">/ide + /terminal</div>
+      <div style="color:#9ca3af;">Monaco editor, backtest shell</div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">Three Sub-Projects — pick an execution order</div>
+  <p class="subtitle" style="font-size:13px;margin-top:6px;">Each can ship independently. I recommend doing them in this order.</p>
+
+  <div class="options">
+    <div class="option" data-choice="a" onclick="toggleSelect(this)">
+      <div class="letter">1</div>
+      <div class="content">
+        <h3 style="color:#34d399;">Order Flow Dashboard <span style="font-size:11px;opacity:0.6;font-weight:400;">/dashboard/orderflow</span></h3>
+        <p>Real-time Kalman α, Hawkes λ, CUSUM fires, Kelly q* from the new C++ engine. WebSocket feed. Heatmap of 1000 symbols. Signal waterfall. <strong>This is the crown jewel — the reason we built the backend.</strong></p>
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+          <span style="background:rgba(52,211,153,0.15);color:#34d399;padding:2px 8px;border-radius:4px;font-size:11px;">New page</span>
+          <span style="background:rgba(52,211,153,0.15);color:#34d399;padding:2px 8px;border-radius:4px;font-size:11px;">WebSocket required</span>
+          <span style="background:rgba(52,211,153,0.15);color:#34d399;padding:2px 8px;border-radius:4px;font-size:11px;">TradingView-grade charts</span>
+        </div>
+      </div>
+    </div>
+    <div class="option" data-choice="b" onclick="toggleSelect(this)">
+      <div class="letter">2</div>
+      <div class="content">
+        <h3 style="color:#f59e0b;">EOD Conviction Dashboard <span style="font-size:11px;opacity:0.6;font-weight:400;">/dashboard/conviction</span></h3>
+        <p>Daily Bhavcopy conviction scores, delivery % heatmap across sectors, top 500 institutional targets, trend over time. Feeds the scanner selection logic.</p>
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+          <span style="background:rgba(245,158,11,0.15);color:#f59e0b;padding:2px 8px;border-radius:4px;font-size:11px;">New page</span>
+          <span style="background:rgba(245,158,11,0.15);color:#f59e0b;padding:2px 8px;border-radius:4px;font-size:11px;">REST + polling fine</span>
+          <span style="background:rgba(245,158,11,0.15);color:#f59e0b;padding:2px 8px;border-radius:4px;font-size:11px;">Table + heatmap</span>
+        </div>
+      </div>
+    </div>
+    <div class="option" data-choice="c" onclick="toggleSelect(this)">
+      <div class="letter">3</div>
+      <div class="content">
+        <h3 style="color:#a78bfa;">Existing Frontend Fixes</h3>
+        <p>Replace 2s polling with WebSocket on live dashboard. Remove 100% mock TradingDashboard. Fix broken BacktestRunner props. Add real IDE file save/load. Fix TypeScript any-types.</p>
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+          <span style="background:rgba(167,139,250,0.15);color:#a78bfa;padding:2px 8px;border-radius:4px;font-size:11px;">Existing pages</span>
+          <span style="background:rgba(167,139,250,0.15);color:#a78bfa;padding:2px 8px;border-radius:4px;font-size:11px;">Bug fixes</span>
+          <span style="background:rgba(167,139,250,0.15);color:#a78bfa;padding:2px 8px;border-radius:4px;font-size:11px;">No new pages</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="background:rgba(96,165,250,0.08);border:1px solid rgba(96,165,250,0.2);border-radius:8px;padding:14px;margin-top:8px;font-size:13px;color:#9ca3af;">
+  <strong style="color:#60a5fa;">My recommendation:</strong> Build all three, starting with Order Flow → Conviction → Fixes. The Order Flow dashboard is the highest-value piece since it surfaces everything we just built in the backend. The fixes can be bundled with the dashboard work.
+</div>

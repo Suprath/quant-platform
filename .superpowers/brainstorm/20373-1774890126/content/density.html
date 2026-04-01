@@ -1,0 +1,142 @@
+<h2>Dashboard Density & Visual Style</h2>
+<p class="subtitle">KIRA is a solo quant platform. Which visual philosophy fits how you'll actually use it?</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="bloomberg" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#0a0a0f;padding:14px;font-family:monospace;min-height:160px;border-radius:6px 6px 0 0;">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;margin-bottom:6px;">
+        <div style="background:#111827;border:1px solid #1e3a5f;padding:5px;border-radius:3px;">
+          <div style="color:#60a5fa;font-size:9px;">RELIANCE α</div>
+          <div style="color:#34d399;font-size:13px;font-weight:700;">+0.00423</div>
+          <div style="color:#6b7280;font-size:8px;">CUSUM: 4.2/5.0</div>
+        </div>
+        <div style="background:#111827;border:1px solid #1e3a5f;padding:5px;border-radius:3px;">
+          <div style="color:#60a5fa;font-size:9px;">INFY λ</div>
+          <div style="color:#f59e0b;font-size:13px;font-weight:700;">14,820</div>
+          <div style="color:#6b7280;font-size:8px;">Hawkes decay</div>
+        </div>
+        <div style="background:#1a0a0a;border:1px solid #5f1e1e;padding:5px;border-radius:3px;">
+          <div style="color:#f87171;font-size:9px;">⚡ CUSUM FIRE</div>
+          <div style="color:#fca5a5;font-size:13px;font-weight:700;">TCS q*=82</div>
+          <div style="color:#6b7280;font-size:8px;">Kelly: 0.034</div>
+        </div>
+        <div style="background:#111827;border:1px solid #1e3a5f;padding:5px;border-radius:3px;">
+          <div style="color:#60a5fa;font-size:9px;">HDFC σ²</div>
+          <div style="color:#a78bfa;font-size:13px;font-weight:700;">0.000142</div>
+          <div style="color:#6b7280;font-size:8px;">EMA variance</div>
+        </div>
+      </div>
+      <div style="background:#111827;border:1px solid #1f2937;border-radius:3px;padding:6px;margin-bottom:4px;">
+        <div style="color:#4b5563;font-size:8px;margin-bottom:4px;">KALMAN α — 500 symbols live</div>
+        <div style="display:flex;gap:1px;align-items:flex-end;height:28px;">
+          <div style="width:3px;height:40%;background:#1e3a5f;"></div><div style="width:3px;height:55%;background:#1e3a5f;"></div><div style="width:3px;height:30%;background:#1e3a5f;"></div><div style="width:3px;height:70%;background:#1e4a2f;"></div><div style="width:3px;height:85%;background:#34d399;"></div><div style="width:3px;height:60%;background:#1e4a2f;"></div><div style="width:3px;height:45%;background:#1e3a5f;"></div><div style="width:3px;height:20%;background:#3a1e1e;"></div><div style="width:3px;height:35%;background:#f87171;"></div><div style="width:3px;height:90%;background:#34d399;"></div><div style="width:3px;height:65%;background:#1e4a2f;"></div><div style="width:3px;height:40%;background:#1e3a5f;"></div><div style="width:3px;height:75%;background:#1e4a2f;"></div><div style="width:3px;height:50%;background:#1e3a5f;"></div><div style="width:3px;height:85%;background:#34d399;"></div><div style="width:3px;height:30%;background:#1e3a5f;"></div><div style="width:3px;height:60%;background:#1e3a5f;"></div><div style="width:3px;height:45%;background:#3a1e1e;"></div><div style="width:3px;height:70%;background:#f87171;"></div><div style="width:3px;height:55%;background:#1e3a5f;"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:3px;">
+        <div style="flex:1;background:#111827;border:1px solid #1f2937;border-radius:3px;padding:4px;">
+          <div style="color:#4b5563;font-size:7px;">SIGNAL FEED</div>
+          <div style="color:#34d399;font-size:8px;">09:24:31 RELIANCE BUY q*=45</div>
+          <div style="color:#f87171;font-size:8px;">09:24:28 TCS SELL q*=12</div>
+          <div style="color:#34d399;font-size:8px;">09:24:25 INFY BUY q*=33</div>
+        </div>
+        <div style="flex:1;background:#111827;border:1px solid #1f2937;border-radius:3px;padding:4px;">
+          <div style="color:#4b5563;font-size:7px;">SYMBOL HEATMAP</div>
+          <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:1px;margin-top:2px;">
+            <div style="height:8px;background:#34d399;border-radius:1px;opacity:0.9;"></div><div style="height:8px;background:#1e3a5f;border-radius:1px;opacity:0.6;"></div><div style="height:8px;background:#f87171;border-radius:1px;opacity:0.8;"></div><div style="height:8px;background:#34d399;border-radius:1px;opacity:0.7;"></div><div style="height:8px;background:#1e3a5f;border-radius:1px;opacity:0.5;"></div><div style="height:8px;background:#f59e0b;border-radius:1px;opacity:0.9;"></div><div style="height:8px;background:#34d399;border-radius:1px;opacity:0.4;"></div><div style="height:8px;background:#f87171;border-radius:1px;opacity:0.7;"></div>
+            <div style="height:8px;background:#1e3a5f;border-radius:1px;"></div><div style="height:8px;background:#34d399;border-radius:1px;opacity:0.8;"></div><div style="height:8px;background:#1e3a5f;border-radius:1px;opacity:0.4;"></div><div style="height:8px;background:#f87171;border-radius:1px;opacity:0.6;"></div><div style="height:8px;background:#34d399;border-radius:1px;opacity:0.9;"></div><div style="height:8px;background:#1e3a5f;border-radius:1px;opacity:0.3;"></div><div style="height:8px;background:#f87171;border-radius:1px;opacity:0.5;"></div><div style="height:8px;background:#34d399;border-radius:1px;opacity:0.7;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Bloomberg Terminal</h3>
+      <p>Maximum data density. Every pixel earns its place. Monospace fonts, micro-panels, real-time signal feed. Designed for eyes that scan fast. Steep learning curve, zero wasted space.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="institutional" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#0d1117;padding:14px;min-height:160px;border-radius:6px 6px 0 0;">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">
+        <div style="background:#161b22;border:1px solid rgba(52,211,153,0.25);border-radius:8px;padding:10px;">
+          <div style="color:#6e7681;font-size:10px;margin-bottom:2px;">KALMAN ALPHA</div>
+          <div style="color:#34d399;font-size:18px;font-weight:700;">+0.00423</div>
+          <div style="color:#6e7681;font-size:10px;margin-top:2px;">↑ 12% vs prev tick</div>
+        </div>
+        <div style="background:#161b22;border:1px solid rgba(245,158,11,0.25);border-radius:8px;padding:10px;">
+          <div style="color:#6e7681;font-size:10px;margin-bottom:2px;">HAWKES λ</div>
+          <div style="color:#f59e0b;font-size:18px;font-weight:700;">14,820</div>
+          <div style="color:#6e7681;font-size:10px;margin-top:2px;">Decay κ=2.0/s</div>
+        </div>
+        <div style="background:#1a0d0d;border:1px solid rgba(248,113,113,0.4);border-radius:8px;padding:10px;">
+          <div style="color:#f87171;font-size:10px;margin-bottom:2px;">⚡ CUSUM FIRE</div>
+          <div style="color:#fca5a5;font-size:18px;font-weight:700;">q* = 82</div>
+          <div style="color:#6e7681;font-size:10px;margin-top:2px;">TCS · 09:24:31</div>
+        </div>
+      </div>
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px;margin-bottom:6px;">
+        <div style="color:#6e7681;font-size:10px;margin-bottom:4px;">ALPHA SIGNAL STRENGTH — last 60s</div>
+        <div style="display:flex;gap:2px;align-items:flex-end;height:36px;">
+          <div style="flex:1;height:30%;background:rgba(52,211,153,0.3);border-radius:2px;"></div><div style="flex:1;height:50%;background:rgba(52,211,153,0.4);border-radius:2px;"></div><div style="flex:1;height:40%;background:rgba(52,211,153,0.35);border-radius:2px;"></div><div style="flex:1;height:70%;background:rgba(52,211,153,0.5);border-radius:2px;"></div><div style="flex:1;height:90%;background:rgba(52,211,153,0.7);border-radius:2px;border:1px solid #34d399;"></div><div style="flex:1;height:60%;background:rgba(52,211,153,0.45);border-radius:2px;"></div><div style="flex:1;height:45%;background:rgba(52,211,153,0.35);border-radius:2px;"></div><div style="flex:1;height:25%;background:rgba(248,113,113,0.3);border-radius:2px;"></div><div style="flex:1;height:55%;background:rgba(248,113,113,0.5);border-radius:2px;"></div><div style="flex:1;height:80%;background:rgba(52,211,153,0.6);border-radius:2px;"></div>
+        </div>
+      </div>
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px;">
+        <div style="color:#6e7681;font-size:10px;">RECENT SIGNALS</div>
+        <div style="color:#34d399;font-size:11px;margin-top:3px;">● RELIANCE  BUY  q*=45  α=+0.00312</div>
+        <div style="color:#f87171;font-size:11px;margin-top:2px;">● TCS  SELL  q*=12  α=-0.00198</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Institutional Dark</h3>
+      <p>GitHub-meets-Bloomberg aesthetic. Readable cards with clear hierarchy. Breathing room between panels. Looks like a professional trading desk. Familiar if you use GitHub dark or Linear.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="tview" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#131722;padding:14px;min-height:160px;border-radius:6px 6px 0 0;">
+      <div style="background:#1e222d;border-radius:6px;padding:8px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">
+        <div style="display:flex;gap:12px;">
+          <span style="color:#d1d4dc;font-size:11px;font-weight:600;">ORDER FLOW</span>
+          <span style="color:#787b86;font-size:11px;">CONVICTION</span>
+          <span style="color:#787b86;font-size:11px;">LIVE</span>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <span style="background:#2a2e39;color:#d1d4dc;padding:2px 6px;border-radius:3px;font-size:10px;">NSE LIVE</span>
+          <span style="background:#0c3d2e;color:#26a69a;padding:2px 6px;border-radius:3px;font-size:10px;">● Connected</span>
+        </div>
+      </div>
+      <div style="background:#1e222d;border-radius:6px;padding:8px;margin-bottom:6px;">
+        <div style="color:#787b86;font-size:9px;margin-bottom:4px;">KALMAN ALPHA DISTRIBUTION — 500 symbols</div>
+        <div style="display:flex;gap:1px;align-items:flex-end;height:40px;">
+          <div style="flex:1;height:15%;background:#ef5350;opacity:0.6;border-radius:1px 1px 0 0;"></div><div style="flex:1;height:30%;background:#ef5350;opacity:0.7;border-radius:1px 1px 0 0;"></div><div style="flex:1;height:60%;background:#ef5350;opacity:0.5;border-radius:1px 1px 0 0;"></div><div style="flex:1;height:90%;background:#787b86;opacity:0.5;border-radius:1px 1px 0 0;"></div><div style="flex:1;height:100%;background:#787b86;opacity:0.7;border-radius:1px 1px 0 0;"></div><div style="flex:1;height:80%;background:#26a69a;opacity:0.5;border-radius:1px 1px 0 0;"></div><div style="flex:1;height:55%;background:#26a69a;opacity:0.6;border-radius:1px 1px 0 0;"></div><div style="flex:1;height:35%;background:#26a69a;opacity:0.7;border-radius:1px 1px 0 0;"></div><div style="flex:1;height:20%;background:#26a69a;opacity:0.5;border-radius:1px 1px 0 0;"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:2px;">
+          <span style="color:#ef5350;font-size:8px;">-0.01 bearish</span>
+          <span style="color:#787b86;font-size:8px;">0</span>
+          <span style="color:#26a69a;font-size:8px;">bullish +0.01</span>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;">
+        <div style="background:#1e222d;border-left:2px solid #26a69a;padding:5px;border-radius:3px;">
+          <div style="color:#787b86;font-size:8px;">LONG SIGNALS</div>
+          <div style="color:#26a69a;font-size:14px;font-weight:700;">23</div>
+        </div>
+        <div style="background:#1e222d;border-left:2px solid #ef5350;padding:5px;border-radius:3px;">
+          <div style="color:#787b86;font-size:8px;">SHORT SIGNALS</div>
+          <div style="color:#ef5350;font-size:14px;font-weight:700;">8</div>
+        </div>
+        <div style="background:#1e222d;border-left:2px solid #f59e0b;padding:5px;border-radius:3px;">
+          <div style="color:#787b86;font-size:8px;">CUSUM FIRES</div>
+          <div style="color:#f59e0b;font-size:14px;font-weight:700;">3</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>TradingView Dark</h3>
+      <p>Exact TradingView aesthetic — #131722 background, Inter font, teal/red color pair. Familiar to any trader. Chart-first layout with clean top nav. Minimal chrome, maximum data.</p>
+    </div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top:16px;font-size:12px;">Click to select your preferred style. This will drive the color palette, typography, and spacing across all new dashboards.</p>

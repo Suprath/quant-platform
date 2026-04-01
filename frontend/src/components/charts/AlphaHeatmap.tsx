@@ -32,7 +32,7 @@ export const AlphaHeatmap = ({ symbols, onSelect }: Props) => {
           title={symbol}
           onClick={() => onSelect?.(symbol)}
           style={{
-            width: 8, height: 8, borderRadius: 1,
+            width: 10, height: 10, borderRadius: 1,
             background: color, cursor: 'pointer',
           }}
         />

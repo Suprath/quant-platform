@@ -18,13 +18,13 @@ export function VolumeAtPrice({ bids, asks }: Props) {
   }
 
   return (
-    <div style={{ fontFamily: 'monospace', fontSize: 9, marginTop: 6 }}>
-      <div style={{ color: '#4b5563', fontSize: 7, marginBottom: 2 }}>VOLUME AT PRICE</div>
+    <div style={{ fontFamily: 'monospace', fontSize: 11, marginTop: 8 }}>
+      <div style={{ color: '#4b5563', fontSize: 10, marginBottom: 4 }}>VOLUME AT PRICE</div>
       {rows.map((row, i) => {
         const bidW = row.bid ? (row.bid.quantity / maxQty) * 100 : 0;
         const askW = row.ask ? (row.ask.quantity / maxQty) * 100 : 0;
         return (
-          <div key={i} style={{ display: 'flex', alignItems: 'center', height: 16, gap: 2, marginBottom: 1 }}>
+          <div key={i} style={{ display: 'flex', alignItems: 'center', height: 18, gap: 4, marginBottom: 2 }}>
             {/* Bid bar (left side, right-aligned) */}
             <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end', height: 10 }}>
               <div style={{
@@ -33,7 +33,7 @@ export function VolumeAtPrice({ bids, asks }: Props) {
               }} />
             </div>
             {/* Price label */}
-            <div style={{ width: 42, textAlign: 'center', color: '#6b7280', fontSize: 8, flexShrink: 0 }}>
+            <div style={{ width: 50, textAlign: 'center', color: '#6b7280', fontSize: 10, flexShrink: 0 }}>
               {row.bid?.price.toFixed(1) ?? row.ask?.price.toFixed(1) ?? ''}
             </div>
             {/* Ask bar (right side, left-aligned) */}
